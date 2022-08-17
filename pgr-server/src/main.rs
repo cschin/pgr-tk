@@ -38,6 +38,7 @@ struct TargetRanges {
     query_src_ctg: (String, String),
     matches: Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>,
     sid_ctg_src: Vec<(u32, String, String)>,
+    principal_bundle_decomposition: Vec<(u32, Vec<( (u64,u64,u32,u32,u8), Option<(usize, u8, usize)> )> )> 
 }
 
 #[tokio::main]
@@ -213,10 +214,11 @@ async fn query_sdb_with(
 
     let (principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);
-        
+
     Json(TargetRanges {
         query_src_ctg: (sample_name, ctg_name),
         matches: target_ranges,
         sid_ctg_src: src_ctg_sid,
+        principal_bundle_decomposition: seqid_smps_with_bundle_id_seg_direction
     })
 }
