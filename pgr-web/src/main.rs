@@ -77,8 +77,8 @@ pub fn query_results(cx: Scope) -> Element {
         //end: 161087407,
         bgn: 32163513,
         end: 32992088,
-        padding: 100000,
-        merge_range_tol: 100000,
+        padding: 200000,
+        merge_range_tol: 500000,
         full_match: true,
     };
 

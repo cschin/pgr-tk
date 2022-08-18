@@ -122,6 +122,7 @@ async fn query_sdb_with(
     let sample_name = payload.source;
     let ctg_name = payload.ctg;
     let padding = payload.padding;
+    let merge_range_tol = payload.merge_range_tol;
     let seq_len = match seq_db
         .seq_index
         .as_ref()
@@ -131,18 +132,25 @@ async fn query_sdb_with(
         None => 0,
         Some(value) => value.1,
     };
-    let bgn = if padding > payload.bgn {
+    let q_seq_bgn = if padding > payload.bgn {
         0
     } else {
         payload.bgn - padding
     };
-    let end = if payload.end + padding > seq_len as usize {
+    let q_seq_end = if payload.end + padding > seq_len as usize {
         seq_len as usize
     } else {
         payload.end + padding
     };
 
-    let sub_seq = (&agc_db.0).get_sub_seq(sample_name.clone(), ctg_name.clone(), bgn, end);
+    let sub_seq =
+        (&agc_db.0).get_sub_seq(sample_name.clone(), ctg_name.clone(), q_seq_bgn, q_seq_end);
+    println!(
+        "DBG: sub_seq_len {:?} {} {}",
+        sub_seq.len(),
+        q_seq_bgn,
+        q_seq_end
+    );
     let mut matches = query_fragment_to_hps(
         &seq_db,
         sub_seq.clone(),
@@ -153,24 +161,108 @@ async fn query_sdb_with(
         Some(0),
     );
 
-    matches = matches
-        .into_iter()
-        .map(|v| {
-            let hits =
-                v.1.into_iter()
-                    .filter(|h| {
-                        let q_bgn = h.1[0].0 .0;
-                        let q_end = h.1[h.1.len() - 1].0 .1;
-                        //println!("DBG: {} {} {} {}", q_bgn, q_end, padding, padding + (payload.end - payload.bgn) as usize);
-                        (q_bgn as usize) < padding
-                            && q_end as usize > padding + (payload.end - payload.bgn) as usize
-                    })
-                    .collect::<Vec<(f32, Vec<((u32, u32, u8), (u32, u32, u8))>)>>();
-            (v.0, hits)
-        })
-        .collect::<Vec<(u32, Vec<(f32, Vec<((u32, u32, u8), (u32, u32, u8))>)>)>>();
+    let mut sid_target_regions: Vec<_> = matches
+        .iter()
+        .map(|(sid, ms)| {
 
-    let mut sid_ctg_src = matches
+            let mut targegt_regions = ms
+                .iter()
+                .filter(|(_, m)| m.len() >= 4)
+                .map(|(_, m)| {
+                    let mut f_count = 0_u32;
+                    let mut r_count = 0_u32;
+                    let mut rgns: Vec<(u32, u32, u32, u32)> = vec![];
+                    m.iter().for_each(|v| {
+                        if v.0 .2 == v.1 .2 {
+                            f_count += 1;
+                        } else {
+                            r_count += 1;
+                        };
+                        rgns.push((v.1 .0, v.1 .1, v.0 .0, v.0 .1));
+                    });
+                    rgns.sort();
+
+                    let t_bgn = rgns[0].0;
+                    let q_bgn = rgns[0].2;
+                    let t_end = rgns[rgns.len() - 1].1;
+                    let q_end = rgns[rgns.len() - 1].3;
+                    if *sid == 1975 {
+                        println!("DBG0: {} {} {} {} {}", t_bgn, t_end, q_bgn, q_end, rgns.len());
+                    }
+                    if f_count > r_count {
+                        (t_bgn, t_end, q_bgn, q_end, 0_u8, m)
+                    } else {
+                        (t_bgn, t_end, q_bgn, q_end, 1_u8, m)
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            targegt_regions.sort();
+
+            type Matches = Vec<((u32, u32, u8), (u32, u32, u8))>;
+
+            let mut merged_regions: Vec<Vec<(u32, u32, u32, u32, u8, &Matches)>> = vec![];
+
+            if targegt_regions.len() > 0 {
+                println!("DBG: targegt_regions count: {}", targegt_regions.len());
+
+                let fwd_regions = targegt_regions
+                    .iter()
+                    .filter(|&r| r.4 == 0)
+                    .collect::<Vec<_>>();
+                println!("DBG: fwd_regions count: {}:{}", sid, fwd_regions.len());
+                let rev_regions = targegt_regions
+                    .iter()
+                    .filter(|&r| r.4 == 1)
+                    .collect::<Vec<_>>();
+                println!("DBG: rev_regions count: {}:{}", sid, rev_regions.len());
+                fwd_regions.into_iter().for_each(|v| {
+                    if merged_regions.len() == 0 {
+                        merged_regions.push(vec![v.clone()]);
+                        return;
+                    } else {
+                        
+                        let last_idx = merged_regions.len() - 1;
+                        let last_m_rgn = &mut merged_regions[last_idx];
+                        let last_idx = last_m_rgn.len() - 1;
+                        let last_rgn = last_m_rgn[last_idx];
+                        println!("mfDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
+                        if i64::abs((v.0 as i64) - (last_rgn.1 as i64)) < (merge_range_tol as i64) {
+                            last_m_rgn.push(v.clone());
+                        } else {
+                            merged_regions.push(vec![v.clone()]);
+                        }
+                    }
+                });
+                rev_regions.into_iter().for_each(|v| {
+                    if merged_regions.len() == 0 {
+                        merged_regions.push(vec![v.clone()]);
+                        return;
+                    } else {
+                        let last_idx = merged_regions.len() - 1;
+                        let last_m_rgn = &mut merged_regions[last_idx];
+                        let last_idx = last_m_rgn.len() - 1;
+                        let last_rgn = last_m_rgn[last_idx];
+                        println!("mrDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
+                        if i64::abs((v.0 as i64) - (last_rgn.1 as i64)) < (merge_range_tol as i64) {
+                            last_m_rgn.push(v.clone());
+                        } else {
+                            merged_regions.push(vec![v.clone()]);
+                        }
+                    }
+                });
+            }
+            println!(
+                "DBG: merged_regions count: {}:{}",
+                sid,
+                merged_regions.len()
+            );
+            merged_regions.sort();
+            (*sid, merged_regions)
+        })
+        .collect();
+
+    let mut sid_ctg_src = sid_target_regions
         .iter()
         .map(|&(sid, _)| {
             let r = seq_db.seq_info.as_ref().unwrap().get(&sid).unwrap();
@@ -182,34 +274,58 @@ async fn query_sdb_with(
         .collect::<Vec<(u32, String, String)>>();
     sid_ctg_src.sort();
     //println!("{:?}", src_ctg_sid);
-    matches.sort_by_key(|v| v.0);
+    sid_target_regions.sort_by_key(|v| v.0);
 
-    let match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)> = matches
+    let match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)> = sid_target_regions
         .iter()
         .map(|(sid, h)| {
             let summary = h
                 .iter()
                 .map(|m| {
-                    let n_hits = m.1.len();
-                    let q_bgn = m.1[0].0 .0;
-                    let q_end = m.1[n_hits - 1].0 .1;
-                    let t_bgn = m.1[0].1 .0;
-                    let t_end = m.1[n_hits - 1].1 .1;
-                    (q_bgn, q_end, t_bgn, t_end, n_hits)
+                    let n_hits = m.iter().map(|v| v.5.len()).sum();
+                    let t_bgn = m[0].0;
+                    let t_end = m[m.len() - 1].1;
+                    let q_bgn = m[0].2;
+                    let q_end = m[m.len() - 1].3;
+
+                    if *sid == 1975 {
+                        println!(
+                            "DBG: MS: {} {} {} {} {} {} {} {}",
+                            t_end - t_bgn,
+                            t_bgn,
+                            t_end,
+                            q_end as i32 - q_bgn as i32,
+                            q_bgn,
+                            q_end,
+                            padding,
+                            (q_seq_end - q_seq_bgn) - (padding as usize)
+                        )
+                    };
+                    if q_bgn < q_end {
+                        (q_bgn, q_end, t_bgn, t_end, n_hits)
+                    } else {
+                        (q_end, q_bgn, t_end, t_bgn, n_hits)
+                    }
+                })
+                .filter(|v| {
+                    let (q_bgn, q_end) = if (v.0 < v.1) { (v.0, v.1) } else { (v.1, v.0) };
+                    (q_bgn as usize) < (padding as usize)
+                        && (q_end as usize) > (q_seq_end - q_seq_bgn) - (padding as usize)
                 })
                 .collect::<Vec<(u32, u32, u32, u32, usize)>>();
             (*sid, summary)
         })
+        .filter(|v| v.1.len() > 0)
         .collect();
 
-    let seq_list = matches
+    let seq_list = match_summary
         .iter()
         .flat_map(|v| {
             let sid = v.0;
             v.1.iter()
                 .map(|h| {
-                    let mut t_bgn = h.1[0].1 .0;
-                    let mut t_end = h.1[h.1.len() - 1].1 .1;
+                    let mut t_bgn = h.2;
+                    let mut t_end = h.3;
                     if t_bgn > t_end {
                         (t_bgn, t_end) = (t_end, t_bgn);
                     }
@@ -229,14 +345,8 @@ async fn query_sdb_with(
         .collect::<Vec<(String, Vec<u8>)>>();
 
     let mut new_sdb = SeqIndexDB::new();
-    new_sdb.load_from_seq_list(
-        seq_list.clone(),
-        Some(&"Memory".to_string()),
-        56,
-        56,
-        4,
-        28,
-    );
+    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), 56, 56, 4, 28);
+
 
     let (principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);
@@ -269,7 +379,14 @@ async fn query_sdb_with(
                         (bgn, end, bundle_id as u32, direction)
                     })
                     .collect::<Vec<(u32, u32, u32, u8)>>();
-                let ctg_name = new_sdb.seq_info.as_ref().unwrap().get(&sid).unwrap().0.clone();
+                let ctg_name = new_sdb
+                    .seq_info
+                    .as_ref()
+                    .unwrap()
+                    .get(&sid)
+                    .unwrap()
+                    .0
+                    .clone();
                 (ctg_name, summary)
             })
             .collect();
