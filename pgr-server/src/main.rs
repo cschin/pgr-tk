@@ -234,8 +234,8 @@ async fn query_sdb_with(
         Some(&"Memory".to_string()),
         56,
         56,
-        1,
-        26,
+        4,
+        28,
     );
 
     let (principal_bundles, seqid_smps_with_bundle_id_seg_direction) =

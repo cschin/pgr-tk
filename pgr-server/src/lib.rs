@@ -181,7 +181,7 @@ pub mod seq_index_db {
             Vec<(usize, usize, Vec<(u64, u64, u8)>)>,
             Vec<(
                 u32,
-                Vec<((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>)>,
+                SmpsWithBundleLabel,
             )>,
         ) {
             fn get_smps(seq: Vec<u8>, shmmr_spec: &ShmmrSpec) -> Vec<(u64, u64, u32, u32, u8)> {
@@ -350,7 +350,6 @@ pub mod seq_index_db {
         length_cutoff: Option<u32>,
         merge_length: Option<u32>,
     ) -> Vec<SmpsWithBundleLabel> {
-        
         let length_cutoff = if length_cutoff.is_some() {
             length_cutoff.unwrap()
         } else {
@@ -405,7 +404,11 @@ pub mod seq_index_db {
 
             //can unwrap as unmatch segement is filtered out
             let (p_bundle_id, p_direction, _) = partition[partition.len() - 1].1.unwrap();
-            let p_direction = if partition[partition.len() - 1].0 .4 == p_direction { 0_u8 } else { 1_u8 };
+            let p_direction = if partition[partition.len() - 1].0 .4 == p_direction {
+                0_u8
+            } else {
+                1_u8
+            };
 
             let n_bgn = p[0].0 .2;
             let (n_budle_id, n_direction, _) = p[0].1.unwrap();
@@ -422,6 +425,9 @@ pub mod seq_index_db {
                 partition.extend(p.clone());
             };
         });
+        if partition.len() > 0 {
+            partitions.push(partition.clone());
+        }
         partitions
     }
 }
