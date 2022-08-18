@@ -11,6 +11,10 @@ pub mod seq_index_db {
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::{BufRead, BufReader, BufWriter, Stderr, Write};
+    use std::num;
+
+    pub type SmpBundleTuple = ((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>);
+    pub type SmpsWithBundleLabel = Vec<SmpBundleTuple>;
 
     pub struct SeqIndexDB {
         /// Rust internal: store the specification of the shmmr specifcation
@@ -67,7 +71,6 @@ pub mod seq_index_db {
             self.seq_info = Some(seq_info);
             Ok(())
         }
-
 
         pub fn load_from_seq_list(
             &mut self,
@@ -131,11 +134,10 @@ pub mod seq_index_db {
                 })
                 .collect()
         }
-        
+
         pub fn get_seq(&self, sample_name: String, ctg_name: String) -> Vec<u8> {
             if self.agc_db.is_some() {
-                self
-                    .agc_db
+                self.agc_db
                     .as_ref()
                     .unwrap()
                     .0
@@ -170,7 +172,6 @@ pub mod seq_index_db {
                 .map(|p| p.into_iter().map(|v| (v.0, v.1, v.2)).collect())
                 .collect::<Vec<Vec<(u64, u64, u8)>>>()
         }
-
 
         pub fn get_principal_bundle_decomposition(
             &self,
@@ -311,13 +312,10 @@ pub mod seq_index_db {
                             };
                             (*v, seg_match)
                         })
-                        .collect::<Vec<((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>)>>();
+                        .collect::<SmpsWithBundleLabel>();
                     (*sid, smps)
                 })
-                .collect::<Vec<(
-                    u32,
-                    Vec<((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>)>,
-                )>>();
+                .collect::<Vec<(u32, SmpsWithBundleLabel)>>();
 
             (principal_bundles, seqid_smps_with_bundle_id_seg_direction)
         }
@@ -345,5 +343,85 @@ pub mod seq_index_db {
             max_aln_span,
         );
         res
+    }
+
+    pub fn group_smps_by_principle_bundle_id(
+        smps: &SmpsWithBundleLabel,
+        length_cutoff: Option<u32>,
+        merge_length: Option<u32>,
+    ) -> Vec<SmpsWithBundleLabel> {
+        
+        let length_cutoff = if length_cutoff.is_some() {
+            length_cutoff.unwrap()
+        } else {
+            2500
+        };
+        let merge_length = if merge_length.is_some() {
+            merge_length.unwrap()
+        } else {
+            5000
+        };
+
+        let mut pre_bundle_id: Option<usize> = None;
+        let mut pre_direction: Option<u8> = None;
+        let mut all_partitions: Vec<SmpsWithBundleLabel> = vec![];
+        let mut new_partition: Vec<SmpBundleTuple> = vec![];
+
+        smps.iter().for_each(|(smp, bundle_info)| {
+            if let Some(bundle_info) = bundle_info {
+                let direction = if smp.4 == bundle_info.1 { 0_u8 } else { 1_u8 };
+                let bundle_id = bundle_info.0;
+                if pre_bundle_id.is_none() || pre_direction.is_none() {
+                    new_partition.push((*smp, Some(*bundle_info)));
+                    pre_bundle_id = Some(bundle_id);
+                    pre_direction = Some(direction);
+
+                    return;
+                };
+                if pre_bundle_id.unwrap() != bundle_id || pre_direction.unwrap() != direction {
+                    if new_partition[new_partition.len() - 1].0 .3 - new_partition[0].0 .2
+                        > length_cutoff
+                    {
+                        all_partitions.push(new_partition.clone());
+                        new_partition.clear();
+                    } else {
+                        new_partition.clear();
+                    }
+                    pre_bundle_id = Some(bundle_id);
+                    pre_direction = Some(direction);
+                };
+                new_partition.push((*smp, Some(*bundle_info)));
+            }
+        });
+
+        if new_partition[new_partition.len() - 1].0 .3 - new_partition[0].0 .2 > length_cutoff {
+            all_partitions.push(new_partition.clone());
+        }
+
+        let partition = &mut all_partitions[0].clone();
+        let mut partitions: Vec<SmpsWithBundleLabel> = vec![];
+        all_partitions[1..].iter().for_each(|p| {
+            let p_end = partition[partition.len() - 1].0 .3;
+
+            //can unwrap as unmatch segement is filtered out
+            let (p_bundle_id, p_direction, _) = partition[partition.len() - 1].1.unwrap();
+            let p_direction = if partition[partition.len() - 1].0 .4 == p_direction { 0_u8 } else { 1_u8 };
+
+            let n_bgn = p[0].0 .2;
+            let (n_budle_id, n_direction, _) = p[0].1.unwrap();
+            let n_direction = if p[0].0 .4 == n_direction { 0_u8 } else { 1_u8 };
+
+            if p_bundle_id == n_budle_id
+                && p_direction == n_direction
+                && i64::abs(n_bgn as i64 - p_end as i64) < merge_length as i64
+            {
+                partition.extend(p.clone());
+            } else {
+                partitions.push(partition.clone());
+                partition.clear();
+                partition.extend(p.clone());
+            };
+        });
+        partitions
     }
 }

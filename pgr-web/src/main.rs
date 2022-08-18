@@ -7,16 +7,25 @@ use std::collections::HashMap;
 //use pgr_db::aln::{self, HitPair};
 type HitPair = ((u32, u32, u8), (u32, u32, u8)); //(bgn1, end1, orientation1),  (bgn2, end2, orientation2)
 
-#[derive(Deserialize, Serialize)]
-struct Test {
-    number: u32,
-}
+
+type SmpBundleTuple = ((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>);
+type SmpsWithBundleLabel = Vec<SmpBundleTuple>;
 
 #[derive(Deserialize)]
 struct TargetRanges {
     query_src_ctg: (String, String),
     matches: Vec<(u32, Vec<(f32, Vec<HitPair>)>)>,
-    sid_ctg_src: Vec<(u32, String, String)>
+    sid_ctg_src: Vec<(u32, String, String)>,
+    principal_bundle_decomposition: Vec<(u32, Vec<SmpsWithBundleLabel>)>,
+
+}
+
+#[derive(Deserialize)]
+struct TargetRangesSimplified {
+    query_src_ctg: (String, String),
+    match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
+    sid_ctg_src: Vec<(u32, String, String)>,
+    principal_bundle_decomposition: Vec<(String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
 
 #[derive(Serialize)]
@@ -81,17 +90,18 @@ pub fn query_results(cx: Scope) -> Element {
             .send()
             .await
             .unwrap()
-            .json::<TargetRanges>()
+            .json::<TargetRangesSimplified>()
             .await
     });
 
     cx.render( match targets.value() {
         Some(Ok(val)) => {
+
             let sid_to_ctg_src = val.sid_ctg_src.iter().map(|v| {
                 let (sid, ctg_name, src) = v;
                 (*sid, (ctg_name, src))
-             
             }).collect::<HashMap<u32,(&String, &String)>>();
+
             rsx!{
                 br {}
                 br {}
@@ -112,27 +122,22 @@ pub fn query_results(cx: Scope) -> Element {
                         }
                     }
                     tbody {
-                        rsx!(val.matches.iter().map(|v| {
+                        rsx!(val.match_summary.iter().map(|v| {
                             let sid = v.0;
                             let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
                             let style_classes = "p-1 border border-slate-900 text-center";
-                            let hit_summary = v.1.iter().map(move |w| {
-                                let l = w.1.len();
-                                let qbgn = w.1[0].0.0;
-                                let qend = w.1[l-1].0.1;
-                                let tbgn = w.1[0].1.0;
-                                let tend =  w.1[l-1].1.1;
+                            let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits)| {
 
-                                let q_span = format!("{}-{}", qbgn, qend);
-                                let t_span = format!("{}-{}", tbgn, tend);
-                                let q_len = qend - qbgn;
-                                let t_len = if tend > tbgn {tend - tbgn} else { tbgn - tend};
+                                let q_span = format!("{}-{}", q_bgn, q_end);
+                                let t_span = format!("{}-{}", t_bgn, t_end);
+                                let q_len = q_end - q_bgn;
+                                let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
                                 //let t_span: i32 = w.1[l-1].1.1 as i32 - w.1[0].1.0 as i32;
                                 rsx!( tr { class: "border-solid text-center" ,
                                     td { class: "{style_classes}", "{sid}"}  
                                     td { class: "{style_classes}", "{ctg}"} 
                                     td { class: "{style_classes}", "{src}"}
-                                    td { class: "{style_classes}", "{l}"} 
+                                    td { class: "{style_classes}", "{n_hits}"} 
                                     td { class: "{style_classes}", "{q_span}"} 
                                     td { class: "{style_classes}", "{q_len}"} 
                                     td { class: "{style_classes}", "{t_span}"}
@@ -147,6 +152,7 @@ pub fn query_results(cx: Scope) -> Element {
                         
                     }}
                 }
+
 
             }
         },
