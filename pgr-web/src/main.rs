@@ -16,7 +16,7 @@ struct TargetRanges {
     query_src_ctg: (String, String),
     matches: Vec<(u32, Vec<(f32, Vec<HitPair>)>)>,
     sid_ctg_src: Vec<(u32, String, String)>,
-    principal_bundle_decomposition: Vec<(u32, Vec<SmpsWithBundleLabel>)>,
+    principal_bundle_decomposition: Vec<(u32, u32, Vec<SmpsWithBundleLabel>)>,
 
 }
 
@@ -78,7 +78,7 @@ pub fn query_results(cx: Scope) -> Element {
         bgn: 32163513,
         end: 32992088,
         padding: 200000,
-        merge_range_tol: 500000,
+        merge_range_tol: 2000000,
         full_match: true,
     };
 

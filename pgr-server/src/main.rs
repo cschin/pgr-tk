@@ -46,7 +46,7 @@ struct TargetRangesSimplified {
     query_src_ctg: (String, String),
     match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
     sid_ctg_src: Vec<(u32, String, String)>,
-    principal_bundle_decomposition: Vec<(String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
+    principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
 
 #[tokio::main]
@@ -347,8 +347,7 @@ async fn query_sdb_with(
     let mut new_sdb = SeqIndexDB::new();
     new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), 56, 56, 4, 28);
 
-
-    let (principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
+    let (_principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);
 
     let principal_bundle_decomposition = seqid_smps_with_bundle_id_seg_direction
@@ -361,7 +360,7 @@ async fn query_sdb_with(
         })
         .collect::<Vec<(u32, Vec<SmpsWithBundleLabel>)>>();
 
-    let principal_bundle_decomposition: Vec<(String, Vec<(u32, u32, u32, u8)>)> =
+    let mut principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)> =
         principal_bundle_decomposition
             .into_iter()
             .map(|(sid, bundles)| {
@@ -387,14 +386,17 @@ async fn query_sdb_with(
                     .unwrap()
                     .0
                     .clone();
-                (ctg_name, summary)
+                (sid, ctg_name, summary)
             })
             .collect();
 
+    principal_bundle_decomposition.sort();
+    
     Json(TargetRangesSimplified {
         query_src_ctg: (sample_name, ctg_name),
         match_summary,
         sid_ctg_src,
         principal_bundle_decomposition,
     })
+
 }
