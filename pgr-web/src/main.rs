@@ -46,6 +46,20 @@ fn main() {
     dioxus::web::launch(app);
 }
 
+static cmap: [&str;97] = ["#870098","#00aaa5","#3bff00","#ec0000","#00a2c3","#00f400","#ff1500","#0092dd",
+                          "#00dc00","#ff8100","#007ddd","#00c700","#ffb100","#0038dd","#00af00","#fcd200",
+                          "#0000d5","#009a00","#f1e700","#0000b1","#00a55d","#d4f700","#4300a2","#00aa93",
+                          "#a1ff00","#dc0000","#00aaab","#1dff00","#f40000","#009fcb","#00ef00","#ff2d00",
+                          "#008ddd","#00d700","#ff9900","#0078dd","#00c200","#ffb900","#0025dd","#00aa00",
+                          "#f9d700","#0000c9","#009b13","#efed00","#0300aa","#00a773","#ccf900","#63009e",
+                          "#00aa98","#84ff00","#e10000","#00a7b3","#00ff00","#f90000","#009bd7","#00ea00",
+                          "#ff4500","#0088dd","#00d200","#ffa100","#005ddd","#00bc00","#ffc100","#0013dd",
+                          "#00a400","#f7dd00","#0000c1","#009f33","#e8f000","#1800a7","#00aa88","#c4fc00",
+                          "#78009b","#00aaa0","#67ff00","#e60000","#00a4bb","#00fa00","#fe0000","#0098dd",
+                          "#00e200","#ff5d00","#0082dd","#00cc00","#ffa900","#004bdd","#00b400","#ffc900",
+                          "#0000dd","#009f00","#f4e200","#0000b9","#00a248","#dcf400","#2d00a4","#00aa8d",
+                          "#bcff00"];
+
 fn app(cx: Scope) -> Element {
 
     let rgn = use_future(&cx, (), |_| async move {
@@ -200,25 +214,44 @@ pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
                         let mut bgn = bgn;
                         let mut end = end;
                         let mut y = "0";
-                        let mut style = "stroke:rgb(255,0,0);stroke-width:5000";
+                        let line_color = cmap[(bundle_id % 97) as usize];
+                        let line_with = 5000;
+                        let style = format!("stroke:{};stroke-width:{}", line_color, line_with);
+                        
                         if *direction == 1 {
                             (bgn ,end) = (end, bgn);
                             y = "-2400";
-                            style = "stroke:rgb(0,0,255);stroke-width:5000";
                         }
                         let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
-                        let line_id2 = line_id.clone();
+                        let line_class = format!("bdl_{}", bundle_id);
+                        let line_class2 = line_class.clone();
                         rsx! {
                             line {
                                 id: "{line_id}",
+                                class: "{line_class} normal",
                                 onclick: move |evt| {
                                     let window = web_sys::window().expect("global window does not exists");    
 	                                let document = window.document().expect("expecting a document on window");
-                                    let el = document.get_element_by_id(&line_id2).unwrap();
-                                    let style = el.attributes().get_named_item("style").unwrap();
-                                    console::log_1(&line_id2.clone().into());
-                                    console::log_1(&style.value().into());
-                                    style.set_value("stroke:rgb(0,0,255);stroke-width:15000");
+                                    let line_elements = document.get_elements_by_class_name(&line_class2);
+                                    console::log_1(&line_class2.clone().into());
+                                    (0..line_elements.length()).into_iter().for_each(|idx| {
+                                        let el = line_elements.item(idx).unwrap(); 
+                                        let classes = el.class_list();
+                                        let mut line_with = line_with; 
+                                        if classes.contains(&"normal") {
+                                            line_with *= 2; 
+                                            classes.remove_1(&"normal");
+                                            classes.add_1(&"highlited");
+                                        } else {
+                                            classes.add_1(&"normal");
+                                            classes.remove_1(&"highlited");
+                                        };
+
+                                        let style = el.attributes().get_named_item("style").unwrap();
+                                        console::log_1(&style.value().into());
+                                        let style_str = format!("stroke:{};stroke-width:{}", line_color, line_with);
+                                        style.set_value(&style_str[..]);
+                                    });
                                 },
                                 x1: "{bgn}",
                                 y1: "{y}",
