@@ -4,12 +4,15 @@ use dioxus::prelude::*;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use web_sys::console;
+use web_sys::Document;
 //use pgr_db::aln::{self, HitPair};
 type HitPair = ((u32, u32, u8), (u32, u32, u8)); //(bgn1, end1, orientation1),  (bgn2, end2, orientation2)
 
 
 type SmpBundleTuple = ((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>);
 type SmpsWithBundleLabel = Vec<SmpBundleTuple>;
+
 
 #[derive(Deserialize)]
 struct TargetRanges {
@@ -25,7 +28,7 @@ struct TargetRangesSimplified {
     query_src_ctg: (String, String),
     match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
     sid_ctg_src: Vec<(u32, String, String)>,
-    principal_bundle_decomposition: Vec<(String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
+    principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
 
 #[derive(Serialize)]
@@ -155,7 +158,7 @@ pub fn query_results(cx: Scope) -> Element {
                     rsx!( 
                         br {} 
                         br {}   
-                        val.principal_bundle_decomposition.iter().flat_map(|(ctg_name, r)| {track(cx, r.clone())}
+                        val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {track(cx, (*sid, r.clone()))}
                     )) 
                 }
             }
@@ -165,7 +168,8 @@ pub fn query_results(cx: Scope) -> Element {
     })
 }
 
-pub fn track(cx: Scope, range:  Vec<(u32, u32, u32, u8)> ) -> Element {
+pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
+    console::log_1(&"Rendering the track".into());
     cx.render(
         rsx! {
             div { 
@@ -190,18 +194,32 @@ pub fn track(cx: Scope, range:  Vec<(u32, u32, u32, u8)> ) -> Element {
                             }
                         }
                     } 
-                    range.iter().map(|(bgn, end, bundle_id, direction)| {
+                    
+                    range.1.iter().map(|(bgn, end, bundle_id, direction)| {
+                        let sid = range.0;
                         let mut bgn = bgn;
                         let mut end = end;
                         let mut y = "0";
-                        let mut style = "stroke:rgb(255,0,0);stroke-width:2400";
+                        let mut style = "stroke:rgb(255,0,0);stroke-width:5000";
                         if *direction == 1 {
                             (bgn ,end) = (end, bgn);
                             y = "-2400";
-                            style = "stroke:rgb(0,0,255);stroke-width:2400";
+                            style = "stroke:rgb(0,0,255);stroke-width:5000";
                         }
+                        let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
+                        let line_id2 = line_id.clone();
                         rsx! {
                             line {
+                                id: "{line_id}",
+                                onclick: move |evt| {
+                                    let window = web_sys::window().expect("global window does not exists");    
+	                                let document = window.document().expect("expecting a document on window");
+                                    let el = document.get_element_by_id(&line_id2).unwrap();
+                                    let style = el.attributes().get_named_item("style").unwrap();
+                                    console::log_1(&line_id2.clone().into());
+                                    console::log_1(&style.value().into());
+                                    style.set_value("stroke:rgb(0,0,255);stroke-width:15000");
+                                },
                                 x1: "{bgn}",
                                 y1: "{y}",
                                 x2: "{end}",

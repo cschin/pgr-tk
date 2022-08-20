@@ -8,12 +8,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use pgr_db::aln::{self, HitPair};
+use pgr_db::{aln::{self, HitPair}, fasta_io::reverse_complement};
 use pgr_server::seq_index_db::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::{collections::HashMap, net::SocketAddr};
+use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
@@ -326,18 +326,23 @@ async fn query_sdb_with(
                 .map(|h| {
                     let mut t_bgn = h.2;
                     let mut t_end = h.3;
+                    let mut reversed = false;
                     if t_bgn > t_end {
                         (t_bgn, t_end) = (t_end, t_bgn);
+                        reversed = true;
                     }
                     let (ctg_name, sample_name, _) =
                         seq_db.seq_info.as_ref().unwrap().get(&sid).unwrap();
                     let sample_name = sample_name.as_ref().unwrap();
-                    let seq = (&agc_db.0).get_sub_seq(
+                    let mut seq = (&agc_db.0).get_sub_seq(
                         sample_name.clone(),
                         ctg_name.clone(),
                         t_bgn as usize,
                         t_end as usize,
                     );
+                    if reversed {
+                        seq = reverse_complement(&seq);
+                    }
                     (format!("{}_{}_{}", ctg_name, t_bgn, t_end), seq)
                 })
                 .collect::<Vec<(String, Vec<u8>)>>()
