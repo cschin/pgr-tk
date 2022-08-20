@@ -31,7 +31,7 @@ struct TargetRangesSimplified {
     principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SequenceQuerySpec {
     source: String,
     ctg: String,
@@ -98,7 +98,7 @@ pub fn query_results(cx: Scope) -> Element {
         merge_range_tol: 2000000,
         full_match: true,
     };
-
+    let query2 = query.clone();
     let targets = use_future(&cx, (), |_| async move {
         let client = reqwest::Client::new();
         client
@@ -118,12 +118,18 @@ pub fn query_results(cx: Scope) -> Element {
                 let (sid, ctg_name, src) = v;
                 (*sid, (ctg_name, src))
             }).collect::<HashMap<u32,(&String, &String)>>();
-
+            let ctg = query2.ctg;            
+            let bgn = query2.bgn;            
+            let end = query2.end;            
             rsx!{
+                div { class: "p-8 content-center",
+                    br {}
+                    h2 {"Query: {ctg}:{bgn}-{end}"}
+                }
+
                 div { class: "content-center",
                     br {}
-                    br {}
-                    div {class: "p-8 content-center",
+                    div {class: "px-8 content-center",
                         table { class: "p-8 table-auto border-collapse border-spacing-4 border border-solid",
                             thead {
                                 tr{
@@ -135,7 +141,6 @@ pub fn query_results(cx: Scope) -> Element {
                                     th {class: "p-1", "query len"}
                                     th {class: "p-1", "target span"}
                                     th {class: "p-1", "target len"}
-                                    th {class: "p-1", "ADD"}
                                 
                                 }
                             }
@@ -160,7 +165,6 @@ pub fn query_results(cx: Scope) -> Element {
                                             td { class: "{style_classes}", "{q_len}"} 
                                             td { class: "{style_classes}", "{t_span}"}
                                             td { class: "{style_classes}", "{t_len}"}
-                                            td { class: "{style_classes}", button { class: "border border-slate-900", "ADD"}}
                                             } )
                                     });
                                         
@@ -170,13 +174,16 @@ pub fn query_results(cx: Scope) -> Element {
                         }
                     }
                     rsx!( 
-                        br {} 
-                        br {}   
-                        val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {track(cx, (*sid, r.clone()))}
-                    )) 
+                            br {} 
+                            br {} 
+                            div {
+                                class: "px-12 content-center",
+                                val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {track(cx, (*sid, r.clone()))})
+                            }
+                        ) 
+                    }
                 }
-            }
-        },
+            },
         Some(Err(err)) => rsx!( "Err" ),
         None => rsx!("loading")
     })
@@ -191,12 +198,12 @@ pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
                 svg {
                     width: "1250",
                     height: "25",
-                    view_box: "-10000 -20 1750000 40",
+                    view_box: "-50000 -20 1750000 40",
                     defs {
                         marker {
                             id: "arrow",
-                            markerWidth: "10",
-                            markerHeight: "10",
+                            markerWidth: "5",
+                            markerHeight: "5",
                             refX: "0",
                             refY: "3",
                             orient: "auto",
@@ -215,7 +222,7 @@ pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
                         let mut end = end;
                         let mut y = "0";
                         let line_color = cmap[(bundle_id % 97) as usize];
-                        let line_with = 5000;
+                        let line_with = 7500;
                         let style = format!("stroke:{};stroke-width:{}", line_color, line_with);
                         
                         if *direction == 1 {
@@ -239,7 +246,7 @@ pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
                                         let classes = el.class_list();
                                         let mut line_with = line_with; 
                                         if classes.contains(&"normal") {
-                                            line_with *= 2; 
+                                            line_with *= 3; 
                                             classes.remove_1(&"normal");
                                             classes.add_1(&"highlited");
                                         } else {

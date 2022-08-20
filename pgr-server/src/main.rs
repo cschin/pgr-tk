@@ -62,6 +62,7 @@ async fn main() {
     let mut seq_db = SeqIndexDB::new();
     let _ = seq_db.load_from_agc_index(
         "/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-small_panel".to_string(),
+        //"/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-v0".to_string(),
     );
     let seq_db = Arc::new(seq_db);
     // build our application with a route
