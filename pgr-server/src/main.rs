@@ -363,7 +363,7 @@ async fn query_sdb_with(
         .collect::<Vec<(String, Vec<u8>)>>();
 
     let mut new_sdb = SeqIndexDB::new();
-    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), 56, 56, 4, 28);
+    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), 128, 56, 8, 28);
 
     let (_principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);

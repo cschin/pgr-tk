@@ -92,14 +92,18 @@ fn app(cx: Scope) -> Element {
 pub fn query_results(cx: Scope) -> Element {
     let query = SequenceQuerySpec {
         source: "hg38_tagged.fa".to_string(),
-        ctg: "chr6_hg38".to_string(),
-        bgn: 32163513,
-        end: 32992088,
-        padding: 200000,
-        //ctg: "chrY_hg38".to_string(),
-        //bgn: 23129355,
-        //end: 24907040,
-        //padding: 1500000,
+        //ctg: "chr6_hg38".to_string(),
+        //bgn: 32163513,
+        //end: 32992088,
+        //padding: 200000,
+        ctg: "chrY_hg38".to_string(),
+        bgn: 23129355,
+        end: 24907040,
+        padding: 1500000,
+        //ctg: "chr10_hg38".to_string(),
+        //bgn: 46292100,
+        //end: 48018931,
+        //padding: 1000000,
         merge_range_tol: 2000000,
         full_match: true,
     };
@@ -126,38 +130,41 @@ pub fn query_results(cx: Scope) -> Element {
             let ctg = query2.ctg;            
             let bgn = query2.bgn;            
             let end = query2.end;            
+            let mut track_size = (query2.end - query2.bgn + 2 * query2.padding);  
+            track_size = track_size + (track_size >> 1);
             rsx!{
                 div { class: "grid p-8  grid-cols-1 justify-center space-y-4",
                     h2 {"Query: {ctg}:{bgn}-{end}"}
                     div { class: "overflow-x-auto sm:-mx-6 lg:-mx-8",
                         p {class: "px-8 py-2", "Query results"}
-                        div {class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[250px]",
-                            table { class: "p-8 table-auto border-collapse border-spacing-4 border border-solid",
+                        div {class: "flex flex-col max-h-[250px]",
+                        div {class: "flex-grow overflow-auto",
+                            table { class: "relative w-full",
                                 thead {
                                     tr{
-                                        th {class: "p-1", "sid"} 
-                                        th {class: "p-1", "contig"}
-                                        th {class: "p-1", "source"}
-                                        th {class: "p-1", "hit count"}
-                                        th {class: "p-1", "query span"}
-                                        th {class: "p-1", "query len"}
-                                        th {class: "p-1", "target span"}
-                                        th {class: "p-1", "target len"}
-                                    
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "sid"} 
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "contig"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "source"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "hit count"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query span"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query len"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target span"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target len"}
                                     }
                                 }
                                 tbody {
+                                    class: "divide-y",
                                     rsx!(val.match_summary.iter().map(|v| {
                                         let sid = v.0;
                                         let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
-                                        let style_classes = "p-1 border border-slate-900 text-center";
+                                        let style_classes = "px-1 py-2 text-center";
                                         let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits, reversed)| {
 
                                             let q_span = format!("{}-{}", q_bgn, q_end);
                                             let t_span = format!("{}-{}", t_bgn, t_end);
                                             let q_len = if q_end > q_bgn { q_end - q_bgn } else { q_bgn - q_end };
                                             let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
-                                            rsx!( tr { class: "border-solid text-center" ,
+                                            rsx!( tr {
                                                 td { class: "{style_classes}", "{sid}"}  
                                                 td { class: "{style_classes}", "{ctg}"} 
                                                 td { class: "{style_classes}", "{src}"}
@@ -174,13 +181,14 @@ pub fn query_results(cx: Scope) -> Element {
                                 }
                             }
                         }
+                        }
                         rsx!( 
                             hr {class: "my-2 h-px bg-gray-700 border-0 dark:bg-gray-700"}
                             p {class: "px-8 py-2", "Principal Bundle Decomposition"}
                                 div {
                                     class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[550px]",
                                     val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {
-                                        track(cx, ctg_name.clone(), (*sid, r.clone()))
+                                        track(cx, ctg_name.clone(), track_size, (*sid, r.clone()))
                                     })
                                 }
                            ) 
@@ -193,8 +201,9 @@ pub fn query_results(cx: Scope) -> Element {
     })
 }
 
-pub fn track(cx: Scope, ctg_name: String, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
+pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
     console::log_1(&"Rendering the track".into());
+    let left_padding = track_size >> 4;
     cx.render(
         rsx! {
             div { 
@@ -203,7 +212,7 @@ pub fn track(cx: Scope, ctg_name: String, range:  (u32, Vec<(u32, u32, u32, u8)>
                 svg {
                     width: "1250",
                     height: "50",
-                    view_box: "-50000 -80 2150000 120",
+                    view_box: "-{left_padding} -80 {track_size} 120",
                     preserveAspectRatio: "none",
                     
                     range.1.iter().map(|(bgn, end, bundle_id, direction)| {
