@@ -8,12 +8,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use pgr_db::{aln::{self, HitPair}, fasta_io::reverse_complement};
+use pgr_db::{
+    aln::{self, HitPair},
+    fasta_io::reverse_complement,
+};
 use pgr_server::seq_index_db::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::cors::Any;
 use tower_http::cors::CorsLayer;
@@ -44,7 +47,7 @@ struct TargetRanges {
 #[derive(Serialize)]
 struct TargetRangesSimplified {
     query_src_ctg: (String, String),
-    match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
+    match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize, bool)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
     sid_ctg_src: Vec<(u32, String, String)>,
     principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
@@ -61,8 +64,8 @@ async fn main() {
 
     let mut seq_db = SeqIndexDB::new();
     let _ = seq_db.load_from_agc_index(
-        "/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-small_panel".to_string(),
-        //"/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-v0".to_string(),
+        //"/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-small_panel".to_string(),
+        "/wd/pgr-tk-demo-data/data/pgr-tk-HGRP-y1-evaluation-set-v0".to_string(),
     );
     let seq_db = Arc::new(seq_db);
     // build our application with a route
@@ -133,6 +136,8 @@ async fn query_sdb_with(
         None => 0,
         Some(value) => value.1,
     };
+
+    let q_seq_len = payload.end - payload.bgn;
     let q_seq_bgn = if padding > payload.bgn {
         0
     } else {
@@ -146,13 +151,17 @@ async fn query_sdb_with(
 
     let sub_seq =
         (&agc_db.0).get_sub_seq(sample_name.clone(), ctg_name.clone(), q_seq_bgn, q_seq_end);
+
+    /*
     println!(
         "DBG: sub_seq_len {:?} {} {}",
         sub_seq.len(),
         q_seq_bgn,
         q_seq_end
     );
-    let mut matches = query_fragment_to_hps(
+     */
+
+    let matches = query_fragment_to_hps(
         &seq_db,
         sub_seq.clone(),
         0.25,
@@ -165,7 +174,6 @@ async fn query_sdb_with(
     let mut sid_target_regions: Vec<_> = matches
         .iter()
         .map(|(sid, ms)| {
-
             let mut targegt_regions = ms
                 .iter()
                 .filter(|(_, m)| m.len() >= 4)
@@ -187,9 +195,7 @@ async fn query_sdb_with(
                     let q_bgn = rgns[0].2;
                     let t_end = rgns[rgns.len() - 1].1;
                     let q_end = rgns[rgns.len() - 1].3;
-                    if *sid == 1975 {
-                        println!("DBG0: {} {} {} {} {}", t_bgn, t_end, q_bgn, q_end, rgns.len());
-                    }
+
                     if f_count > r_count {
                         (t_bgn, t_end, q_bgn, q_end, 0_u8, m)
                     } else {
@@ -205,29 +211,28 @@ async fn query_sdb_with(
             let mut merged_regions: Vec<Vec<(u32, u32, u32, u32, u8, &Matches)>> = vec![];
 
             if targegt_regions.len() > 0 {
-                println!("DBG: targegt_regions count: {}", targegt_regions.len());
+                //println!("DBG: targegt_regions count: {}", targegt_regions.len());
 
                 let fwd_regions = targegt_regions
                     .iter()
                     .filter(|&r| r.4 == 0)
                     .collect::<Vec<_>>();
-                println!("DBG: fwd_regions count: {}:{}", sid, fwd_regions.len());
+                //println!("DBG: fwd_regions count: {}:{}", sid, fwd_regions.len());
                 let rev_regions = targegt_regions
                     .iter()
                     .filter(|&r| r.4 == 1)
                     .collect::<Vec<_>>();
-                println!("DBG: rev_regions count: {}:{}", sid, rev_regions.len());
+                //println!("DBG: rev_regions count: {}:{}", sid, rev_regions.len());
                 fwd_regions.into_iter().for_each(|v| {
                     if merged_regions.len() == 0 {
                         merged_regions.push(vec![v.clone()]);
                         return;
                     } else {
-                        
                         let last_idx = merged_regions.len() - 1;
                         let last_m_rgn = &mut merged_regions[last_idx];
                         let last_idx = last_m_rgn.len() - 1;
                         let last_rgn = last_m_rgn[last_idx];
-                        println!("mfDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
+                        //println!("mfDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
                         if i64::abs((v.0 as i64) - (last_rgn.1 as i64)) < (merge_range_tol as i64) {
                             last_m_rgn.push(v.clone());
                         } else {
@@ -244,7 +249,7 @@ async fn query_sdb_with(
                         let last_m_rgn = &mut merged_regions[last_idx];
                         let last_idx = last_m_rgn.len() - 1;
                         let last_rgn = last_m_rgn[last_idx];
-                        println!("mrDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
+                        //println!("mrDBG {} {} : {} {}", last_rgn.0, last_rgn.1, v.0, v.1);
                         if i64::abs((v.0 as i64) - (last_rgn.1 as i64)) < (merge_range_tol as i64) {
                             last_m_rgn.push(v.clone());
                         } else {
@@ -253,11 +258,13 @@ async fn query_sdb_with(
                     }
                 });
             }
+            /*
             println!(
                 "DBG: merged_regions count: {}:{}",
                 sid,
                 merged_regions.len()
             );
+            */
             merged_regions.sort();
             (*sid, merged_regions)
         })
@@ -274,46 +281,39 @@ async fn query_sdb_with(
         })
         .collect::<Vec<(u32, String, String)>>();
     sid_ctg_src.sort();
-    //println!("{:?}", src_ctg_sid);
     sid_target_regions.sort_by_key(|v| v.0);
 
-    let match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)> = sid_target_regions
+    let match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize, bool)>)> = sid_target_regions
         .iter()
         .map(|(sid, h)| {
             let summary = h
                 .iter()
                 .map(|m| {
                     let n_hits = m.iter().map(|v| v.5.len()).sum();
-                    let t_bgn = m[0].0;
-                    let t_end = m[m.len() - 1].1;
-                    let q_bgn = m[0].2;
-                    let q_end = m[m.len() - 1].3;
 
-                    if *sid == 1975 {
-                        println!(
-                            "DBG: MS: {} {} {} {} {} {} {} {}",
-                            t_end - t_bgn,
-                            t_bgn,
-                            t_end,
-                            q_end as i32 - q_bgn as i32,
-                            q_bgn,
-                            q_end,
-                            padding,
-                            (q_seq_end - q_seq_bgn) - (padding as usize)
-                        )
-                    };
-                    if q_bgn < q_end {
-                        (q_bgn, q_end, t_bgn, t_end, n_hits)
+                    let mut q_list = m.iter().map(|v| (v.2, v.3)).collect::<Vec<(u32, u32)>>();
+                    q_list.sort();
+
+                    let t_min_bgn = m[0].0;
+                    let t_max_end = m[m.len() - 1].1;
+                    let reversed = if m[0].2 > m[m.len() - 1].3 {
+                        true
                     } else {
-                        (q_end, q_bgn, t_end, t_bgn, n_hits)
-                    }
+                        false
+                    };
+                    let q_min_bgn = q_list[0].0;
+                    let q_max_end = q_list[q_list.len() - 1].1;
+
+                    (q_min_bgn, q_max_end, t_min_bgn, t_max_end, n_hits, reversed)
                 })
                 .filter(|v| {
                     let (q_bgn, q_end) = if (v.0 < v.1) { (v.0, v.1) } else { (v.1, v.0) };
-                    (q_bgn as usize) < (padding as usize)
-                        && (q_end as usize) > (q_seq_end - q_seq_bgn) - (padding as usize)
+                    (q_bgn as usize) <= (padding as usize)
+                        && (q_end as usize) >= q_seq_len + (padding as usize)
+                        && ((v.3 - v.2) as f32) > ((q_seq_len + 2 * padding) as f32) * 0.5
                 })
-                .collect::<Vec<(u32, u32, u32, u32, usize)>>();
+                .collect::<Vec<(u32, u32, u32, u32, usize, bool)>>();
+
             (*sid, summary)
         })
         .filter(|v| v.1.len() > 0)
@@ -323,18 +323,22 @@ async fn query_sdb_with(
         .iter()
         .flat_map(|v| {
             let sid = v.0;
+            //let (ctg_name, sample_name, _) = seq_db.seq_info.as_ref().unwrap().get(&sid).unwrap();
+            //let sample_name = sample_name.as_ref().unwrap();
+            // println!("DBG0: {}", ctg_name);
             v.1.iter()
                 .map(|h| {
-                    let mut t_bgn = h.2;
-                    let mut t_end = h.3;
-                    let mut reversed = false;
-                    if t_bgn > t_end {
-                        (t_bgn, t_end) = (t_end, t_bgn);
-                        reversed = true;
-                    }
+                    let t_bgn = h.2;
+                    let t_end = h.3;
+                    let reversed = h.5;
+                    //if t_bgn > t_end {
+                    //    (t_bgn, t_end) = (t_end, t_bgn);
+                    //    reversed = true;
+                    //}
                     let (ctg_name, sample_name, _) =
                         seq_db.seq_info.as_ref().unwrap().get(&sid).unwrap();
                     let sample_name = sample_name.as_ref().unwrap();
+                    //println!("DBG: {}", ctg_name);
                     let mut seq = (&agc_db.0).get_sub_seq(
                         sample_name.clone(),
                         ctg_name.clone(),
@@ -397,12 +401,11 @@ async fn query_sdb_with(
             .collect();
 
     principal_bundle_decomposition.sort();
-    
+
     Json(TargetRangesSimplified {
         query_src_ctg: (sample_name, ctg_name),
         match_summary,
         sid_ctg_src,
         principal_bundle_decomposition,
     })
-
 }

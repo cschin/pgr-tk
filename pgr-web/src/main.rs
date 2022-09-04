@@ -26,7 +26,7 @@ struct TargetRanges {
 #[derive(Deserialize)]
 struct TargetRangesSimplified {
     query_src_ctg: (String, String),
-    match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
+    match_summary: Vec<(u32, Vec<(u32, u32, u32, u32, usize, bool)>)>, // (q_bgn, q_end, t_bgn, t_end, num_hits)
     sid_ctg_src: Vec<(u32, String, String)>,
     principal_bundle_decomposition: Vec<(u32, String, Vec<(u32, u32, u32, u8)>)>, //bgn, end, bundle_id, bundle_direction
 }
@@ -61,7 +61,8 @@ static cmap: [&str;97] = ["#870098","#00aaa5","#3bff00","#ec0000","#00a2c3","#00
                           "#bcff00"];
 
 fn app(cx: Scope) -> Element {
-
+    query_results(cx)
+    /*
     let rgn = use_future(&cx, (), |_| async move {
         let client = reqwest::Client::new();
         client
@@ -72,7 +73,7 @@ fn app(cx: Scope) -> Element {
             .text()
             .await
     });
-
+    
     cx.render( match  rgn.value() {
         Some(Ok(val)) =>  rsx!( 
             div { link { href:"https://fonts.googleapis.com/icon?family=Material+Icons", rel:"stylesheet", }
@@ -83,18 +84,22 @@ fn app(cx: Scope) -> Element {
         None => rsx!("loading!"),
 
     } )
+    */
+
 
 }
 
 pub fn query_results(cx: Scope) -> Element {
     let query = SequenceQuerySpec {
-        source: "hg38_tagged".to_string(),
-        ctg: "chr6_hg38".to_string(),
-        //bgn: 160952514,
-        //end: 161087407,
-        bgn: 32163513,
-        end: 32992088,
-        padding: 200000,
+        source: "hg38_tagged.fa".to_string(),
+        //ctg: "chr6_hg38".to_string(),
+        //bgn: 32163513,
+        //end: 32992088,
+        //padding: 200000,
+        ctg: "chrY_hg38".to_string(),
+        bgn: 23129355,
+        end: 24907040,
+        padding: 1500000,
         merge_range_tol: 2000000,
         full_match: true,
     };
@@ -122,65 +127,65 @@ pub fn query_results(cx: Scope) -> Element {
             let bgn = query2.bgn;            
             let end = query2.end;            
             rsx!{
-                div { class: "p-8 content-center",
-                    br {}
+                div { class: "grid p-8  grid-cols-1 justify-center space-y-4",
                     h2 {"Query: {ctg}:{bgn}-{end}"}
-                }
+                    div { class: "overflow-x-auto sm:-mx-6 lg:-mx-8",
+                        p {class: "px-8 py-2", "Query results"}
+                        div {class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[250px]",
+                            table { class: "p-8 table-auto border-collapse border-spacing-4 border border-solid",
+                                thead {
+                                    tr{
+                                        th {class: "p-1", "sid"} 
+                                        th {class: "p-1", "contig"}
+                                        th {class: "p-1", "source"}
+                                        th {class: "p-1", "hit count"}
+                                        th {class: "p-1", "query span"}
+                                        th {class: "p-1", "query len"}
+                                        th {class: "p-1", "target span"}
+                                        th {class: "p-1", "target len"}
+                                    
+                                    }
+                                }
+                                tbody {
+                                    rsx!(val.match_summary.iter().map(|v| {
+                                        let sid = v.0;
+                                        let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
+                                        let style_classes = "p-1 border border-slate-900 text-center";
+                                        let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits, reversed)| {
 
-                div { class: "content-center",
-                    br {}
-                    div {class: "px-8 content-center",
-                        table { class: "p-8 table-auto border-collapse border-spacing-4 border border-solid",
-                            thead {
-                                tr{
-                                    th {class: "p-1", "sid"} 
-                                    th {class: "p-1", "contig"}
-                                    th {class: "p-1", "source"}
-                                    th {class: "p-1", "hit count"}
-                                    th {class: "p-1", "query span"}
-                                    th {class: "p-1", "query len"}
-                                    th {class: "p-1", "target span"}
-                                    th {class: "p-1", "target len"}
-                                
+                                            let q_span = format!("{}-{}", q_bgn, q_end);
+                                            let t_span = format!("{}-{}", t_bgn, t_end);
+                                            let q_len = q_end - q_bgn;
+                                            let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
+                                            //let t_span: i32 = w.1[l-1].1.1 as i32 - w.1[0].1.0 as i32;
+                                            rsx!( tr { class: "border-solid text-center" ,
+                                                td { class: "{style_classes}", "{sid}"}  
+                                                td { class: "{style_classes}", "{ctg}"} 
+                                                td { class: "{style_classes}", "{src}"}
+                                                td { class: "{style_classes}", "{n_hits}"} 
+                                                td { class: "{style_classes}", "{q_span}"} 
+                                                td { class: "{style_classes}", "{q_len}"} 
+                                                td { class: "{style_classes}", "{t_span}"}
+                                                td { class: "{style_classes}", "{t_len}"}
+                                                } )
+                                        });
+                                            
+                                    rsx!( hit_summary)
+                                    }))
                                 }
                             }
-                            tbody {
-                                rsx!(val.match_summary.iter().map(|v| {
-                                    let sid = v.0;
-                                    let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
-                                    let style_classes = "p-1 border border-slate-900 text-center";
-                                    let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits)| {
-
-                                        let q_span = format!("{}-{}", q_bgn, q_end);
-                                        let t_span = format!("{}-{}", t_bgn, t_end);
-                                        let q_len = q_end - q_bgn;
-                                        let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
-                                        //let t_span: i32 = w.1[l-1].1.1 as i32 - w.1[0].1.0 as i32;
-                                        rsx!( tr { class: "border-solid text-center" ,
-                                            td { class: "{style_classes}", "{sid}"}  
-                                            td { class: "{style_classes}", "{ctg}"} 
-                                            td { class: "{style_classes}", "{src}"}
-                                            td { class: "{style_classes}", "{n_hits}"} 
-                                            td { class: "{style_classes}", "{q_span}"} 
-                                            td { class: "{style_classes}", "{q_len}"} 
-                                            td { class: "{style_classes}", "{t_span}"}
-                                            td { class: "{style_classes}", "{t_len}"}
-                                            } )
-                                    });
-                                        
-                                rsx!( hit_summary)
-                                }))
-                            }
                         }
-                    }
-                    rsx!( 
-                            br {} 
-                            br {} 
-                            div {
-                                class: "px-12 content-center",
-                                val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {track(cx, (*sid, r.clone()))})
-                            }
-                        ) 
+                        rsx!( 
+                            hr {class: "my-2 h-px bg-gray-700 border-0 dark:bg-gray-700"}
+                            p {class: "px-8 py-2", "Principal Bundle Decomposition"}
+                                div {
+                                    class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[550px]",
+                                    val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {
+                                        track(cx, ctg_name.clone(), (*sid, r.clone()))
+                                    })
+                                }
+                           ) 
+                        }
                     }
                 }
             },
@@ -189,54 +194,45 @@ pub fn query_results(cx: Scope) -> Element {
     })
 }
 
-pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
+pub fn track(cx: Scope, ctg_name: String, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
     console::log_1(&"Rendering the track".into());
     cx.render(
         rsx! {
             div { 
                 class: "p-1",
+                p { "{ctg_name}"}
                 svg {
                     width: "1250",
-                    height: "25",
-                    view_box: "-50000 -20 1750000 40",
-                    defs {
-                        marker {
-                            id: "arrow",
-                            markerWidth: "5",
-                            markerHeight: "5",
-                            refX: "0",
-                            refY: "3",
-                            orient: "auto",
-                            markerUnits: "strokWidth",
-                            view_box: "0 0 20 20",
-                            path {
-                                d: "M0,0 L0,6 L4,3 z",
-                                fill: "#888"
-                            }
-                        }
-                    } 
+                    height: "50",
+                    view_box: "-50000 -80 5250000 120",
+                    preserveAspectRatio: "none",
                     
                     range.1.iter().map(|(bgn, end, bundle_id, direction)| {
                         let sid = range.0;
                         let mut bgn = bgn;
                         let mut end = end;
-                        let mut y = "0";
-                        let line_color = cmap[(bundle_id % 97) as usize];
-                        let line_with = 7500;
-                        let style = format!("stroke:{};stroke-width:{}", line_color, line_with);
-                        
                         if *direction == 1 {
-                            (bgn ,end) = (end, bgn);
-                            y = "-2400";
+                            (bgn, end) = (end, bgn);
                         }
+
+                        let bundle_color = cmap[(bundle_id % 97) as usize];
+                        let arror_end = *end as f32;
+                        let end = *end as f32 - (*end as f32 - *bgn as f32) * 0.20;
+
                         let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
                         let line_class = format!("bdl_{}", bundle_id);
                         let line_class2 = line_class.clone();
+                        let path_str;
+                        if *direction == 1 {
+                            path_str = format!("M {bgn} -32 L {bgn} -16 L {end} -16 L {end} -12 L {arror_end} -24 L {end} -36 L {end} -32 Z");         
+                        } else {
+                            path_str = format!("M {bgn} -8 L {bgn} 8 L {end} 8 L {end} 12 L {arror_end} 0 L {end} -12 L {end} -8 Z");  
+                        }
                         rsx! {
-                            line {
+                            g {
                                 id: "{line_id}",
                                 class: "{line_class} normal",
-                                onclick: move |evt| {
+                                onclick: move |_evt| {
                                     let window = web_sys::window().expect("global window does not exists");    
 	                                let document = window.document().expect("expecting a document on window");
                                     let line_elements = document.get_elements_by_class_name(&line_class2);
@@ -244,28 +240,31 @@ pub fn track(cx: Scope, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
                                     (0..line_elements.length()).into_iter().for_each(|idx| {
                                         let el = line_elements.item(idx).unwrap(); 
                                         let classes = el.class_list();
-                                        let mut line_with = line_with; 
+                                        let transform_str;
                                         if classes.contains(&"normal") {
-                                            line_with *= 3; 
-                                            classes.remove_1(&"normal");
-                                            classes.add_1(&"highlited");
+                                            let _ = classes.remove_1(&"normal");
+                                            let _ = classes.add_1(&"highlited");
+                                            transform_str = format!("scale(1,2)");
                                         } else {
-                                            classes.add_1(&"normal");
-                                            classes.remove_1(&"highlited");
+                                            let _ = classes.add_1(&"normal");
+                                            let _ = classes.remove_1(&"highlited");
+                                            transform_str = format!("scale(1,1)");
                                         };
 
-                                        let style = el.attributes().get_named_item("style").unwrap();
-                                        console::log_1(&style.value().into());
-                                        let style_str = format!("stroke:{};stroke-width:{}", line_color, line_with);
-                                        style.set_value(&style_str[..]);
+                                        let stroke = el.attributes().get_named_item("transform").unwrap();
+                                        console::log_1(&stroke.value().into());
+                                        stroke.set_value(&transform_str[..]);
                                     });
                                 },
-                                x1: "{bgn}",
-                                y1: "{y}",
-                                x2: "{end}",
-                                y2: "{y}", 
-                                style: "{style}",
-                                marker_end: "url(#arrow)"
+                                transform: "scale(1,1)",
+                          
+                                path {
+                                    d: "{path_str}", 
+                                    fill: "{bundle_color}",
+                                    //stroke: "black",
+                                    //stroke_width: "2",
+                                    fill_opacity: "0.8",
+                                }
                             }
                         }
                     })
