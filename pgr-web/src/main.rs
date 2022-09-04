@@ -92,14 +92,14 @@ fn app(cx: Scope) -> Element {
 pub fn query_results(cx: Scope) -> Element {
     let query = SequenceQuerySpec {
         source: "hg38_tagged.fa".to_string(),
-        //ctg: "chr6_hg38".to_string(),
-        //bgn: 32163513,
-        //end: 32992088,
-        //padding: 200000,
-        ctg: "chrY_hg38".to_string(),
-        bgn: 23129355,
-        end: 24907040,
-        padding: 1500000,
+        ctg: "chr6_hg38".to_string(),
+        bgn: 32163513,
+        end: 32992088,
+        padding: 200000,
+        //ctg: "chrY_hg38".to_string(),
+        //bgn: 23129355,
+        //end: 24907040,
+        //padding: 1500000,
         merge_range_tol: 2000000,
         full_match: true,
     };
@@ -155,9 +155,8 @@ pub fn query_results(cx: Scope) -> Element {
 
                                             let q_span = format!("{}-{}", q_bgn, q_end);
                                             let t_span = format!("{}-{}", t_bgn, t_end);
-                                            let q_len = q_end - q_bgn;
+                                            let q_len = if q_end > q_bgn { q_end - q_bgn } else { q_bgn - q_end };
                                             let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
-                                            //let t_span: i32 = w.1[l-1].1.1 as i32 - w.1[0].1.0 as i32;
                                             rsx!( tr { class: "border-solid text-center" ,
                                                 td { class: "{style_classes}", "{sid}"}  
                                                 td { class: "{style_classes}", "{ctg}"} 
@@ -204,7 +203,7 @@ pub fn track(cx: Scope, ctg_name: String, range:  (u32, Vec<(u32, u32, u32, u8)>
                 svg {
                     width: "1250",
                     height: "50",
-                    view_box: "-50000 -80 5250000 120",
+                    view_box: "-50000 -80 2150000 120",
                     preserveAspectRatio: "none",
                     
                     range.1.iter().map(|(bgn, end, bundle_id, direction)| {

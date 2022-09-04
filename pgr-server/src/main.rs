@@ -301,8 +301,16 @@ async fn query_sdb_with(
                     } else {
                         false
                     };
-                    let q_min_bgn = q_list[0].0;
-                    let q_max_end = q_list[q_list.len() - 1].1;
+                    let q_min_bgn = if q_list[0].0 < q_list[0].1 {
+                        q_list[0].0
+                    } else {
+                        q_list[0].1
+                    };
+                    let q_max_end = if q_list[q_list.len() - 1].1 > q_list[q_list.len() - 1].0 {
+                        q_list[q_list.len() - 1].1
+                    } else {
+                        q_list[q_list.len() - 1].0
+                    };
 
                     (q_min_bgn, q_max_end, t_min_bgn, t_max_end, n_hits, reversed)
                 })
