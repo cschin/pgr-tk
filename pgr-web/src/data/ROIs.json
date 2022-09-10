@@ -1,0 +1,24 @@
+{
+	"HLA_C2": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chr6_hg38",
+		"bgn": 32163513,
+		"end": 32992088,
+		"padding": 200000,
+		"merge_range_tol": 2000000,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 128, "k": 56, "r": 12, "min_span": 64, "sketch": false}
+
+	},
+	"ChrY_Repeats": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chrY_hg38",
+		"bgn": 23129355,
+		"end": 24907040,
+		"padding": 1500000,
+		"merge_range_tol": 2000000,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 128, "k": 56, "r": 12, "min_span": 64, "sketch": false}
+
+	}
+}

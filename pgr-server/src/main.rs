@@ -24,6 +24,16 @@ use tower_http::trace::TraceLayer;
 use tracing::Span;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ShmmrSpec {
+    pub w: u32,
+    pub k: u32,
+    pub r: u32,
+    pub min_span: u32,
+    pub sketch: bool,
+}
+
 #[derive(Deserialize)]
 
 struct SequenceQuerySpec {
@@ -34,6 +44,7 @@ struct SequenceQuerySpec {
     padding: usize,
     merge_range_tol: usize,
     full_match: bool,
+    pb_shmmr_spec: ShmmrSpec
 }
 
 #[derive(Serialize)]
@@ -363,7 +374,12 @@ async fn query_sdb_with(
         .collect::<Vec<(String, Vec<u8>)>>();
 
     let mut new_sdb = SeqIndexDB::new();
-    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), 128, 56, 8, 28);
+    let w = payload.pb_shmmr_spec.w;
+    let k = payload.pb_shmmr_spec.k;
+    let r = payload.pb_shmmr_spec.r;
+    let min_span = payload.pb_shmmr_spec.min_span;
+
+    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), w, k, r, min_span);
 
     let (_principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);
