@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use web_sys::console;
-use web_sys::Document;
 use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast;
 //use pgr_db::aln::{self, HitPair};
@@ -84,7 +83,7 @@ fn app(cx: Scope) -> Element {
    
     //let q = query.current().as_ref().clone();
 
-    let t = use_future(&cx, (query_name,), |(query_name)| async move {
+    let targets = use_future(&cx, (query_name,), |(query_name)| async move {
         console::log_1(&"query".into());    
         let client = reqwest::Client::new();
         let qn = query_name.0.current().as_ref().clone();
@@ -97,15 +96,13 @@ fn app(cx: Scope) -> Element {
             .send()
             .await
             .unwrap()
-            .json::<TargetRangesSimplified>()
+            .json::<Option<TargetRangesSimplified>>()
             .await
     });
 
-
-
     cx.render(
         rsx! {
-            div { class: "p-8", 
+            div { class: "px-8 py-8", 
                 div {"PanGenome Research Tool Kit Principal Bundle Demo"}
            
                 select { 
@@ -123,56 +120,61 @@ fn app(cx: Scope) -> Element {
                         }
                     })
                 }
-                button { 
-                    class: "inline-block px-6 py-2.5 bg-blue-600 text-white rounded",
-                    onclick: move |_| {
-                        console::log_1(&"clicked".into()); 
-                        let window = web_sys::window().expect("global window does not exists");    
-                        let document = window.document().expect("expecting a document on window");
+
+                div { class: "p-8",
+                    button { 
+                        class: "inline-block px-6 py-2.5 bg-blue-600 text-white rounded",
+                        onclick: move |_| {
+                            console::log_1(&"clicked".into()); 
+                            let window = web_sys::window().expect("global window does not exists");    
+                            let document = window.document().expect("expecting a document on window");
+                            
+                            let roi_selector: web_sys::HtmlSelectElement = document.get_element_by_id(&"ROI_selector").unwrap().dyn_into().unwrap();
+                            let options =  roi_selector.options();
+                            console::log_1(&options.selected_index().unwrap().into());
+                            let selected_value = options.get_with_index(options.selected_index().unwrap() as u32).unwrap().get_attribute("value").unwrap();
+                            console::log_1(&selected_value.clone().into());
+                            let new_query =rois.get(&selected_value).unwrap().clone(); 
+                            query.modify(move |_| Some(new_query));
+                            query_name.modify(move |_| Some(selected_value.clone()));
+                            //cx.needs_update();
+                        },
                         
-                        let roi_selector: web_sys::HtmlSelectElement = document.get_element_by_id(&"ROI_selector").unwrap().dyn_into().unwrap();
-                        let options =  roi_selector.options();
-                        console::log_1(&options.selected_index().unwrap().into());
-                        let selected_value = options.get_with_index(options.selected_index().unwrap() as u32).unwrap().get_attribute("value").unwrap();
-                        console::log_1(&selected_value.clone().into());
-                        let new_query =rois.get(&selected_value).unwrap().clone(); 
-                        query.modify(move |_| Some(new_query));
-                        query_name.modify(move |_| Some(selected_value.clone()));
-                    },
-                    "Show" 
+                        "Show" 
+                    }
                 }
             }
+
             div {[
-                
-                match t.value() {
+                match targets.value() {
                     Some(Ok(val)) => {
                         //target.modify(|_| Some(val.clone())); 
                         console::log_1(&"target modified".into());       
-                        //cx.needs_update();
-                        rsx! { div {[query_results2(cx, query.current().as_ref().clone(), 
-                                                       Some(val.clone()))]} }
+                        
+                        rsx! { div {[query_results(cx, query.current().as_ref().clone(), 
+                                                        val.clone())]} }
                     },
                     Some(Err(err)) => rsx! {div {"Err"}},
-                    None => rsx! {div {"Loading"}},
+                    None => rsx! {div {"No target yet"}},
                 }
             ]}
             
-                //query_results2(cx, query.current().as_ref().clone(), 
-                //                     target.current().as_ref().clone())]}
         }
     )
 }
 
 
-pub fn query_results2(cx: Scope, query: Option<SequenceQuerySpec>, target: Option<TargetRangesSimplified>) -> Element {
+pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>, target: Option<TargetRangesSimplified>) -> Element {
     console::log_1(&"rendering query_results2".into()); 
 
-    if target.is_none() {
-        let r = rsx! { div {} };
+ 
+    if query.is_none() {
+        let r = rsx! { div { "No query yet" } };
         return cx.render(r)
     } 
-    if query.is_none() {
-        let r = rsx! { div {} };
+
+    if target.is_none() {
+        let r = rsx! { div { "Query sent, waiting for targets" } };
         return cx.render(r)
     } 
     
@@ -181,6 +183,7 @@ pub fn query_results2(cx: Scope, query: Option<SequenceQuerySpec>, target: Optio
 
     console::log_1(&query.clone().unwrap().ctg.into()); 
     console::log_1(&val.match_summary.len().into()); 
+
     let sid_to_ctg_src = val.sid_ctg_src.iter().map(|v| {
         let (sid, ctg_name, src) = v;
         (*sid, (ctg_name, src))
@@ -257,109 +260,6 @@ pub fn query_results2(cx: Scope, query: Option<SequenceQuerySpec>, target: Optio
             }
         }
     )
-}
-
-
-
-pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>) -> Element {
-    if query.is_none() {
-        let r = rsx! { div {} };
-        return cx.render(r)
-    } 
-
-    let q = query.unwrap().clone();
-    let query = q.clone();
-
-    let targets = use_future(&cx, (), |_| async move {
-        let client = reqwest::Client::new();
-        client
-            .post("http://127.0.0.1:3000/query_sdb")
-            .json(&q)
-            .send()
-            .await
-            .unwrap()
-            .json::<TargetRangesSimplified>()
-            .await
-    });
-
-    cx.render( match targets.value() {
-        Some(Ok(val)) => {
-
-            let sid_to_ctg_src = val.sid_ctg_src.iter().map(|v| {
-                let (sid, ctg_name, src) = v;
-                (*sid, (ctg_name, src))
-            }).collect::<HashMap<u32,(&String, &String)>>();
-            let ctg = query.ctg;            
-            let bgn = query.bgn;            
-            let end = query.end;            
-            let mut track_size = (query.end - query.bgn + 2 * query.padding);  
-            track_size = track_size + (track_size >> 1);
-            rsx!{
-                div { class: "grid p-8  grid-cols-1 justify-center space-y-4",
-                    h2 {"Query: {ctg}:{bgn}-{end}"}
-                    div { class: "overflow-x-auto sm:-mx-6 lg:-mx-8",
-                        p {class: "px-8 py-2", "Query results"}
-                        div {class: "flex flex-col max-h-[250px]",
-                        div {class: "flex-grow overflow-auto",
-                            table { class: "relative w-full",
-                                thead {
-                                    tr{
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "sid"} 
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "contig"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "source"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "hit count"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query span"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query len"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target span"}
-                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target len"}
-                                    }
-                                }
-                                tbody {
-                                    class: "divide-y",
-                                    rsx!(val.match_summary.iter().map(|v| {
-                                        let sid = v.0;
-                                        let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
-                                        let style_classes = "px-1 py-2 text-center";
-                                        let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits, reversed)| {
-
-                                            let q_span = format!("{}-{}", q_bgn, q_end);
-                                            let t_span = format!("{}-{}", t_bgn, t_end);
-                                            let q_len = if q_end > q_bgn { q_end - q_bgn } else { q_bgn - q_end };
-                                            let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
-                                            rsx!( tr {
-                                                td { class: "{style_classes}", "{sid}"}  
-                                                td { class: "{style_classes}", "{ctg}"} 
-                                                td { class: "{style_classes}", "{src}"}
-                                                td { class: "{style_classes}", "{n_hits}"} 
-                                                td { class: "{style_classes}", "{q_span}"} 
-                                                td { class: "{style_classes}", "{q_len}"} 
-                                                td { class: "{style_classes}", "{t_span}"}
-                                                td { class: "{style_classes}", "{t_len}"}
-                                                } )
-                                        });
-                                            
-                                    rsx!( hit_summary)
-                                    }))
-                                }
-                            }
-                        }
-                        }
-                        rsx!( 
-                            hr {class: "my-2 h-px bg-gray-700 border-0 dark:bg-gray-700"}
-                            h2 {class: "px-8 py-2", "Principal Bundle Decomposition"}
-                            div {
-                                class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[550px]",
-                                val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {
-                                    track(cx, ctg_name.clone(), track_size, (*sid, r.clone()))
-                                })
-                            }) 
-                        }
-                    }
-                }
-            },
-        Some(Err(err)) => rsx!( "Err" ),
-        None => rsx!("loading")
-    })
 }
 
 pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
