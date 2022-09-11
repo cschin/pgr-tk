@@ -7,6 +7,7 @@ use serde_json;
 use std::collections::HashMap;
 use web_sys::console;
 use web_sys::Document;
+use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast;
 //use pgr_db::aln::{self, HitPair};
 type HitPair = ((u32, u32, u8), (u32, u32, u8)); //(bgn1, end1, orientation1),  (bgn2, end2, orientation2)
@@ -34,7 +35,7 @@ pub struct TargetRangesSimplified {
 }
 
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ShmmrSpec {
     pub w: u32,
     pub k: u32,
@@ -43,7 +44,7 @@ pub struct ShmmrSpec {
     pub sketch: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct SequenceQuerySpec {
     source: String,
     ctg: String,
@@ -75,10 +76,33 @@ static cmap: [&str;97] = ["#870098","#00aaa5","#3bff00","#ec0000","#00a2c3","#00
 
 fn app(cx: Scope) -> Element {
     let ROI_json = include_str!("data/ROIs.json");
-    let rois: HashMap<String, SequenceQuerySpec> = serde_json::from_str(ROI_json).unwrap();
-    
+    let rois: FxHashMap<String, SequenceQuerySpec> = serde_json::from_str(ROI_json).unwrap();
+    let rois2 = rois.clone();
+
     let query = use_state(&cx, || <Option<SequenceQuerySpec>>::None);
-    let target = use_state(&cx, || <Option<TargetRangesSimplified>>::None);
+    let query_name = use_state(&cx, || <Option<String>>::None);
+   
+    //let q = query.current().as_ref().clone();
+
+    let t = use_future(&cx, (query_name,), |(query_name)| async move {
+        console::log_1(&"query".into());    
+        let client = reqwest::Client::new();
+        let qn = query_name.0.current().as_ref().clone();
+        let q = if qn.is_none() {None} else {
+            Some(rois2.get(&qn.unwrap()).unwrap())
+        };
+        client
+            .post("http://127.0.0.1:3000/query_sdb")
+            .json(&q)
+            .send()
+            .await
+            .unwrap()
+            .json::<TargetRangesSimplified>()
+            .await
+    });
+
+
+
     cx.render(
         rsx! {
             div { class: "p-8", 
@@ -112,33 +136,29 @@ fn app(cx: Scope) -> Element {
                         let selected_value = options.get_with_index(options.selected_index().unwrap() as u32).unwrap().get_attribute("value").unwrap();
                         console::log_1(&selected_value.clone().into());
                         let new_query =rois.get(&selected_value).unwrap().clone(); 
-                        query.modify(move |_| Some(new_query.clone()));
-                        //cx.needs_update();
-                        let q =rois.get(&selected_value).unwrap().clone(); 
-                        let t = use_future(&cx, (), |_| async move {
-                            let client = reqwest::Client::new();
-                            client
-                                .post("http://127.0.0.1:3000/query_sdb")
-                                .json(&q)
-                                .send()
-                                .await
-                                .unwrap()
-                                .json::<TargetRangesSimplified>()
-                                .await
-                        });
-                        t.restart();
-                        match t.value() {
-                            Some(Ok(val)) => {target.modify(|_| Some(val.clone())); cx.needs_update();},
-                            Some(Err(err)) => (),
-                            None => (),
-                        };
-                        
-
+                        query.modify(move |_| Some(new_query));
+                        query_name.modify(move |_| Some(selected_value.clone()));
                     },
                     "Show" 
                 }
             }
-            div {[query_results2(cx, query.current().as_ref().clone(), target.current().as_ref().clone())]}
+            div {[
+                
+                match t.value() {
+                    Some(Ok(val)) => {
+                        //target.modify(|_| Some(val.clone())); 
+                        console::log_1(&"target modified".into());       
+                        //cx.needs_update();
+                        rsx! { div {[query_results2(cx, query.current().as_ref().clone(), 
+                                                       Some(val.clone()))]} }
+                    },
+                    Some(Err(err)) => rsx! {div {"Err"}},
+                    None => rsx! {div {"Loading"}},
+                }
+            ]}
+            
+                //query_results2(cx, query.current().as_ref().clone(), 
+                //                     target.current().as_ref().clone())]}
         }
     )
 }
@@ -146,6 +166,7 @@ fn app(cx: Scope) -> Element {
 
 pub fn query_results2(cx: Scope, query: Option<SequenceQuerySpec>, target: Option<TargetRangesSimplified>) -> Element {
     console::log_1(&"rendering query_results2".into()); 
+
     if target.is_none() {
         let r = rsx! { div {} };
         return cx.render(r)

@@ -24,7 +24,6 @@ use tower_http::trace::TraceLayer;
 use tracing::Span;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct ShmmrSpec {
     pub w: u32,
@@ -44,7 +43,7 @@ struct SequenceQuerySpec {
     padding: usize,
     merge_range_tol: usize,
     full_match: bool,
-    pb_shmmr_spec: ShmmrSpec
+    pb_shmmr_spec: ShmmrSpec,
 }
 
 #[derive(Serialize)]
@@ -130,9 +129,13 @@ async fn handler(seq_db: Arc<SeqIndexDB>) -> Json<usize> {
 }
 
 async fn query_sdb_with(
-    Json(payload): Json<SequenceQuerySpec>,
+    Json(payload): Json<Option<SequenceQuerySpec>>,
     seq_db: Arc<SeqIndexDB>,
-) -> Json<TargetRangesSimplified> {
+) -> Json<Option<TargetRangesSimplified>> {
+    if payload.is_none() {
+        return Json(None);
+    };
+    let payload = payload.unwrap();
     let agc_db = seq_db.agc_db.as_ref().unwrap();
     let sample_name = payload.source;
     let ctg_name = payload.ctg;
@@ -379,7 +382,14 @@ async fn query_sdb_with(
     let r = payload.pb_shmmr_spec.r;
     let min_span = payload.pb_shmmr_spec.min_span;
 
-    new_sdb.load_from_seq_list(seq_list.clone(), Some(&"Memory".to_string()), w, k, r, min_span);
+    new_sdb.load_from_seq_list(
+        seq_list.clone(),
+        Some(&"Memory".to_string()),
+        w,
+        k,
+        r,
+        min_span,
+    );
 
     let (_principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
         new_sdb.get_principal_bundle_decomposition(0, 8);
@@ -426,10 +436,10 @@ async fn query_sdb_with(
 
     principal_bundle_decomposition.sort();
 
-    Json(TargetRangesSimplified {
+    Json(Some(TargetRangesSimplified {
         query_src_ctg: (sample_name, ctg_name),
         match_summary,
         sid_ctg_src,
         principal_bundle_decomposition,
-    })
+    }))
 }
