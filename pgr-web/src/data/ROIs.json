@@ -1,4 +1,37 @@
 {
+	"AMY1A": {
+		"source": "hg19_tagged.fa",
+		"ctg": "chr1_hg19",
+		"bgn": 104198140,
+		"end": 104207173,
+		"padding": 250000,
+		"merge_range_tol": 120000,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 48, "k": 56, "r": 1, "min_span": 12, "sketch": false}
+
+	},
+	"TBC1D3": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chr17_hg38",
+		"bgn": 37885486,
+		"end": 38325932,
+		"padding": 100000,
+		"merge_range_tol": 120000,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 48, "k": 56, "r": 1, "min_span": 12, "sketch": false}
+
+	},
+	"LPA": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chr6_hg38",
+		"bgn": 160531482,
+		"end": 160664275,
+		"padding": 80000,
+		"merge_range_tol": 100000,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 64, "k": 56, "r": 1, "min_span": 12, "sketch": false}
+
+	},
 	"HLA_C2": {
 		"source": "hg38_tagged.fa",
 		"ctg": "chr6_hg38",

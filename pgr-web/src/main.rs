@@ -55,6 +55,11 @@ pub struct SequenceQuerySpec {
     pb_shmmr_spec: ShmmrSpec
 }
 
+
+#[derive(Clone)]
+struct QueryState(String);
+
+
 fn main() {
     dioxus::web::launch(app);
 }
@@ -80,11 +85,25 @@ fn app(cx: Scope) -> Element {
 
     let query = use_state(&cx, || <Option<SequenceQuerySpec>>::None);
     let query_name = use_state(&cx, || <Option<String>>::None);
+    let query_state = use_state(&cx, || "done".to_string()); 
    
     //let q = query.current().as_ref().clone();
 
     let targets = use_future(&cx, (query_name,), |(query_name)| async move {
-        console::log_1(&"query".into());    
+        console::log_1(&"query".into());        
+        let window = web_sys::window().expect("global window does not exists");    
+        let document = window.document().expect("expecting a document on window");
+        let query_result_div = document.get_element_by_id(&"query_results").unwrap();
+        let _ = query_result_div.set_attribute("hidden", "true");
+
+   
+        let query_status_div = document.get_element_by_id(&"query_status").unwrap();
+        let _ = query_status_div.remove_attribute("hidden");
+
+        let query_button_div = document.get_element_by_id(&"query_button").unwrap();
+        let _ = query_button_div.set_attribute("disabled", "true");
+
+
         let client = reqwest::Client::new();
         let qn = query_name.0.current().as_ref().clone();
         let q = if qn.is_none() {None} else {
@@ -102,28 +121,32 @@ fn app(cx: Scope) -> Element {
 
     cx.render(
         rsx! {
-            div { class: "px-8 py-8", 
-                div {"PanGenome Research Tool Kit Principal Bundle Demo"}
-           
-                select { 
-                    name: "ROI_selector",
-                    id: "ROI_selector",
-                    class: "px-6 py-2.5",
-                    rois.iter().map(|(k, v)| {
-                        rsx! { 
-                            option {
-                                class: "px-6 py-2.5",
-                                value: "{k}",
-                                selected: "true" ,
-                                "{k}"
+            div { class: "flex flex-row p-4", 
+                div { class: "basis-2/4",
+                    h2 {"PanGenome Research Tool Kit: Principal Bundle Decomposition Demo"}
+                }
+                div { class: "basis-1/4 mb-3 xl:w-96",
+                 
+                    select { 
+                        name: "ROI_selector",
+                        id: "ROI_selector",
+                        class: "form-select appearance-none  w-full px-3 py-1.5 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none",
+                        rois.iter().map(|(k, v)| {
+                            rsx! { 
+                                option {
+                                    value: "{k}",
+                                    "{k}"
+                                }
                             }
-                        }
-                    })
+                        })
+                    }
                 }
 
-                div { class: "p-8",
+                div { class: "basis-1/4",
                     button { 
-                        class: "inline-block px-6 py-2.5 bg-blue-600 text-white rounded",
+                        id: "query_button",
+                        disabled: "false",
+                        class: "inline-block px-6 py-1.5 bg-blue-600 text-white rounded",
                         onclick: move |_| {
                             console::log_1(&"clicked".into()); 
                             let window = web_sys::window().expect("global window does not exists");    
@@ -137,25 +160,52 @@ fn app(cx: Scope) -> Element {
                             let new_query =rois.get(&selected_value).unwrap().clone(); 
                             query.modify(move |_| Some(new_query));
                             query_name.modify(move |_| Some(selected_value.clone()));
-                            //cx.needs_update();
+
                         },
                         
                         "Show" 
                     }
                 }
             }
+            div { id: "query_status",
+                  class: "p-4",
+                  "waiting"
+            }
 
-            div {[
+            div { id: "query_results",
+                  hidden: "true",
+                [
                 match targets.value() {
                     Some(Ok(val)) => {
-                        //target.modify(|_| Some(val.clone())); 
-                        console::log_1(&"target modified".into());       
+                        let window = web_sys::window().expect("global window does not exists");    
+                        let document = window.document().expect("expecting a document on window");
+                        let query_result_div = document.get_element_by_id(&"query_results").unwrap();
+                        let _ = query_result_div.remove_attribute("hidden");
                         
-                        rsx! { div {[query_results(cx, query.current().as_ref().clone(), 
-                                                        val.clone())]} }
+                        let query_status_div = document.get_element_by_id(&"query_status").unwrap();
+                        let _ = query_status_div.set_attribute("hidden", "true");
+
+                        let query_button_div = document.get_element_by_id(&"query_button").unwrap();
+                        let _ = query_button_div.remove_attribute("disabled");
+                        
+                        console::log_1(&"target modified xxx".into());  
+                        
+                        // reset all bundle class
+                        let bundle_elements = document.get_elements_by_class_name(&"bundle");
+                        (0..bundle_elements.length()).into_iter().for_each(|idx| {
+                            let el = bundle_elements.item(idx).unwrap(); 
+                            let classes = el.class_list();
+                            let _ = classes.add_1(&"normal");
+                            let _ = classes.remove_1(&"highlited");
+                            let stroke = el.attributes().get_named_item("transform").unwrap();
+                            stroke.set_value(&"scale(1,1)");
+                        });
+
+                        rsx! { div {[query_results(cx, query.clone(), query_state.clone(), 
+                                                       val.clone())]} }
                     },
-                    Some(Err(err)) => rsx! {div {"Err"}},
-                    None => rsx! {div {"No target yet"}},
+                    Some(Err(err)) => rsx! {div {class: "p-4", "Err"}},
+                    None => rsx! {div { class: "p-4", "No target yet"}},
                 }
             ]}
             
@@ -164,17 +214,30 @@ fn app(cx: Scope) -> Element {
 }
 
 
-pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>, target: Option<TargetRangesSimplified>) -> Element {
-    console::log_1(&"rendering query_results2".into()); 
+pub fn query_results(cx: Scope, 
+                     query: UseState<Option<SequenceQuerySpec>>, 
+                     query_state: UseState<String>, 
+                     target: Option<TargetRangesSimplified>) -> Element {
 
- 
+    console::log_1(&"rendering query_results2".into()); 
+    
+    //let query_state = query_state.current().as_ref().clone();
+    //console::log_1(&query_state.clone().into()); 
+    //if query_state == "requesting".to_string() {
+    //    let r = rsx! { div { class: "p-4", "Requesting data" } };
+    //    return cx.render(r)
+    //} 
+
+
+    let query = query.current().as_ref().clone();
+
     if query.is_none() {
-        let r = rsx! { div { "No query yet" } };
+        let r = rsx! { div { class: "p-4", "No query yet" } };
         return cx.render(r)
     } 
 
     if target.is_none() {
-        let r = rsx! { div { "Query sent, waiting for targets" } };
+        let r = rsx! { div { class: "p-4", "Query sent, waiting for targets" } };
         return cx.render(r)
     } 
     
@@ -188,8 +251,8 @@ pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>, target: Option
         let (sid, ctg_name, src) = v;
         (*sid, (ctg_name, src))
     }).collect::<HashMap<u32,(&String, &String)>>();
-    let q = query.unwrap().clone();
-    let query = q.clone();
+    
+    let query = query.unwrap().clone();
     let ctg = query.ctg;            
     let bgn = query.bgn;            
     let end = query.end;            
@@ -198,64 +261,64 @@ pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>, target: Option
     console::log_1(&"rendering query_results2, 3".into()); 
     cx.render (
     rsx!{
-        div { class: "grid p-8  grid-cols-1 justify-center space-y-4",
-            h2 {"Query: {ctg}:{bgn}-{end}"}
+        div { class: "grid p-2  grid-cols-1 justify-center space-y-2",
             div { class: "overflow-x-auto sm:-mx-6 lg:-mx-8",
-                p {class: "px-8 py-2", "Query results"}
-                div {class: "flex flex-col max-h-[250px]",
-                div {class: "flex-grow overflow-auto",
-                    table { class: "relative w-full",
-                        thead {
-                            tr{
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "sid"} 
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "contig"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "source"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "hit count"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query span"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query len"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target span"}
-                                th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target len"}
+                div {class: "flex flex-col min-w-[1280px]  max-h-screen",
+                    rsx!( 
+                        h2 {class: "px-8 py-2", "Principal Bundle Decomposition, Query: {ctg}:{bgn}-{end}"}
+                        div {
+                            class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[450px]",
+                            val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {
+                                track(cx, ctg_name.clone(), track_size, (*sid, r.clone()))
+                            })
+                        }) 
+                    }
+                    hr {class: "my-2 h-px bg-gray-700 border-0 dark:bg-gray-700"}
+                    div {class: "px-8 py-1",
+                        div {class: "flex-grow overflow-auto max-h-[250px]",
+                            table { class: "relative w-full",
+                                thead {
+                                    tr{
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "sid"} 
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "contig"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "source"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "hit count"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query span"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "query len"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target span"}
+                                        th {class: "px-1 py-2 sticky top-0 text-blue-900 bg-blue-300", "target len"}
+                                    }
+                                }
+                                tbody {
+                                    class: "divide-y",
+                                    rsx!(val.match_summary.iter().map(|v| {
+                                        let sid = v.0;
+                                        let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
+                                        let style_classes = "px-1 py-2 text-center";
+                                        let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits, reversed)| {
+
+                                            let q_span = format!("{}-{}", q_bgn, q_end);
+                                            let t_span = format!("{}-{}", t_bgn, t_end);
+                                            let q_len = if q_end > q_bgn { q_end - q_bgn } else { q_bgn - q_end };
+                                            let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
+                                            rsx!( tr {
+                                                td { class: "{style_classes}", "{sid}"}  
+                                                td { class: "{style_classes}", "{ctg}"} 
+                                                td { class: "{style_classes}", "{src}"}
+                                                td { class: "{style_classes}", "{n_hits}"} 
+                                                td { class: "{style_classes}", "{q_span}"} 
+                                                td { class: "{style_classes}", "{q_len}"} 
+                                                td { class: "{style_classes}", "{t_span}"}
+                                                td { class: "{style_classes}", "{t_len}"}
+                                                } )
+                                        });
+                                            
+                                    rsx!( hit_summary)
+                                    }))
+                                }
                             }
                         }
-                        tbody {
-                            class: "divide-y",
-                            rsx!(val.match_summary.iter().map(|v| {
-                                let sid = v.0;
-                                let (ctg, src) = *sid_to_ctg_src.get(&sid).unwrap();
-                                let style_classes = "px-1 py-2 text-center";
-                                let hit_summary = v.1.iter().map(move |(q_bgn, q_end, t_bgn, t_end, n_hits, reversed)| {
-
-                                    let q_span = format!("{}-{}", q_bgn, q_end);
-                                    let t_span = format!("{}-{}", t_bgn, t_end);
-                                    let q_len = if q_end > q_bgn { q_end - q_bgn } else { q_bgn - q_end };
-                                    let t_len = if t_end > t_bgn {t_end - t_bgn} else { t_bgn - t_end};
-                                    rsx!( tr {
-                                        td { class: "{style_classes}", "{sid}"}  
-                                        td { class: "{style_classes}", "{ctg}"} 
-                                        td { class: "{style_classes}", "{src}"}
-                                        td { class: "{style_classes}", "{n_hits}"} 
-                                        td { class: "{style_classes}", "{q_span}"} 
-                                        td { class: "{style_classes}", "{q_len}"} 
-                                        td { class: "{style_classes}", "{t_span}"}
-                                        td { class: "{style_classes}", "{t_len}"}
-                                        } )
-                                });
-                                    
-                            rsx!( hit_summary)
-                            }))
-                        }
                     }
-                }
-                }
-                rsx!( 
-                    hr {class: "my-2 h-px bg-gray-700 border-0 dark:bg-gray-700"}
-                    h2 {class: "px-8 py-2", "Principal Bundle Decomposition"}
-                    div {
-                        class: "px-8 content-center overflow-auto min-w-[1280px] max-h-[550px]",
-                        val.principal_bundle_decomposition.iter().flat_map(|(sid, ctg_name, r)| {
-                            track(cx, ctg_name.clone(), track_size, (*sid, r.clone()))
-                        })
-                    }) 
                 }
             }
         }
@@ -265,12 +328,14 @@ pub fn query_results(cx: Scope, query: Option<SequenceQuerySpec>, target: Option
 pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
     console::log_1(&"Rendering the track".into());
     let left_padding = track_size >> 4;
+    let ctg_id = format!("ctg_{}", ctg_name);
     cx.render(
         rsx! {
             div { 
                 class: "p-1",
                 p { "{ctg_name}"}
                 svg {
+                    id: "{ctg_id}",
                     width: "1250",
                     height: "50",
                     view_box: "-{left_padding} -80 {track_size} 120",
@@ -289,7 +354,7 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                         let end = *end as f32 - (*end as f32 - *bgn as f32) * 0.20;
 
                         let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
-                        let line_class = format!("bdl_{}", bundle_id);
+                        let line_class = format!("bundle-{}", bundle_id);
                         let line_class2 = line_class.clone();
                         let path_str;
                         if *direction == 1 {
@@ -300,7 +365,8 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                         rsx! {
                             g {
                                 id: "{line_id}",
-                                class: "{line_class} normal",
+                                class: "{line_class} bundle normal",
+                                transform: "scale(1,1)",
                                 onclick: move |_evt| {
                                     let window = web_sys::window().expect("global window does not exists");    
 	                                let document = window.document().expect("expecting a document on window");
@@ -324,8 +390,7 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                                         console::log_1(&stroke.value().into());
                                         stroke.set_value(&transform_str[..]);
                                     });
-                                },
-                                transform: "scale(1,1)",
+                                },                                
                           
                                 path {
                                     d: "{path_str}", 

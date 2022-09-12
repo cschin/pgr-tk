@@ -350,13 +350,13 @@ async fn query_sdb_with(
             // println!("DBG0: {}", ctg_name);
             v.1.iter()
                 .map(|h| {
-                    let t_bgn = h.2;
-                    let t_end = h.3;
-                    let reversed = h.5;
-                    //if t_bgn > t_end {
-                    //    (t_bgn, t_end) = (t_end, t_bgn);
-                    //    reversed = true;
-                    //}
+                    let mut t_bgn = h.2;
+                    let mut t_end = h.3;
+                    let mut reversed = h.5;
+                    if t_bgn > t_end {  
+                        (t_bgn, t_end) = (t_end, t_bgn);
+                        reversed = !h.5;
+                    };
                     let (ctg_name, sample_name, _) =
                         seq_db.seq_info.as_ref().unwrap().get(&sid).unwrap();
                     let sample_name = sample_name.as_ref().unwrap();
