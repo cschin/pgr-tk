@@ -67,35 +67,34 @@ impl AGCFile {
                 CString::new(filepath.clone()).unwrap().into_raw(),
                 1_i32,
             ));
-            if !agc_handle.0.is_null() { 
-                let mut n_samples = agc_n_sample(agc_handle.0);
-                let samples_ptr: *mut *mut ::std::os::raw::c_char =
-                    agc_list_sample(agc_handle.0, &mut n_samples);
+            let mut n_samples = agc_n_sample(agc_handle.0);
+            let samples_ptr: *mut *mut ::std::os::raw::c_char =
+                agc_list_sample(agc_handle.0, &mut n_samples);
 
-                for i in 0..n_samples as usize {
-                    let s_ptr = *(samples_ptr.add(i));
-                    let sample_name = cstr_to_string(s_ptr);
-                    //println!("sample: {}", sample_name);
-                    let mut n_contig = agc_n_ctg(agc_handle.0, s_ptr);
-                    let ctg_ptr = agc_list_ctg(agc_handle.0, s_ptr, &mut n_contig);
-                    let mut ctgs: Vec<(String, usize)> = Vec::new();
-                    for j in 0..n_contig as usize {
-                        let c_ptr = *(ctg_ptr.add(j));
-                        let ctg_name = cstr_to_string(c_ptr);
-                        //println!("ctg: {}", ctg_name);
-                        let ctg_len = agc_get_ctg_len(agc_handle.0, s_ptr, c_ptr);
-                        ctg_lens.insert((sample_name.clone(), ctg_name.clone()), ctg_len as usize);
-                        sample_ctg.push((sample_name.clone(), ctg_name.clone()));
-                        ctgs.push((ctg_name, ctg_len as usize));
-                    }
-                    agc_list_destroy(ctg_ptr);
-                    samples.push(AGCSample {
-                        name: sample_name,
-                        contigs: ctgs,
-                    });
+            for i in 0..n_samples as usize {
+                let s_ptr = *(samples_ptr.add(i));
+                let sample_name = cstr_to_string(s_ptr);
+                //log::info!("sample: {}", sample_name);
+                let mut n_contig = agc_n_ctg(agc_handle.0, s_ptr);
+                let ctg_ptr = agc_list_ctg(agc_handle.0, s_ptr, &mut n_contig);
+                let mut ctgs: Vec<(String, usize)> = Vec::new();
+                for j in 0..n_contig as usize {
+                    let c_ptr = *(ctg_ptr.add(j));
+                    let ctg_name = cstr_to_string(c_ptr);
+                    //println!("ctg: {} {}", j, ctg_name);
+                    let ctg_len = agc_get_ctg_len(agc_handle.0, s_ptr, c_ptr);
+                    ctg_lens.push(((sample_name.clone(), ctg_name.clone()), ctg_len as usize));
+                    sample_ctg.push((sample_name.clone(), ctg_name.clone()));
+                    ctgs.push((ctg_name, ctg_len as usize));
                 }
-                agc_list_destroy(samples_ptr);
-            } 
+                agc_list_destroy(ctg_ptr);
+                samples.push(AGCSample {
+                    name: sample_name,
+                    contigs: ctgs,
+                });
+            }
+            agc_list_destroy(samples_ptr);
+            agc_close(agc_handle.0);
         }
         let agc_handle;
         unsafe {
@@ -133,9 +132,6 @@ impl AGCFile {
         bgn: usize,
         end: usize,
     ) -> Vec<u8> {
-        if self.agc_handle.0.is_null() {
-            panic!("AGC file is not opened");
-        } 
         let key = (sample_name.clone(), ctg_name.clone());
         assert!(self.ctg_lens.contains_key(&key));
         assert!(*self.ctg_lens.get(&key).unwrap() >= end);
@@ -177,9 +173,7 @@ impl AGCFile {
 impl Drop for AGCFile {
     fn drop(&mut self) {
         unsafe {
-            if !self.agc_handle.0.is_null() {  
-                agc_close(self.agc_handle.0);
-            }
+            agc_close(self.agc_handle.0);
         }
     }
 }
