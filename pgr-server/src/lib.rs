@@ -1,6 +1,6 @@
 pub mod seq_index_db {
     use pgr_db::aln::{self, HitPair};
-    use pgr_db::seq_db;
+    use pgr_db::seq_db::{self, GetSeq};
     use pgr_db::shmmrutils::{sequence_to_shmmrs, DeltaPoint, ShmmrSpec};
     use pgr_db::{agc_io, fasta_io};
     use rayon::prelude::*;
@@ -164,7 +164,7 @@ pub mod seq_index_db {
                 &self.seq_db.as_ref().unwrap().frag_map
             };
 
-            let adj_list = seq_db::frag_map_to_adj_list(frag_map, min_count as usize);
+            let adj_list = seq_db::frag_map_to_adj_list(frag_map, min_count as usize, None);
 
             seq_db::get_principal_bundles_from_adj_list(frag_map, &adj_list, path_len_cutoff)
                 .0
@@ -179,10 +179,7 @@ pub mod seq_index_db {
             path_len_cutoff: usize,
         ) -> (
             Vec<(usize, usize, Vec<(u64, u64, u8)>)>,
-            Vec<(
-                u32,
-                SmpsWithBundleLabel,
-            )>,
+            Vec<(u32, SmpsWithBundleLabel)>,
         ) {
             fn get_smps(seq: Vec<u8>, shmmr_spec: &ShmmrSpec) -> Vec<(u64, u64, u32, u32, u8)> {
                 let shmmrs = sequence_to_shmmrs(0, &seq, &shmmr_spec, false);
