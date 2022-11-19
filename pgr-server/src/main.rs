@@ -353,7 +353,7 @@ async fn query_sdb_with(
                     let mut t_bgn = h.2;
                     let mut t_end = h.3;
                     let mut reversed = h.5;
-                    if t_bgn > t_end {  
+                    if t_bgn > t_end {
                         (t_bgn, t_end) = (t_end, t_bgn);
                         reversed = !h.5;
                     };
@@ -392,14 +392,14 @@ async fn query_sdb_with(
     );
 
     let (_principal_bundles, seqid_smps_with_bundle_id_seg_direction) =
-        new_sdb.get_principal_bundle_decomposition(0, 8);
+        new_sdb.get_principal_bundle_decomposition(4, 8);
 
     let principal_bundle_decomposition = seqid_smps_with_bundle_id_seg_direction
         .iter()
         .map(|(sid, smps_with_bundle_info)| {
             (
                 *sid,
-                group_smps_by_principle_bundle_id(smps_with_bundle_info, None, None),
+                group_smps_by_principle_bundle_id(smps_with_bundle_info, Some(250), Some(10000)),
             )
         })
         .collect::<Vec<(u32, Vec<SmpsWithBundleLabel>)>>();
