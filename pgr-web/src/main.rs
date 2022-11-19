@@ -197,8 +197,10 @@ fn app(cx: Scope) -> Element {
                             let classes = el.class_list();
                             let _ = classes.add_1(&"normal");
                             let _ = classes.remove_1(&"highlited");
-                            let stroke = el.attributes().get_named_item("transform").unwrap();
-                            stroke.set_value(&"scale(1,1)");
+                            let path = el.children().item(0).unwrap();
+                            let stroke = path.attributes().get_named_item("stroke-width").unwrap();
+                            console::log_1(&stroke.value().into());
+                            stroke.set_value(&format!("0.5"));
                         });
 
                         rsx! { div {[query_results(cx, query.clone(), query_state.clone(), 
@@ -327,7 +329,10 @@ pub fn query_results(cx: Scope,
 
 pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
     console::log_1(&"Rendering the track".into());
-    let left_padding = track_size >> 4;
+    let left_padding = track_size >> 8;
+    let scaling_factor = 1000 as f32 / (track_size + 2*left_padding) as f32; 
+    let left_padding = left_padding as f32 * scaling_factor as f32;
+    let stroke_width = 0.5;
     let ctg_id = format!("ctg_{}", ctg_name);
     cx.render(
         rsx! {
@@ -336,32 +341,32 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                 p { "{ctg_name}"}
                 svg {
                     id: "{ctg_id}",
-                    width: "1250",
-                    height: "50",
-                    view_box: "-{left_padding} -80 {track_size} 120",
+                    width: "1000",
+                    height: "40",
+                    view_box: "0 -16 1000 24",
                     preserveAspectRatio: "none",
                     
                     range.1.iter().map(|(bgn, end, bundle_id, direction)| {
                         let sid = range.0;
-                        let mut bgn = bgn;
-                        let mut end = end;
+                        let mut bgn = *bgn as f32 * scaling_factor + left_padding;
+                        let mut end = *end as f32 * scaling_factor + left_padding;
                         if *direction == 1 {
                             (bgn, end) = (end, bgn);
                         }
 
                         let bundle_color = cmap[(bundle_id % 97) as usize];
-                        let arror_end = *end as f32;
-                        let end = *end as f32 - (*end as f32 - *bgn as f32) * 0.20;
+                        let stroke_color = cmap[((bundle_id * 47) % 43) as usize];
+                        let arror_end = end as f32;
+                        let end = if *direction == 0 {
+                            if end as f32 - 5.0 < bgn { bgn } else { end as f32 - 5.0 }
+                        } else {
+                            if end as f32 + 5.0 > bgn { bgn } else { end as f32 + 5.0 } 
+                        };  
 
                         let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
                         let line_class = format!("bundle-{}", bundle_id);
                         let line_class2 = line_class.clone();
-                        let path_str;
-                        if *direction == 1 {
-                            path_str = format!("M {bgn} -32 L {bgn} -16 L {end} -16 L {end} -12 L {arror_end} -24 L {end} -36 L {end} -32 Z");         
-                        } else {
-                            path_str = format!("M {bgn} -8 L {bgn} 8 L {end} 8 L {end} 12 L {arror_end} 0 L {end} -12 L {end} -8 Z");  
-                        }
+                        let path_str = format!("M {bgn} -2 L {bgn} 2 L {end} 2 L {end} 3 L {arror_end} 0 L {end} -3 L {end} -2 Z");  
                         rsx! {
                             g {
                                 id: "{line_id}",
@@ -375,28 +380,29 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                                     (0..line_elements.length()).into_iter().for_each(|idx| {
                                         let el = line_elements.item(idx).unwrap(); 
                                         let classes = el.class_list();
-                                        let transform_str;
+                                        let stroke_width_str;
                                         if classes.contains(&"normal") {
                                             let _ = classes.remove_1(&"normal");
                                             let _ = classes.add_1(&"highlited");
-                                            transform_str = format!("scale(1,2)");
+                                            stroke_width_str =  format!("2");
                                         } else {
                                             let _ = classes.add_1(&"normal");
                                             let _ = classes.remove_1(&"highlited");
-                                            transform_str = format!("scale(1,1)");
+                                            stroke_width_str =  format!("0.5");
                                         };
 
-                                        let stroke = el.attributes().get_named_item("transform").unwrap();
+                                        let path = el.children().item(0).unwrap();
+                                        let stroke = path.attributes().get_named_item("stroke-width").unwrap();
                                         console::log_1(&stroke.value().into());
-                                        stroke.set_value(&transform_str[..]);
+                                        stroke.set_value(&stroke_width_str[..]);
                                     });
                                 },                                
                           
                                 path {
                                     d: "{path_str}", 
                                     fill: "{bundle_color}",
-                                    //stroke: "black",
-                                    //stroke_width: "2",
+                                    stroke: "{stroke_color}",
+                                    stroke_width: "{stroke_width}",
                                     fill_opacity: "0.8",
                                 }
                             }
