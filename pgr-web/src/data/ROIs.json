@@ -4,7 +4,7 @@
 		"ctg": "chr1_hg19",
 		"bgn": 104198140,
 		"end": 104207173,
-		"padding": 250000,
+		"padding": 150000,
 		"merge_range_tol": 120000,
 		"full_match": true,
 		"pb_shmmr_spec": {"w": 48, "k": 56, "r": 1, "min_span": 12, "sketch": false}
@@ -26,18 +26,18 @@
 		"ctg": "chr6_hg38",
 		"bgn": 160531482,
 		"end": 160664275,
-		"padding": 80000,
+		"padding": 40000,
 		"merge_range_tol": 100000,
 		"full_match": true,
 		"pb_shmmr_spec": {"w": 64, "k": 56, "r": 1, "min_span": 12, "sketch": false}
 
 	},
-	"HLA_C2": {
+	"HLA Class II": {
 		"source": "hg38_tagged.fa",
 		"ctg": "chr6_hg38",
 		"bgn": 32163513,
 		"end": 32992088,
-		"padding": 200000,
+		"padding": 25000,
 		"merge_range_tol": 2000000,
 		"full_match": true,
 		"pb_shmmr_spec": {"w": 128, "k": 56, "r": 12, "min_span": 64, "sketch": false}
@@ -52,6 +52,31 @@
 		"merge_range_tol": 2000000,
 		"full_match": true,
 		"pb_shmmr_spec": {"w": 128, "k": 56, "r": 12, "min_span": 64, "sketch": false}
+
+	},
+
+	"FLG": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chr1_hg38",
+		"bgn": 152301265,
+		"end": 152328339,
+		"padding": 5000,
+		"merge_range_tol": 100,
+		"full_match": true,
+		"pb_shmmr_spec": {"w": 48, "k": 56, "r": 1, "min_span": 8, "sketch": false}
+
+	},
+	
+
+	"KIR": {
+		"source": "hg38_tagged.fa",
+		"ctg": "chr19_hg38",
+		"bgn": 54687267,
+		"end": 54907736,
+		"padding": 5000,
+		"merge_range_tol": 5000,
+		"full_match": false,
+		"pb_shmmr_spec": {"w": 48, "k": 56, "r": 5, "min_span": 16, "sketch": false}
 
 	}
 }

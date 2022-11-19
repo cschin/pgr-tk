@@ -119,6 +119,8 @@ fn app(cx: Scope) -> Element {
             .await
     });
 
+    let mut kvs = rois.iter().map(|(k,v)| { (k.clone(), v.clone())} ).collect::<Vec<_>>();
+    kvs.sort_by_key(|v| v.0.clone());
     cx.render(
         rsx! {
             div { class: "flex flex-row p-4", 
@@ -131,7 +133,8 @@ fn app(cx: Scope) -> Element {
                         name: "ROI_selector",
                         id: "ROI_selector",
                         class: "form-select appearance-none  w-full px-3 py-1.5 focus:text-gray-700 focus:bg-white focus:border-blue-600 focus:outline-none",
-                        rois.iter().map(|(k, v)| {
+                        
+                        kvs.iter().map(|(k, v)| {
                             rsx! { 
                                 option {
                                     value: "{k}",
@@ -327,10 +330,11 @@ pub fn query_results(cx: Scope,
     )
 }
 
-pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
+pub fn track(cx: Scope, ctg_name: String, track_range: usize, range:  (u32, Vec<(u32, u32, u32, u8)>) ) -> Element {
     console::log_1(&"Rendering the track".into());
-    let left_padding = track_size >> 8;
-    let scaling_factor = 1000 as f32 / (track_size + 2*left_padding) as f32; 
+    let track_length = 1600;
+    let left_padding = track_range >> 8;
+    let scaling_factor = track_length as f32 / (track_range + 2*left_padding) as f32; 
     let left_padding = left_padding as f32 * scaling_factor as f32;
     let stroke_width = 0.5;
     let ctg_id = format!("ctg_{}", ctg_name);
@@ -341,9 +345,9 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                 p { "{ctg_name}"}
                 svg {
                     id: "{ctg_id}",
-                    width: "1000",
+                    width: "{track_length}",
                     height: "40",
-                    view_box: "0 -16 1000 24",
+                    view_box: "0 -16 {track_length} 24",
                     preserveAspectRatio: "none",
                     
                     range.1.iter().map(|(bgn, end, bundle_id, direction)| {
@@ -366,12 +370,11 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                         let line_id = format!("s_{}_{}_{}_{}", sid, bundle_id, bgn, end);
                         let line_class = format!("bundle-{}", bundle_id);
                         let line_class2 = line_class.clone();
-                        let path_str = format!("M {bgn} -2 L {bgn} 2 L {end} 2 L {end} 3 L {arror_end} 0 L {end} -3 L {end} -2 Z");  
+                        let path_str = format!("M {bgn} -3 L {bgn} 3 L {end} 3 L {end} 4 L {arror_end} 0 L {end} -4 L {end} -3 Z");  
                         rsx! {
                             g {
                                 id: "{line_id}",
                                 class: "{line_class} bundle normal",
-                                transform: "scale(1,1)",
                                 onclick: move |_evt| {
                                     let window = web_sys::window().expect("global window does not exists");    
 	                                let document = window.document().expect("expecting a document on window");
@@ -384,7 +387,7 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                                         if classes.contains(&"normal") {
                                             let _ = classes.remove_1(&"normal");
                                             let _ = classes.add_1(&"highlited");
-                                            stroke_width_str =  format!("2");
+                                            stroke_width_str =  format!("1.5");
                                         } else {
                                             let _ = classes.add_1(&"normal");
                                             let _ = classes.remove_1(&"highlited");
@@ -410,7 +413,6 @@ pub fn track(cx: Scope, ctg_name: String, track_size: usize, range:  (u32, Vec<(
                     })
                 } 
             }
-            
         }
     )
 }
