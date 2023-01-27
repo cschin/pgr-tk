@@ -1,4 +1,4 @@
-use crate::agc_io::AGCFile;
+//use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
 use crate::graph_utils::{ShmmrGraphNode, AdjPair, AdjList};
 use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, MM128};
@@ -651,12 +651,6 @@ impl CompactSeqDB {
         Ok(())
     }
 
-    pub fn load_index_from_agcfile(&mut self, agcfile: AGCFile) -> Result<(), std::io::Error> {
-        //let agcfile = AGCFile::new(filepath);
-
-        self.load_index_from_reader(&mut agcfile.into_iter());
-        Ok(())
-    }
 }
 
 impl CompactSeqDB {

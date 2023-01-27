@@ -4,11 +4,11 @@ use pgr_db::fasta_io::FastaReader;
 use pgr_db::graph_utils::{AdjList, ShmmrGraphNode};
 use pgr_db::seq_db::{self, GetSeq};
 use pgr_db::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
-use pgr_db::{agc_io, frag_file_io};
+use pgr_db::{frag_file_io};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 
 #[allow(clippy::large_enum_variant)]
 pub enum GZFastaReader {
@@ -18,7 +18,6 @@ pub enum GZFastaReader {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    AGC,
     FRG,
     FASTX,
     MEMORY,
@@ -31,7 +30,7 @@ pub struct SeqIndexDB {
     /// Rust internal: store the sequences
     pub seq_db: Option<seq_db::CompactSeqDB>,
     /// Rust internal: store the agc file and the index
-    pub agc_db: Option<(agc_io::AGCFile, seq_db::ShmmrToFrags)>,
+    //pub agc_db: Option<(agc_io::AGCFile, seq_db::ShmmrToFrags)>,
     pub frg_db: Option<frag_file_io::CompactSeqDBStorage>,
     /// a dictionary maps (ctg_name, source) -> (id, len)
     #[allow(clippy::type_complexity)]
@@ -53,44 +52,11 @@ impl SeqIndexDB {
         SeqIndexDB {
             seq_db: None,
             frg_db: None,
-            agc_db: None,
             shmmr_spec: None,
             seq_index: None,
             seq_info: None,
             backend: Backend::UNKNOWN,
         }
-    }
-
-    pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let (shmmr_spec, new_map) =
-            seq_db::read_mdb_file_parallel(prefix.to_string() + ".mdb").unwrap();
-        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agc")?;
-        self.agc_db = Some((agc_file, new_map));
-        self.backend = Backend::AGC;
-        self.shmmr_spec = Some(shmmr_spec);
-
-        let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
-
-        let midx_file = BufReader::new(File::open(prefix + ".midx")?);
-        midx_file
-            .lines()
-            .into_iter()
-            .try_for_each(|line| -> Result<(), std::io::Error> {
-                let line = line.unwrap();
-                let mut line = line.as_str().split('\t');
-                let sid = line.next().unwrap().parse::<u32>().unwrap();
-                let len = line.next().unwrap().parse::<u32>().unwrap();
-                let ctg_name = line.next().unwrap().to_string();
-                let source = line.next().unwrap().to_string();
-                seq_index.insert((ctg_name.clone(), Some(source.clone())), (sid, len));
-                seq_info.insert(sid, (ctg_name, Some(source), len));
-                Ok(())
-            })?;
-
-        self.seq_index = Some(seq_index);
-        self.seq_info = Some(seq_info);
-        Ok(())
     }
 
     pub fn load_from_frg_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
@@ -249,14 +215,6 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            Backend::AGC => {
-                Ok(self
-                    .agc_db
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .get_sub_seq(sample_name, ctg_name, bgn, end))
-            }
             Backend::MEMORY | Backend::FASTX => {
                 let &(sid, _) = self
                     .seq_index
@@ -296,12 +254,6 @@ impl SeqIndexDB {
         ctg_name: String,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            Backend::AGC => Ok(self
-                .agc_db
-                .as_ref()
-                .unwrap()
-                .0
-                .get_seq(sample_name, ctg_name)),
             Backend::MEMORY | Backend::FASTX => {
                 let &(sid, _) = self
                     .seq_index
@@ -334,17 +286,6 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
-                let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
-                Ok(self
-                    .agc_db
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .get_sub_seq(sample_name, ctg_name, bgn, end))
-            }
             Backend::MEMORY | Backend::FASTX => Ok(self
                 .seq_db
                 .as_ref()
@@ -577,17 +518,6 @@ impl SeqIndexDB {
     ) -> Result<(), std::io::Error> {
         let get_seq_by_id = |sid| -> Vec<u8> {
             match self.backend {
-                Backend::AGC => {
-                    let (ctg_name, sample_name, _) =
-                        self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
-                    let ctg_name = ctg_name.clone();
-                    let sample_name = sample_name.as_ref().unwrap().clone();
-                    self.agc_db
-                        .as_ref()
-                        .unwrap()
-                        .0
-                        .get_seq(sample_name, ctg_name)
-                }
                 Backend::MEMORY => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
                 Backend::FASTX => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
                 Backend::FRG => self.frg_db.as_ref().unwrap().get_seq_by_id(sid),
@@ -877,7 +807,6 @@ impl SeqIndexDB {
     // depending on the storage type, return the corresponded index
     fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {
-            Backend::AGC => Some(&self.agc_db.as_ref().unwrap().1),
             Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),
             Backend::FRG => Some(&self.frg_db.as_ref().unwrap().frag_map),

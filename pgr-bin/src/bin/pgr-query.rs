@@ -75,7 +75,8 @@ fn main() -> Result<(), std::io::Error> {
     if args.frg_file {
         let _ = seq_index_db.load_from_frg_index(args.pgr_db_prefix);
     } else {
-        let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
+        panic!("On Mac OS m1/m2 build, agc is not support. Please use --frg_file to specific a frg_file");
+        //let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
     }
     let prefix = Path::new(&args.output_prfix);
     let mut hit_file = BufWriter::new(File::create(prefix.with_extension("hit")).unwrap());
