@@ -5,7 +5,7 @@ use pgr_db::graph_utils::{AdjList, ShmmrGraphNode};
 pub use pgr_db::seq_db::pair_shmmrs;
 use pgr_db::seq_db::{self, GetSeq};
 pub use pgr_db::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
-use pgr_db::{agc_io, frag_file_io};
+use pgr_db::frag_file_io;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
@@ -282,17 +282,6 @@ impl SeqIndexDB {
 
     pub fn get_seq_by_id(&self, sid: u32) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
-                let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
-                Ok(self
-                    .agc_db
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .get_seq(sample_name, ctg_name))
-            }
             Backend::MEMORY | Backend::FASTX => {
                 Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
             }
