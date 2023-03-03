@@ -2,9 +2,10 @@ use flate2::bufread::MultiGzDecoder;
 use pgr_db::aln;
 use pgr_db::fasta_io::FastaReader;
 use pgr_db::graph_utils::{AdjList, ShmmrGraphNode};
+pub use pgr_db::seq_db::pair_shmmrs;
 use pgr_db::seq_db::{self, GetSeq};
-use pgr_db::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
-use pgr_db::{frag_file_io};
+pub use pgr_db::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
+use pgr_db::{agc_io, frag_file_io};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
@@ -279,6 +280,30 @@ impl SeqIndexDB {
         }
     }
 
+    pub fn get_seq_by_id(&self, sid: u32) -> Result<Vec<u8>, std::io::Error> {
+        match self.backend {
+            Backend::AGC => {
+                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                let ctg_name = ctg_name.clone();
+                let sample_name = sample_name.as_ref().unwrap().clone();
+                Ok(self
+                    .agc_db
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .get_seq(sample_name, ctg_name))
+            }
+            Backend::MEMORY | Backend::FASTX => {
+                Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
+            }
+            Backend::FRG => Ok(self.frg_db.as_ref().unwrap().get_seq_by_id(sid)),
+            Backend::UNKNOWN => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "feteching sequnece fail, database type in not determined",
+            )),
+        }
+    }
+
     pub fn get_sub_seq_by_id(
         &self,
         sid: u32,
@@ -474,18 +499,17 @@ impl SeqIndexDB {
 
         if let Some(seq_db) = decomp_fasta_db {
             seqid_smps = seq_db
-            .seq_info
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|(sid, data)| {
-                let (ctg_name, source, _) = data;
-                let source = source.clone().unwrap();
-                let seq = seq_db.get_seq(source, ctg_name.clone()).unwrap();
-                (*sid, get_smps(seq, &self.shmmr_spec.clone().unwrap()))
-            })
-            .collect();
-
+                .seq_info
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .map(|(sid, data)| {
+                    let (ctg_name, source, _) = data;
+                    let source = source.clone().unwrap();
+                    let seq = seq_db.get_seq(source, ctg_name.clone()).unwrap();
+                    (*sid, get_smps(seq, &self.shmmr_spec.clone().unwrap()))
+                })
+                .collect();
         }
 
         // loop through each sequnece and generate the decomposition for the sequence
@@ -805,7 +829,7 @@ impl SeqIndexDB {
 
 impl SeqIndexDB {
     // depending on the storage type, return the corresponded index
-    fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
+    pub fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {
             Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),

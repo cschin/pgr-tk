@@ -5,8 +5,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 //use std::fs::File;
 use std::{
     fs::File,
-    io::BufWriter,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
 };
 
@@ -141,6 +140,42 @@ fn main() -> Result<(), std::io::Error> {
         .load_from_fastx(fastx_path.clone(), args.w, args.k, args.r, args.min_span)
         .unwrap_or_else(|_| panic!("can't read file {}", fastx_path));
 
+
+    let decomp_fastx_path;
+    let mut decomp_seq_index_db = if let Some(target_fastx_path) = args.decomp_fastx_path {
+        decomp_fastx_path = target_fastx_path.clone();
+        let mut decomp_seq_index_db = SeqIndexDB::new();
+        decomp_seq_index_db
+            .load_from_fastx(target_fastx_path, args.w, args.k, args.r, args.min_span)
+            .unwrap_or_else(|_| panic!("can't read file {}", fastx_path));
+        decomp_seq_index_db
+    } else {
+        //The file is read using a Mmap which is not clonable, need to rebuild the database. TODO: fix this.
+        let seq_list = seq_index_db
+            .seq_info
+            .as_ref()
+            .unwrap()
+            .values()
+            .map(|(ctg, _src, _len)| {
+                let seq = seq_index_db
+                    .get_seq(fastx_path.clone(), ctg.clone())
+                    .expect("fail to fetch sequence");
+                (ctg.clone(), seq)
+            })
+            .collect::<Vec<_>>();
+        let mut decomp_seq_index_db = SeqIndexDB::new();
+        let _ = decomp_seq_index_db.load_from_seq_list(
+            seq_list,
+            Some(fastx_path.as_str()),
+            args.w,
+            args.k,
+            args.r,
+            args.min_span,
+        );
+        decomp_fastx_path = fastx_path.clone();
+        decomp_seq_index_db
+    };
+
     if args.include.is_some() {
         let f = BufReader::new(
             File::open(Path::new(&args.include.unwrap())).expect("can't opne the inlude file"),
@@ -149,8 +184,8 @@ fn main() -> Result<(), std::io::Error> {
         let seq_list = include_ctgs
             .into_iter()
             .map(|ctg| {
-                let seq = seq_index_db
-                    .get_seq(fastx_path.clone(), ctg.clone())
+                let seq = decomp_seq_index_db
+                    .get_seq(decomp_fastx_path.clone(), ctg.clone())
                     .expect("fail to fetch sequence");
                 (ctg, seq)
             })
@@ -158,30 +193,13 @@ fn main() -> Result<(), std::io::Error> {
         let mut new_seq_index_db = SeqIndexDB::new();
         let _ = new_seq_index_db.load_from_seq_list(
             seq_list,
-            Some(fastx_path.as_str()),
+            Some(decomp_fastx_path.as_str()),
             args.w,
             args.k,
             args.r,
             args.min_span,
         );
-        seq_index_db = new_seq_index_db;
-    };
-
-    let decomp_seq_index_db = if let Some(decomp_fastx_path) = args.decomp_fastx_path {
-        let decomp_fastx_path = decomp_fastx_path.clone();
-        let mut decomp_seq_index_db = SeqIndexDB::new();
-        decomp_seq_index_db
-            .load_from_fastx(decomp_fastx_path, args.w, args.k, args.r, args.min_span)
-            .unwrap_or_else(|_| panic!("can't read file {}", fastx_path));
-        decomp_seq_index_db
-    } else {
-        //The file is read using a Mmap which is not clonable, need to rebuild the database. TODO: fix this.
-        let decomp_fastx_path = fastx_path.clone();
-        let mut decomp_seq_index_db = SeqIndexDB::new();
-        decomp_seq_index_db
-            .load_from_fastx(decomp_fastx_path, args.w, args.k, args.r, args.min_span)
-            .unwrap_or_else(|_| panic!("can't read file {}", fastx_path));
-        decomp_seq_index_db
+        decomp_seq_index_db = new_seq_index_db;
     };
 
     let (principal_bundles, sid_smps) = seq_index_db.get_principal_bundle_decomposition(
