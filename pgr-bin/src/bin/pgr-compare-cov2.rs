@@ -121,7 +121,8 @@ fn output_cov_bed(
 fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
     let mut seq_index_db = SeqIndexDB::new();
     if input_type == "AGC" {
-        let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
+        panic!("AGB backend is not support for this git branch");
+        //let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
     } else if input_type == "FRG" {
         let _ = seq_index_db.load_from_frg_index(args.frg_idx_prefix.as_ref().unwrap().clone());
     } else {
