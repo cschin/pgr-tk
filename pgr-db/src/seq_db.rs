@@ -1,9 +1,10 @@
 use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
-use crate::graph_utils::{ShmmrGraphNode, AdjPair, AdjList};
+use crate::graph_utils::{AdjList, AdjPair, ShmmrGraphNode};
 use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, MM128};
 use bincode::{config, Decode, Encode};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
+use duckdb::{params, Connection};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
@@ -16,6 +17,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
 pub const KMERSIZE: u32 = 56;
 pub const SHMMRSPEC: ShmmrSpec = ShmmrSpec {
@@ -274,11 +276,11 @@ impl CompactSeqDB {
                                     &frg,
                                 );
 
-                                /*  // For debugging 
+                                /*  // For debugging
                                 let out = reconstruct_seq_from_aln_segs(base_frg, &aln_segs);
                                 if out != frg {
                                     println!("DBG: {:?} {} {}", deltas, m.end0, m.end1);
-                                    println!("DBG: {:?} {:?} {:?} {} {}", String::from_utf8_lossy(base_frg), aln_segs, 
+                                    println!("DBG: {:?} {:?} {:?} {} {}", String::from_utf8_lossy(base_frg), aln_segs,
                                     String::from_utf8_lossy(&frg), base_frg.len(), frg.len());
                                 };
                                 assert_eq!(out, frg);
@@ -707,7 +709,7 @@ impl CompactSeqDB {
                             println!("DBG X: {:?} {:?}", String::from_utf8_lossy(base_seq), a);
                         }
                         */
-                        
+
                         assert_eq!(*_length as usize, seq.len());
                         if *reversed {
                             seq = reverse_complement(&seq);
@@ -775,7 +777,7 @@ impl GetSeq for CompactSeqDB {
         let reconstructed_seq = self.reconstruct_seq_from_frags(sub_seq_frag.iter().map(|v| v.0));
 
         // println!("DBG: {} {} {} {} {}", sid, frag_range.1, sub_seq_frag.len(), end, reconstructed_seq.len() );
-        
+
         let offset = bgn - sub_seq_frag[0].1;
         reconstructed_seq[(offset as usize)..((offset + end - bgn) as usize)].to_vec()
     }
@@ -785,7 +787,16 @@ impl CompactSeqDB {
     pub fn write_shmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
         let seq_idx_fp = fp_prefix.clone() + ".midx";
         let data_fp = fp_prefix + ".mdb";
-        write_shmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp)?;
+        write_shmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp.clone())?;
+        write_shmr_map_to_dockdb(
+            &self.shmmr_spec,
+            &self.frag_map,
+            Path::new(&data_fp)
+                .with_extension("dockdb")
+                .to_string_lossy()
+                .to_string(),
+        )
+        .expect("writing duckdb error");
         let mut idx_file = BufWriter::new(File::create(seq_idx_fp).expect("file create error"));
         self.seqs
             .iter()
@@ -926,7 +937,6 @@ pub fn frag_map_to_adj_list(
         .collect::<AdjList>() // seq_id, node0, node1
 }
 
-
 pub fn generate_smp_adj_list_for_seq(
     seq: &Vec<u8>,
     sid: u32,
@@ -966,8 +976,16 @@ pub fn generate_smp_adj_list_for_seq(
                     vec![None]
                 } else {
                     vec![
-                        Some((sid, ShmmrGraphNode(v.0, v.1, v.4), ShmmrGraphNode(w.0, w.1, w.4))),
-                        Some((sid, ShmmrGraphNode(w.0, w.1, 1 - w.4), ShmmrGraphNode(v.0, v.1, 1 - v.4))),
+                        Some((
+                            sid,
+                            ShmmrGraphNode(v.0, v.1, v.4),
+                            ShmmrGraphNode(w.0, w.1, w.4),
+                        )),
+                        Some((
+                            sid,
+                            ShmmrGraphNode(w.0, w.1, 1 - w.4),
+                            ShmmrGraphNode(v.0, v.1, 1 - v.4),
+                        )),
                     ]
                 }
             })
@@ -975,8 +993,6 @@ pub fn generate_smp_adj_list_for_seq(
             .collect::<AdjList>()
     }
 }
-
-
 
 type PBundleNode = (
     // node, Option<previous_node>, node_weight, is_leaf, global_rank, branch, branch_rank
@@ -987,14 +1003,13 @@ type PBundleNode = (
     u32,
     u32,
     u32,
-);  
+);
 
 pub fn sort_adj_list_by_weighted_dfs(
     frag_map: &ShmmrToFrags,
     adj_list: &[AdjPair],
     start: ShmmrGraphNode,
 ) -> Vec<PBundleNode> {
-
     use crate::graph_utils::BiDiGraphWeightedDfs;
 
     let mut g = DiGraphMap::<ShmmrGraphNode, ()>::new();
@@ -1042,10 +1057,7 @@ pub fn get_principal_bundles_from_adj_list(
     frag_map: &ShmmrToFrags,
     adj_list: &[AdjPair],
     path_len_cutoff: usize,
-) -> (
-    Vec<Vec<ShmmrGraphNode>>,
-    AdjList,
-) {
+) -> (Vec<Vec<ShmmrGraphNode>>, AdjList) {
     assert!(!adj_list.is_empty());
     // println!("DBG: adj_list[0]: {:?}", adj_list[0]);
     let s = adj_list[0].1;
@@ -1261,6 +1273,61 @@ pub fn write_shmr_map_file(
             })
         })?;
     let _ = out_file.write_all(&buf);
+    Ok(())
+}
+
+pub fn write_shmr_map_to_dockdb(
+    shmmr_spec: &ShmmrSpec,
+    shmmr_map: &ShmmrToFrags,
+    filepath: String,
+) -> Result<(), duckdb::Error> {
+    let conn = Connection::open(&filepath)?;
+    conn.execute(
+        "CREATE TABLE shmmr_spec (
+            w UINTEGER,
+            k UINTEGER,
+            r UINTEGER,
+            min_span UINTEGER,
+            sketch UINTEGER
+        )",
+        params![],
+    )?;
+    let mut appender = conn.appender("shmmr_spec")?;
+    appender
+        .append_row(params![
+            shmmr_spec.w,
+            shmmr_spec.k,
+            shmmr_spec.r,
+            shmmr_spec.min_span,
+            shmmr_spec.sketch
+        ])
+        .expect("duckdb insertion error");
+
+    conn.execute(
+        "CREATE TABLE shmmr_map (
+            hash0 UBIGINT,
+            hash1 UBIGINT,
+            frg_id UINTEGER,
+            seq_id UINTEGER,
+            b UINTEGER,
+            e UINTEGER,
+            orientation UTINYINT
+        )",
+        params![],
+    )?;
+
+    let mut appender = conn.appender("shmmr_map")?;
+
+    shmmr_map.iter().for_each(|(&k, v)| {
+        v.iter().for_each(|&r| {
+            appender
+                .append_row(params![k.0, k.1, r.0, r.1, r.2, r.3, r.4])
+                .expect("duckdb insertion error");
+        });
+    });
+
+    appender.flush();
+
     Ok(())
 }
 
