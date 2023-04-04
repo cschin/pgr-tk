@@ -94,6 +94,18 @@ impl SeqIndexDB {
         Ok(())
     }
 
+    pub fn load_from_agc_index2(&mut self, prefix: String) -> Result<(), std::io::Error> {
+        let (shmmr_spec, new_map, seq_index, seq_info) =
+            seq_db::read_shmr_map_from_duckdb(prefix.to_string() + ".duckdb").unwrap();
+        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agc")?;
+        self.agc_db = Some((agc_file, new_map));
+        self.backend = Backend::AGC;
+        self.shmmr_spec = Some(shmmr_spec);
+        self.seq_index = Some(seq_index);
+        self.seq_info = Some(seq_info);
+        Ok(())
+    }
+
     pub fn load_from_frg_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
         let mut frag_db = pgr_db::frag_file_io::CompactSeqDBStorage::new(prefix);
 

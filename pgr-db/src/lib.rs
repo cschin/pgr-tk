@@ -21,6 +21,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::{BufRead, BufReader, Read};
+    use std::path::Path;
 
     use crate::seq_db::{self, deltas_to_aln_segs, reconstruct_seq_from_aln_segs};
 
@@ -113,7 +114,8 @@ mod tests {
         let m = match_reads(&base_frg, &frg, true, 0.1, 0, 0, 32);
         if let Some(m) = m {
             let deltas: Vec<DeltaPoint> = m.deltas.unwrap();
-            let aln_segs = deltas_to_aln_segs(&deltas, m.end0 as usize, m.end1 as usize, &base_frg, &frg);
+            let aln_segs =
+                deltas_to_aln_segs(&deltas, m.end0 as usize, m.end1 as usize, &base_frg, &frg);
             let re_seq = reconstruct_seq_from_aln_segs(&base_frg, &aln_segs);
             if frg != re_seq || true {
                 println!("{} {}", String::from_utf8_lossy(&base_frg), base_frg.len());
@@ -142,7 +144,8 @@ mod tests {
         let m = match_reads(&base_frg, &frg, true, 0.1, 0, 0, 32);
         if let Some(m) = m {
             let deltas: Vec<DeltaPoint> = m.deltas.unwrap();
-            let aln_segs = deltas_to_aln_segs(&deltas, m.end0 as usize, m.end1 as usize, &base_frg, &frg);
+            let aln_segs =
+                deltas_to_aln_segs(&deltas, m.end0 as usize, m.end1 as usize, &base_frg, &frg);
             let re_seq = reconstruct_seq_from_aln_segs(&base_frg, &aln_segs);
             if frg != re_seq || true {
                 println!("{} {}", String::from_utf8_lossy(&base_frg), base_frg.len());
@@ -291,7 +294,7 @@ mod tests {
         write_shmr_map_file(
             &sdb.shmmr_spec,
             &sdb.frag_map,
-            "test/test_data/test_shmmr.db".to_string(),
+            &Path::new("test/test_data/test_shmmr.db"),
         )?;
         let (_shmmr_spec, new_map) =
             read_mdb_file("test/test_data/test_shmmr.db".to_string()).unwrap();
@@ -355,8 +358,8 @@ mod tests {
 
     #[test]
     fn test_open_compact_seq_db_storage() {
-        use seq_db::GetSeq;
         use crate::frag_file_io::CompactSeqDBStorage;
+        use seq_db::GetSeq;
         let seq_storage = CompactSeqDBStorage::new("test/test_data/test_seqs_frag".to_string());
         let seq = seq_storage.get_seq_by_id(0);
         println!("{}", String::from_utf8_lossy(&seq[..]));

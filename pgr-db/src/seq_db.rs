@@ -2,6 +2,7 @@ use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
 use crate::graph_utils::{AdjList, AdjPair, ShmmrGraphNode};
 use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, MM128};
+use anyhow::Result;
 use bincode::{config, Decode, Encode};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use duckdb::{params, Connection};
@@ -13,7 +14,6 @@ use petgraph::visit::Dfs;
 use petgraph::EdgeDirection::{Incoming, Outgoing};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -785,18 +785,12 @@ impl GetSeq for CompactSeqDB {
 
 impl CompactSeqDB {
     pub fn write_shmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
-        let seq_idx_fp = fp_prefix.clone() + ".midx";
-        let data_fp = fp_prefix + ".mdb";
-        write_shmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp.clone())?;
-        write_shmr_map_to_dockdb(
-            &self.shmmr_spec,
-            &self.frag_map,
-            Path::new(&data_fp)
-                .with_extension("dockdb")
-                .to_string_lossy()
-                .to_string(),
-        )
-        .expect("writing duckdb error");
+        let seq_idx_fp = Path::new(&fp_prefix).with_extension("midx");
+        let data_fp = Path::new(&fp_prefix).with_extension("mdb");
+        write_shmr_map_file(&self.shmmr_spec, &self.frag_map, &data_fp)?;
+        let duckdb_path = Path::new(&data_fp).with_extension("duckdb");
+        write_shmr_map_to_dockdb(&self.shmmr_spec, &self.frag_map, &self.seqs, &duckdb_path)
+            .expect("writing duckdb error");
         let mut idx_file = BufWriter::new(File::create(seq_idx_fp).expect("file create error"));
         self.seqs
             .iter()
@@ -1243,7 +1237,7 @@ pub fn get_match_positions_with_fragment(
 pub fn write_shmr_map_file(
     shmmr_spec: &ShmmrSpec,
     shmmr_map: &ShmmrToFrags,
-    filepath: String,
+    filepath: &Path,
 ) -> Result<(), std::io::Error> {
     let mut out_file = File::create(filepath).expect("open fail");
     let mut buf = Vec::<u8>::new();
@@ -1279,8 +1273,9 @@ pub fn write_shmr_map_file(
 pub fn write_shmr_map_to_dockdb(
     shmmr_spec: &ShmmrSpec,
     shmmr_map: &ShmmrToFrags,
-    filepath: String,
-) -> Result<(), duckdb::Error> {
+    seqs: &Vec<CompactSeq>,
+    filepath: &Path,
+) -> Result<()> {
     let conn = Connection::open(&filepath)?;
     conn.execute(
         "CREATE TABLE shmmr_spec (
@@ -1328,7 +1323,104 @@ pub fn write_shmr_map_to_dockdb(
 
     appender.flush();
 
+    conn.execute(
+        "CREATE TABLE seq_index (
+            id UINTEGER,
+            len UINTEGER,
+            name VARCHAR,
+            src VARCHAR,
+        )",
+        params![],
+    )?;
+
+    let mut appender = conn.appender("seq_index")?;
+
+    seqs.iter().for_each(|s| {
+        appender
+            .append_row(params![s.id, s.len, s.name, s.source])
+            .expect("duckdb insertion error");
+    });
+
+    appender.flush();
+
     Ok(())
+}
+
+pub fn read_shmr_map_from_duckdb(
+    filepath: String,
+) -> Result<(
+    ShmmrSpec,
+    ShmmrToFrags,
+    FxHashMap<(String, Option<String>), (u32, u32)>,
+    FxHashMap<u32, (String, Option<String>, u32)>,
+)> {
+    let conn = Connection::open(&filepath)?;
+
+    conn.execute("SET threads TO 20;", [])?;
+    let mut shmmr_map = ShmmrToFrags::default();
+
+    let mut stmt = conn
+        .prepare("SELECT * FROM shmmr_map")
+        .expect("error on reading the SHIMMER duckdb");
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+        ))
+    })?;
+
+    rows.for_each(|v| {
+        let v = v.unwrap();
+        let k0 = v.0;
+        let k1 = v.1;
+        let e = shmmr_map
+            .entry((k0, k1))
+            .or_insert_with(|| Vec::<_>::with_capacity(128));
+        e.push((v.2, v.3, v.4, v.5, v.6))
+    });
+
+    let mut stmt = conn.prepare("SELECT * FROM shmmr_spec LIMIT 1")?;
+    let mut rows = stmt.query([])?;
+    let mut shmmr_spec = ShmmrSpec {
+        w: 0,
+        k: 0,
+        r: 0,
+        min_span: 0,
+        sketch: false,
+    };
+    while let Some(row) = rows.next()? {
+        shmmr_spec.w = row.get(0)?;
+        shmmr_spec.k = row.get(1)?;
+        shmmr_spec.r = row.get(2)?;
+        shmmr_spec.min_span = row.get(3)?;
+        shmmr_spec.sketch = row.get(4)?;
+    }
+
+    let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
+    let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
+
+    let mut stmt = conn
+        .prepare("SELECT * FROM seq_index")
+        .expect("fail to read seq index");
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
+    rows.for_each(|v| {
+        let v = v.unwrap();
+        let id: u32 = v.0;
+        let len: u32 = v.1;
+        let name: String = v.2;
+        let src: Option<String> = Some(v.3);
+        seq_index.insert((name.clone(), src.clone()), (id, len));
+        seq_info.insert(id, (name, src, len));
+    });
+
+    Ok((shmmr_spec, shmmr_map, seq_index, seq_info))
 }
 
 pub fn read_mdb_file(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
