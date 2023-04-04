@@ -94,7 +94,7 @@ impl SeqIndexDB {
         Ok(())
     }
 
-    pub fn load_from_agc_index2(&mut self, prefix: String) -> Result<(), std::io::Error> {
+    pub fn load_from_agc_ddb_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
         let (shmmr_spec, new_map, seq_index, seq_info) =
             seq_db::read_shmr_map_from_duckdb(prefix.to_string() + ".duckdb").unwrap();
         let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agc")?;

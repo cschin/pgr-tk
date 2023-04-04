@@ -111,7 +111,7 @@ fn main() -> Result<(), std::io::Error> {
         let stderr = io::stderr();
         let mut handle = stderr.lock();
         let _ = handle.write_all(b"Read the input as a AGC backed index database files.");
-        let _ = seq_index_db.load_from_agc_index2(args.pgr_db_prefix);
+        let _ = seq_index_db.load_from_agc_ddb_index(args.pgr_db_prefix);
     }
     let prefix = Path::new(&args.output_prfix);
 

@@ -1354,11 +1354,11 @@ pub fn read_shmr_map_from_duckdb(
     FxHashMap<(String, Option<String>), (u32, u32)>,
     FxHashMap<u32, (String, Option<String>, u32)>,
 )> {
-    let conn = Connection::open(&filepath)?;
+    let duckdb_config = duckdb::Config::default()
+        .access_mode(duckdb::AccessMode::ReadOnly)?;
+    let conn = Connection::open_with_flags(&filepath, duckdb_config)?;
 
-    conn.execute("SET threads TO 20;", [])?;
     let mut shmmr_map = ShmmrToFrags::default();
-
     let mut stmt = conn
         .prepare("SELECT * FROM shmmr_map")
         .expect("error on reading the SHIMMER duckdb");
