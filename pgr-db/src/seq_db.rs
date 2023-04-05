@@ -81,10 +81,14 @@ impl FragmentGroup {
     }
 
     pub fn compress(&mut self) {
+        if self.compressed == true {
+            return;
+        }
         let data = self.seqs.iter().flat_map(|v| v.clone()).collect::<Vec<u8>>();
         self.compressed_data = encode_all(&data[..], 1).unwrap();
         self.compressed = true;
         self.seqs.clear();
+        /*
         println!(
             "compress ratio {}/{}={} {}/{}={}",
             self.total_len,
@@ -94,6 +98,7 @@ impl FragmentGroup {
             self.compressed_data.len(),
             data.len() as f32 / self.compressed_data.len() as f32,
         );
+        */
     }
 
     pub fn add_frag(&mut self, v: &[u8]) -> Option<usize> {
@@ -107,7 +112,7 @@ impl FragmentGroup {
         } else {
             let length = self.seqs.len();
             self.total_len += v.len();
-            let single_compressed_seq = encode_all(&v[..], 1).unwrap();
+            let single_compressed_seq = v.to_vec();
             self.seq_len.push(single_compressed_seq.len());
             self.seqs.push(single_compressed_seq);
             Some(length)
@@ -117,8 +122,7 @@ impl FragmentGroup {
 
     pub fn get_frag(&self, sub_idx: u32) -> Vec<u8> {
         if !self.compressed {
-            let single_compress_seq = &self.seqs[sub_idx as usize];
-            decode_all(&single_compress_seq[..]).unwrap()
+            self.seqs[sub_idx as usize].clone()
         } else {
             let decoded_data = decode_all(&self.compressed_data[..]).unwrap();
             let mut offset = 0;
@@ -126,9 +130,9 @@ impl FragmentGroup {
                 offset += self.seq_len[sidx];
             };
 
-            let single_compressed_seq = decoded_data
-                [offset..offset + self.seq_len[sub_idx as usize]].to_vec();
-            decode_all(&single_compressed_seq[..]).unwrap()
+            decoded_data
+                [offset..offset + self.seq_len[sub_idx as usize]].to_vec()
+            
         }
     }
 }
@@ -795,7 +799,7 @@ impl CompactSeqDB {
 }
 
 impl CompactSeqDB {
-    pub fn write_to_frag_files(&self, file_prefix: String) {
+    pub fn write_to_frag_files(&mut self, file_prefix: String) {
         let mut sdx_file = BufWriter::new(
             File::create(file_prefix.clone() + ".sdx").expect("sdx file creating fail\n"),
         );
@@ -808,12 +812,16 @@ impl CompactSeqDB {
         //    println!("{:?} {:?} {} {}", s.id, s.seq_frags.len(), s.seq_frags[0], s.seq_frags[s.seq_frags.len()-1]);
         //});
 
+        self
+        .frag_groups.as_mut().unwrap().par_iter_mut().for_each(|f| f.compress());
+
         let compressed_frag_groups = self
             .frag_groups
             .as_ref()
             .unwrap()
             .par_iter()
             .map(|f| {
+                
                 let w = bincode::encode_to_vec(f, config).unwrap();
                 let mut compressor = DeflateEncoder::new(Vec::new(), Compression::default());
                 compressor.write_all(&w).unwrap();
