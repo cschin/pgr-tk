@@ -54,7 +54,7 @@ pub enum Fragment {
     Suffix(Bases),
 }
 
-pub const FRAG_SHIFT: usize = 5;
+pub const FRAG_SHIFT: usize = 4;
 pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
 #[derive(Debug, Clone, Decode, Encode)]
 pub struct FragmentGroup {
@@ -120,8 +120,8 @@ impl FragmentGroup {
                     .filter(|u| *u.1 == 0xFF)
                     .map(|v| v.0 + 1),
             );
-            split_points.push(decoded_data.len());
-            decoded_data[split_points[sub_idx as usize]..split_points[sub_idx as usize + 1]].into()
+            split_points.push(decoded_data.len()+1);
+            decoded_data[split_points[sub_idx as usize]..split_points[sub_idx as usize + 1]-1].into()
         }
     }
 }
