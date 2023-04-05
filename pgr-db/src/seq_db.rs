@@ -8,6 +8,8 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
+use libflate::deflate::{Decoder, EncodeOptions, Encoder};
+use libflate::lz77::DefaultLz77Encoder;
 use petgraph::graphmap::DiGraphMap;
 use petgraph::visit::Dfs;
 use petgraph::EdgeDirection::{Incoming, Outgoing};
@@ -52,36 +54,75 @@ pub enum Fragment {
     Suffix(Bases),
 }
 
-pub const FRAG_SHIFT: usize = 4;
+pub const FRAG_SHIFT: usize = 5;
 pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
 #[derive(Debug, Clone, Decode, Encode)]
 pub struct FragmentGroup {
-    pub uncompressed: Vec<Vec<u8>>,
-    pub compressed: Vec<u8>,
+    pub uncompressed_seqs: Vec<Vec<u8>>,
+    pub compressed_data: Vec<u8>,
+    pub compressed: bool,
 }
 
 impl FragmentGroup {
     pub fn new() -> Self {
-        let uncompressed = Vec::new();
-        let compressed = Vec::new();
+        let uncompressed_seqs = Vec::new();
+        let compressed_data = Vec::new();
         FragmentGroup {
-            uncompressed,
-            compressed,
+            uncompressed_seqs,
+            compressed_data,
+            compressed: false,
         }
     }
 
-    pub fn add_uncompress_frag(&mut self, v: &[u8]) -> Option<usize> {
-        let length = self.uncompressed.len();
-        if self.uncompressed.len() >= FRAG_GROUP_MAX {
+    pub fn compress(&mut self) {
+        let data = self.uncompressed_seqs.join(&0xFF);
+        let options = EncodeOptions::with_lz77(DefaultLz77Encoder::new())
+            .block_size(16 * 1024);
+        let mut encoder = Encoder::with_options(Vec::new(), options);
+        encoder.write_all(&data[..]).unwrap();
+        self.compressed_data = encoder.finish().into_result().unwrap();
+        self.compressed = true;
+        println!(
+            "compress ratio {}/{}={}",
+            data.len(),
+            self.compressed_data.len(),
+            data.len() as f32 / self.compressed_data.len() as f32
+        );
+    }
+
+    pub fn add_frag(&mut self, v: &[u8]) -> Option<usize> {
+        let length = self.uncompressed_seqs.len();
+        if self.uncompressed_seqs.len() >= FRAG_GROUP_MAX {
+            if !self.compressed {
+                self.compress()
+            };
+            None
+        } else if self.compressed {
             None
         } else {
-            self.uncompressed.push(v.into());
+            self.uncompressed_seqs.push(v.into());
             Some(length)
         }
     }
 
-    pub fn get_uncompressed_frag(&self, sub_idx: u32) -> Vec<u8> {
-        self.uncompressed[sub_idx as usize].clone()
+    pub fn get_frag(&self, sub_idx: u32) -> Vec<u8> {
+        if !self.compressed {
+            self.uncompressed_seqs[sub_idx as usize].clone()
+        } else {
+            let mut decoder = Decoder::new(&self.compressed_data[..]);
+            let mut decoded_data = Vec::new();
+            decoder.read_to_end(&mut decoded_data).unwrap();
+            let mut split_points = vec![0];
+            split_points.extend(
+                decoded_data
+                    .iter()
+                    .enumerate()
+                    .filter(|u| *u.1 == 0xFF)
+                    .map(|v| v.0 + 1),
+            );
+            split_points.push(decoded_data.len());
+            decoded_data[split_points[sub_idx as usize]..split_points[sub_idx as usize + 1]].into()
+        }
     }
 }
 
@@ -234,11 +275,10 @@ impl CompactSeqDB {
         //assert!(shmmrs.len() > 0);
         if shmmrs.is_empty() {
             let mut frag_group = FragmentGroup::new();
-            let sub_idx = frag_group.add_uncompress_frag(&seq[..]).unwrap(); // unwrap, first element
+            let sub_idx = frag_group.add_frag(&seq[..]).unwrap(); // unwrap, first element
             assert!(sub_idx == 0);
             frag_groups.push(frag_group);
             seq_frags.push(((frag_group_id << 4) | (sub_idx as u32)) << 2 | 0b00);
-        println!("0: {} {}", frag_group_id, sub_idx);
 
             return CompactSeq {
                 source,
@@ -248,18 +288,17 @@ impl CompactSeqDB {
                 len: seq.len(),
             };
         }
-        
+
         let mut seq_len = 0_usize;
         // prefix
         let end = (shmmrs[0].pos() + 1) as usize;
 
         let mut frag_group = FragmentGroup::new();
-        let sub_idx = frag_group.add_uncompress_frag(&seq[..end]).unwrap(); // unwrap, the 0th element
+        let sub_idx = frag_group.add_frag(&seq[..end]).unwrap(); // unwrap, the 0th element
         assert!(sub_idx == 0);
         frag_groups.push(frag_group);
         seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b00);
         seq_len += end;
-        println!("1: {} {}", frag_group_id, sub_idx);
         frag_group_id += 1;
 
         pair_shmmrs(&shmmrs).iter().for_each(|(shmmr0, shmmr1)| {
@@ -278,15 +317,17 @@ impl CompactSeqDB {
 
             if self.frag_map.contains_key(&shmmr_pair) {
                 let e = self.frag_map.get_mut(&shmmr_pair).unwrap();
-                
+
                 for t_frag in e.iter() {
-                    //if orientation != t_frag.4 {continue};
+                    if orientation != t_frag.4 {
+                        continue;
+                    };
                     let t_frag_id = t_frag.0;
                     let t_frag_group_id = t_frag_id >> FRAG_SHIFT >> 2;
                     if let Some(frag_group) = frag_groups.get_mut(t_frag_group_id as usize) {
-                        if let Some(sub_idx) = frag_group.add_uncompress_frag(frag) {
-                            let frag_id = (t_frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
-                            println!("2: {} {} {}", t_frag_group_id, frag_group_id, sub_idx);
+                        if let Some(sub_idx) = frag_group.add_frag(frag) {
+                            let frag_id =
+                                (t_frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
                             seq_frags.push(frag_id);
                             seq_len += frag_len as usize;
                             e.push((frag_id, id, bgn, end, orientation));
@@ -294,10 +335,10 @@ impl CompactSeqDB {
                             break;
                         } else {
                             let mut frag_group = FragmentGroup::new();
-                            let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
+                            let sub_idx = frag_group.add_frag(frag).unwrap(); // unwrap, first element
                             frag_groups.push(frag_group);
-                            let frag_id = (frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
-                            println!("3: {} {}", frag_group_id, sub_idx);
+                            let frag_id =
+                                (frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
                             seq_frags.push(frag_id);
                             frag_group_id += 1;
                             seq_len += frag_len as usize;
@@ -310,14 +351,13 @@ impl CompactSeqDB {
             };
             if !added {
                 let mut frag_group = FragmentGroup::new();
-                let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
+                let sub_idx = frag_group.add_frag(frag).unwrap(); // unwrap, first element
                 assert!(sub_idx == 0);
                 frag_groups.push(frag_group);
                 let frag_id = (frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
                 seq_frags.push(frag_id);
-                println!("4: {} {}", frag_group_id, sub_idx);
                 self.frag_map
-                        .insert(shmmr_pair, vec![(frag_id, id, bgn, end, orientation)]);
+                    .insert(shmmr_pair, vec![(frag_id, id, bgn, end, orientation)]);
                 frag_group_id += 1;
                 seq_len += frag_len as usize;
             }
@@ -327,11 +367,10 @@ impl CompactSeqDB {
         let bgn = (shmmrs[shmmrs.len() - 1].pos() + 1) as usize;
         let frag = &seq[bgn..];
         let mut frag_group = FragmentGroup::new();
-        let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
-        println!("5: {} {}", frag_group_id, sub_idx);
+        let sub_idx = frag_group.add_frag(frag).unwrap(); // unwrap, first element
         frag_groups.push(frag_group);
         seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b10);
-        frag_group_id += 1;
+        //frag_group_id += 1;
         seq_len += frag.len();
 
         assert_eq!(seq_len, seq.len());
@@ -675,7 +714,7 @@ impl CompactSeqDB {
             let b = frag_groups
                 .get(frag_group_id as usize)
                 .unwrap()
-                .get_uncompressed_frag(sub_idx);
+                .get_frag(sub_idx);
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
             match t {
                 0b00 => {
@@ -785,8 +824,12 @@ impl CompactSeqDB {
             frg_file.write_all(v).expect("frag file writing error\n");
         });
 
-        bincode::encode_into_std_write((frag_grpup_addr_offeset, &self.seqs), &mut sdx_file, config)
-            .expect("sdx file writing error\n");
+        bincode::encode_into_std_write(
+            (frag_grpup_addr_offeset, &self.seqs),
+            &mut sdx_file,
+            config,
+        )
+        .expect("sdx file writing error\n");
         //bincode::encode_into_std_write(compressed_frags, &mut frg_file, config)
         //    .expect(" frag file writing error");
     }

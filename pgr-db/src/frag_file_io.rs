@@ -1,5 +1,5 @@
 use crate::seq_db::{
-    self, read_mdb_file_parallel, CompactSeq, Fragment, FragmentGroup, GetSeq, ShmmrToFrags,
+    read_mdb_file_parallel, CompactSeq, FragmentGroup, GetSeq, ShmmrToFrags,
     FRAG_SHIFT,
 };
 use crate::shmmrutils::ShmmrSpec;
@@ -82,7 +82,7 @@ impl CompactSeqDBStorage {
                 &self.frag_group_addr_offsets,
                 &self.frag_file,
             );
-            let b = frag_group.get_uncompressed_frag(sub_idx);
+            let b = frag_group.get_frag(sub_idx);
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
             match t {
                 0b00 => {
