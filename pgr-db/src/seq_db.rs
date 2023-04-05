@@ -8,14 +8,14 @@ use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use flate2::bufread::MultiGzDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
-use libflate::deflate::{Decoder, EncodeOptions, Encoder};
-use libflate::lz77::DefaultLz77Encoder;
-//use zstd::stream::raw::{Encoder, Decoder};
+//use libflate::deflate::{Decoder, EncodeOptions, Encoder};
+//use libflate::lz77::DefaultLz77Encoder;
 use petgraph::graphmap::DiGraphMap;
 use petgraph::visit::Dfs;
 use petgraph::EdgeDirection::{Incoming, Outgoing};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+use zstd::stream::{decode_all, encode_all};
 
 use std::fmt;
 use std::fs::File;
@@ -59,42 +59,45 @@ pub const FRAG_SHIFT: usize = 5;
 pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
 #[derive(Debug, Clone, Decode, Encode)]
 pub struct FragmentGroup {
-    pub uncompressed_seqs: Vec<Vec<u8>>,
+    pub seqs: Vec<Vec<u8>>,
+    seq_len: Vec<usize>,
+    total_len: usize,
     pub compressed_data: Vec<u8>,
     pub compressed: bool,
 }
 
 impl FragmentGroup {
     pub fn new() -> Self {
-        let uncompressed_seqs = Vec::new();
+        let seqs = Vec::new();
         let compressed_data = Vec::new();
+        let seq_len = Vec::new();
         FragmentGroup {
-            uncompressed_seqs,
+            seqs,
+            seq_len,
+            total_len: 0,            
             compressed_data,
             compressed: false,
         }
     }
 
     pub fn compress(&mut self) {
-        let data = self.uncompressed_seqs.join(&0xFF);
-        let options = EncodeOptions::with_lz77(DefaultLz77Encoder::new())
-            .block_size(32 * 1024);
-        let mut encoder = Encoder::with_options(Vec::new(), options);
-        encoder.write_all(&data[..]).unwrap();
-        self.compressed_data = encoder.finish().into_result().unwrap();
+        let data = self.seqs.iter().flat_map(|v| v.clone()).collect::<Vec<u8>>();
+        self.compressed_data = encode_all(&data[..], 1).unwrap();
         self.compressed = true;
-        self.uncompressed_seqs.clear();
+        self.seqs.clear();
         println!(
-            "compress ratio {}/{}={}",
+            "compress ratio {}/{}={} {}/{}={}",
+            self.total_len,
+            self.compressed_data.len(),
+            self.total_len as f32 / self.compressed_data.len() as f32,
             data.len(),
             self.compressed_data.len(),
-            data.len() as f32 / self.compressed_data.len() as f32
+            data.len() as f32 / self.compressed_data.len() as f32,
         );
     }
 
     pub fn add_frag(&mut self, v: &[u8]) -> Option<usize> {
-        let length = self.uncompressed_seqs.len();
-        if self.uncompressed_seqs.len() >= FRAG_GROUP_MAX {
+        if self.seqs.len() >= FRAG_GROUP_MAX {
             if !self.compressed {
                 self.compress()
             };
@@ -102,28 +105,30 @@ impl FragmentGroup {
         } else if self.compressed {
             None
         } else {
-            self.uncompressed_seqs.push(v.into());
+            let length = self.seqs.len();
+            self.total_len += v.len();
+            let single_compressed_seq = encode_all(&v[..], 1).unwrap();
+            self.seq_len.push(single_compressed_seq.len());
+            self.seqs.push(single_compressed_seq);
             Some(length)
         }
+
     }
 
     pub fn get_frag(&self, sub_idx: u32) -> Vec<u8> {
         if !self.compressed {
-            self.uncompressed_seqs[sub_idx as usize].clone()
+            let single_compress_seq = &self.seqs[sub_idx as usize];
+            decode_all(&single_compress_seq[..]).unwrap()
         } else {
-            let mut decoder = Decoder::new(&self.compressed_data[..]);
-            let mut decoded_data = Vec::new();
-            decoder.read_to_end(&mut decoded_data).unwrap();
-            let mut split_points = vec![0];
-            split_points.extend(
-                decoded_data
-                    .iter()
-                    .enumerate()
-                    .filter(|u| *u.1 == 0xFF)
-                    .map(|v| v.0 + 1),
-            );
-            split_points.push(decoded_data.len()+1);
-            decoded_data[split_points[sub_idx as usize]..split_points[sub_idx as usize + 1]-1].into()
+            let decoded_data = decode_all(&self.compressed_data[..]).unwrap();
+            let mut offset = 0;
+            for sidx in 0..sub_idx as usize {
+                offset += self.seq_len[sidx];
+            };
+
+            let single_compressed_seq = decoded_data
+                [offset..offset + self.seq_len[sub_idx as usize]].to_vec();
+            decode_all(&single_compressed_seq[..]).unwrap()
         }
     }
 }
