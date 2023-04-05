@@ -10,6 +10,7 @@ use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use libflate::deflate::{Decoder, EncodeOptions, Encoder};
 use libflate::lz77::DefaultLz77Encoder;
+//use zstd::stream::raw::{Encoder, Decoder};
 use petgraph::graphmap::DiGraphMap;
 use petgraph::visit::Dfs;
 use petgraph::EdgeDirection::{Incoming, Outgoing};
@@ -82,6 +83,7 @@ impl FragmentGroup {
         encoder.write_all(&data[..]).unwrap();
         self.compressed_data = encoder.finish().into_result().unwrap();
         self.compressed = true;
+        self.uncompressed_seqs.clear();
         println!(
             "compress ratio {}/{}={}",
             data.len(),
