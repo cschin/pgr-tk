@@ -85,6 +85,7 @@ mod tests {
             //println!("{}", seq.name);
             let reconstruct_seq = sdb.get_seq(seq);
             let orig_seq = seqs.get(&seq.name).unwrap();
+            println!("len compare: {} {}", reconstruct_seq.len(), orig_seq.len());
             if reconstruct_seq != *orig_seq {
                 //println!("{}", seq.name);
                 //println!("{:?}", reconstruct_seq);

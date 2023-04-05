@@ -94,7 +94,7 @@ impl FragmentGroup {
         let length = self.uncompressed_seqs.len();
         if self.uncompressed_seqs.len() >= FRAG_GROUP_MAX {
             if !self.compressed {
-                self.compress()
+                // self.compress()
             };
             None
         } else if self.compressed {
@@ -278,7 +278,7 @@ impl CompactSeqDB {
             let sub_idx = frag_group.add_frag(&seq[..]).unwrap(); // unwrap, first element
             assert!(sub_idx == 0);
             frag_groups.push(frag_group);
-            seq_frags.push(((frag_group_id << 4) | (sub_idx as u32)) << 2 | 0b00);
+            seq_frags.push(((frag_group_id << FRAG_SHIFT) | (sub_idx as u32)) << 2 | 0b00);
 
             return CompactSeq {
                 source,
@@ -297,7 +297,7 @@ impl CompactSeqDB {
         let sub_idx = frag_group.add_frag(&seq[..end]).unwrap(); // unwrap, the 0th element
         assert!(sub_idx == 0);
         frag_groups.push(frag_group);
-        seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b00);
+        seq_frags.push((frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b00);
         seq_len += end;
         frag_group_id += 1;
 
@@ -369,7 +369,7 @@ impl CompactSeqDB {
         let mut frag_group = FragmentGroup::new();
         let sub_idx = frag_group.add_frag(frag).unwrap(); // unwrap, first element
         frag_groups.push(frag_group);
-        seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b10);
+        seq_frags.push((frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b10);
         //frag_group_id += 1;
         seq_len += frag.len();
 
@@ -709,7 +709,7 @@ impl CompactSeqDB {
         // let mut _p = 0;
         frag_ids.for_each(|frag_id| {
             let t = frag_id & 0b11;
-            let sub_idx = (frag_id >> 2) & 0b1111;
+            let sub_idx = (frag_id >> 2) & ((0x01 << FRAG_SHIFT) - 1);
             let frag_group_id = frag_id >> 2 >> FRAG_SHIFT;
             let b = frag_groups
                 .get(frag_group_id as usize)
