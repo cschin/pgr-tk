@@ -1,4 +1,7 @@
-use crate::seq_db::{self, read_mdb_file_parallel, CompactSeq, Fragment, ShmmrToFrags, GetSeq};
+use crate::seq_db::{
+    self, read_mdb_file_parallel, CompactSeq, Fragment, FragmentGroup, GetSeq, ShmmrToFrags,
+    FRAG_SHIFT,
+};
 use crate::shmmrutils::ShmmrSpec;
 use bincode::config;
 use flate2::read::DeflateDecoder;
@@ -13,7 +16,7 @@ pub struct CompactSeqDBStorage {
     pub frag_map: ShmmrToFrags,
     pub frag_file_prefix: String,
     pub frag_file: Mmap,
-    pub frag_addr_offsets: Vec<(usize, usize, u32)>, //offset, compress_chunk_size, frag_len_in_bases
+    pub frag_group_addr_offsets: Vec<(usize, usize)>, //offset, compress_chunk_size
     pub seq_index: FxHashMap<(String, Option<String>), (u32, u32)>,
     /// a dictionary maps id -> (ctg_name, source, len)
     pub seq_info: FxHashMap<u32, (String, Option<String>, u32)>,
@@ -28,7 +31,7 @@ impl CompactSeqDBStorage {
             File::open(frag_file_prefix.clone() + ".sdx").expect("sdx file open error"),
         );
         let config = config::standard();
-        let (frag_addr_offsets, seqs): (Vec<(usize, usize, u32)>, Vec<CompactSeq>) =
+        let (frag_addr_offsets, seqs): (Vec<(usize, usize)>, Vec<CompactSeq>) =
             bincode::decode_from_std_read(&mut sdx_file, config).expect("read sdx file error");
         let f_file = File::open(frag_file_prefix.clone() + ".frg").expect("frag file open fail");
         let frag_file = unsafe { Mmap::map(&f_file).expect("frag mmap fail") };
@@ -60,49 +63,43 @@ impl CompactSeqDBStorage {
             frag_map,
             frag_file_prefix,
             frag_file,
-            frag_addr_offsets,
+            frag_group_addr_offsets: frag_addr_offsets,
             seq_index,
             seq_info,
         }
     }
-
-
 
     fn get_seq_from_frag_ids<I: Iterator<Item = u32>>(&self, frag_ids: I) -> Vec<u8> {
         let mut reconstructed_seq = <Vec<u8>>::new();
 
         let mut _p = 0;
         frag_ids.for_each(|frag_id| {
-            let frag = fetch_frag(frag_id, &self.frag_addr_offsets, &self.frag_file);
-            match frag {
-                Fragment::Prefix(b) => {
+            let t = frag_id & 0b11;
+            let sub_idx = (frag_id >> 2) & 0b1111;
+            let frag_group_id = frag_id >> 2 >> FRAG_SHIFT;
+            let frag_group = fetch_frag(
+                frag_group_id,
+                &self.frag_group_addr_offsets,
+                &self.frag_file,
+            );
+            let b = frag_group.get_uncompressed_frag(sub_idx);
+            //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
+            match t {
+                0b00 => {
+                    //prefix
                     reconstructed_seq.extend_from_slice(&b[..]);
-                    //println!("p: {} {}", p, p + b.len());
-                    _p += b.len();
                 }
-                Fragment::Suffix(b) => {
+                0b10 => {
+                    //suffix
                     reconstructed_seq.extend_from_slice(&b[..]);
-                    //println!("p: {} {}", p, p + b.len());
-                    _p += b.len();
+                    //_p += b.len();
                 }
-                Fragment::Internal(b) => {
+                0b01 => {
+                    // internal
                     reconstructed_seq.extend_from_slice(&b[self.shmmr_spec.k as usize..]);
-                    //println!("p: {} {}", p, p + b.len());
-                    _p += b.len();
+                    //_p += b.len()-self.shmmr_spec.k as usize;
                 }
-                Fragment::AlnSegments((frag_id, reversed, _length, a)) => {
-                    if let Fragment::Internal(base_seq) =
-                        fetch_frag(frag_id, &self.frag_addr_offsets, &self.frag_file)
-                    {
-                        let mut seq = seq_db::reconstruct_seq_from_aln_segs(&base_seq, &a);
-                        if reversed {
-                            seq = crate::fasta_io::reverse_complement(&seq);
-                        }
-                        reconstructed_seq.extend_from_slice(&seq[self.shmmr_spec.k as usize..]);
-                        //println!("p: {} {}", p, p + seq.len());
-                        _p += seq.len();
-                    }
-                }
+                _ => (),
             }
         });
 
@@ -113,55 +110,30 @@ impl CompactSeqDBStorage {
 impl GetSeq for CompactSeqDBStorage {
     fn get_seq_by_id(&self, sid: u32) -> Vec<u8> {
         assert!((sid as usize) < self.seqs.len());
-        let frag_range = &self.seqs[sid as usize].seq_frag_range;
-        self.get_seq_from_frag_ids(frag_range.0..frag_range.0 + frag_range.1)
+        let seq_frags = self.seqs[sid as usize].seq_frags.clone();
+        self.get_seq_from_frag_ids(seq_frags.into_iter())
     }
 
     fn get_sub_seq_by_id(&self, sid: u32, bgn: u32, end: u32) -> Vec<u8> {
         assert!((sid as usize) < self.seqs.len());
-        let frag_range = &self.seqs[sid as usize].seq_frag_range;
-
-        let mut _p = 0;
-        let mut base_offset = 0_u32;
-        let mut sub_seq_frag = vec![];
-        for frag_id in frag_range.0..frag_range.0 + frag_range.1 {
-            let (_, _, mut frag_len) = self.frag_addr_offsets[frag_id as usize];
-            if frag_id != frag_range.0 && frag_id != frag_range.0 + frag_range.1 - 1 {
-                // for internal segements
-                frag_len -= self.shmmr_spec.k;
-            }
-            if (base_offset <= bgn && bgn < base_offset + frag_len)
-                || (base_offset <= end && end < base_offset + frag_len)
-                || (bgn <= base_offset && base_offset + frag_len <= end)
-            {
-                sub_seq_frag.push((frag_id, base_offset));
-            }
-
-            base_offset += frag_len;
-        }
-
-        let reconstructed_seq = self.get_seq_from_frag_ids(sub_seq_frag.iter().map(|v| v.0));
-
-        let offset = bgn - sub_seq_frag[0].1;
-
-        reconstructed_seq[(offset as usize)..((offset + end - bgn) as usize)].to_vec()
+        let seq = self.get_seq_by_id(sid);
+        seq[bgn as usize..end as usize].into()
     }
-    
 }
 
 fn fetch_frag(
-    frag_id: u32,
-    frag_addr_offsets: &[(usize, usize, u32)],
+    frag_group_id: u32,
+    frag_group_addr_offsets: &[(usize, usize)],
     frag_file: &Mmap,
-) -> Fragment {
+) -> FragmentGroup {
     let config = config::standard();
-    let (offset, size, _) = frag_addr_offsets[frag_id as usize];
+    let (offset, size) = frag_group_addr_offsets[frag_group_id as usize];
     let compress_chunk = frag_file[offset..(offset + size as usize)].to_vec();
     let mut deflater = DeflateDecoder::new(&compress_chunk[..]);
     let mut s: Vec<u8> = vec![];
     deflater.read_to_end(&mut s).expect("decompression error");
-    let (frag, _size): (Fragment, usize) =
-        bincode::decode_from_slice::<Fragment, bincode::config::Configuration>(&s[..], config)
+    let (frag_group, _size): (FragmentGroup, usize) =
+        bincode::decode_from_slice::<FragmentGroup, bincode::config::Configuration>(&s[..], config)
             .unwrap();
-    frag
+    frag_group
 }

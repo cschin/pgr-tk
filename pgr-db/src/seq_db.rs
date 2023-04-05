@@ -1,7 +1,8 @@
 use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
-use crate::graph_utils::{ShmmrGraphNode, AdjPair, AdjList};
+use crate::graph_utils::{AdjList, AdjPair, ShmmrGraphNode};
 use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, MM128};
+use anyhow::Result;
 use bincode::{config, Decode, Encode};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use flate2::bufread::MultiGzDecoder;
@@ -51,6 +52,39 @@ pub enum Fragment {
     Suffix(Bases),
 }
 
+pub const FRAG_SHIFT: usize = 4;
+pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
+#[derive(Debug, Clone, Decode, Encode)]
+pub struct FragmentGroup {
+    pub uncompressed: Vec<Vec<u8>>,
+    pub compressed: Vec<u8>,
+}
+
+impl FragmentGroup {
+    pub fn new() -> Self {
+        let uncompressed = Vec::new();
+        let compressed = Vec::new();
+        FragmentGroup {
+            uncompressed,
+            compressed,
+        }
+    }
+
+    pub fn add_uncompress_frag(&mut self, v: &[u8]) -> Option<usize> {
+        let length = self.uncompressed.len();
+        if self.uncompressed.len() >= FRAG_GROUP_MAX {
+            None
+        } else {
+            self.uncompressed.push(v.into());
+            Some(length)
+        }
+    }
+
+    pub fn get_uncompressed_frag(&self, sub_idx: u32) -> Vec<u8> {
+        self.uncompressed[sub_idx as usize].clone()
+    }
+}
+
 impl fmt::Display for Fragment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -82,7 +116,7 @@ pub struct CompactSeq {
     pub source: Option<String>,
     pub name: String,
     pub id: u32,
-    pub seq_frag_range: (u32, u32), // (start, len)
+    pub seq_frags: Vec<u32>, // (start, len)
     pub len: usize,
 }
 
@@ -91,7 +125,7 @@ pub struct CompactSeqDB {
     pub shmmr_spec: ShmmrSpec,
     pub seqs: Vec<CompactSeq>,
     pub frag_map: ShmmrToFrags,
-    pub frags: Option<Fragments>,
+    pub frag_groups: Option<Vec<FragmentGroup>>,
 }
 
 pub fn pair_shmmrs(shmmrs: &Vec<MM128>) -> Vec<(&MM128, &MM128)> {
@@ -177,7 +211,7 @@ impl CompactSeqDB {
             shmmr_spec,
             seqs,
             frag_map,
-            frags,
+            frag_groups: frags,
         }
     }
 
@@ -192,161 +226,120 @@ impl CompactSeqDB {
     ) -> CompactSeq {
         let mut seq_frags = Vec::<u32>::new();
 
-        assert!(self.frags.is_some());
-        let frags: &mut Vec<Fragment> = self.frags.as_mut().unwrap();
+        assert!(self.frag_groups.is_some());
+        let frag_groups: &mut Vec<FragmentGroup> = self.frag_groups.as_mut().unwrap();
 
-        let mut frg_id = frags.len() as u32;
-        let mut seq_len = 0_usize;
+        let mut frag_group_id = frag_groups.len() as u32;
 
         //assert!(shmmrs.len() > 0);
         if shmmrs.is_empty() {
-            let frg = seq[..].to_vec();
-            frags.push(Fragment::Prefix(frg));
-            seq_frags.push(frg_id);
-            // frg_id += 1;
-
-            let frg = Vec::<u8>::new();
-            frags.push(Fragment::Suffix(frg));
-            seq_frags.push(frg_id);
+            let mut frag_group = FragmentGroup::new();
+            let sub_idx = frag_group.add_uncompress_frag(&seq[..]).unwrap(); // unwrap, first element
+            assert!(sub_idx == 0);
+            frag_groups.push(frag_group);
+            seq_frags.push(((frag_group_id << 4) | (sub_idx as u32)) << 2 | 0b00);
+        println!("0: {} {}", frag_group_id, sub_idx);
 
             return CompactSeq {
                 source,
                 name,
                 id,
-                seq_frag_range: (seq_frags[0] as u32, seq_frags.len() as u32),
+                seq_frags,
                 len: seq.len(),
             };
         }
+        
+        let mut seq_len = 0_usize;
         // prefix
         let end = (shmmrs[0].pos() + 1) as usize;
-        let frg = seq[..end].to_vec();
-        seq_len += frg.len();
-        frags.push(Fragment::Prefix(frg));
-        seq_frags.push(frg_id);
-        frg_id += 1;
 
-        let internal_frags = pair_shmmrs(&shmmrs)
-            .par_iter()
-            .map(|(shmmr0, shmmr1)| {
-                let s0 = shmmr0.hash();
-                let s1 = shmmr1.hash();
-                let (shmmr_pair, orientation) = if s0 <= s1 {
-                    ((s0, s1), 0_u8)
-                } else {
-                    ((s1, s0), 1_u8)
-                };
-                let bgn = shmmr0.pos() + 1;
-                let end = shmmr1.pos() + 1;
-                let frg_len = end - bgn;
-                let mut aligned = false;
-                let mut out_frag = None;
+        let mut frag_group = FragmentGroup::new();
+        let sub_idx = frag_group.add_uncompress_frag(&seq[..end]).unwrap(); // unwrap, the 0th element
+        assert!(sub_idx == 0);
+        frag_groups.push(frag_group);
+        seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b00);
+        seq_len += end;
+        println!("1: {} {}", frag_group_id, sub_idx);
+        frag_group_id += 1;
 
-                if frg_len > 128 && try_compress && self.frag_map.contains_key(&shmmr_pair) {
-                    let e = self.frag_map.get(&shmmr_pair).unwrap();
-                    for t_frg_id in e.iter() {
-                        let base_frg = frags.get(t_frg_id.0 as usize).unwrap();
-                        if let Fragment::Internal(b) = base_frg {
-                            let base_frg = b;
-                            //assert!(base_frg.len() > KMERSIZE as usize);
-                            let frg;
-                            let rc;
-                            if orientation != t_frg_id.4 {
-                                frg = reverse_complement(
-                                    &seq[(bgn - self.shmmr_spec.k) as usize..end as usize],
-                                );
-                                rc = true;
-                            } else {
-                                frg =
-                                    seq[(bgn - self.shmmr_spec.k) as usize..end as usize].to_vec();
-                                rc = false;
-                            }
-                            //assert!(frg.len() > KMERSIZE as usize);
-                            //the max span should be less than 128 * 144 = 18423 * 2 < 2**16
-                            assert!(base_frg.len() < (1 << 32) - 1);
-                            let m = match_reads(base_frg, &frg, true, 0.1, 0, 0, 32);
-                            if let Some(m) = m {
-                                let deltas: Vec<DeltaPoint> = m.deltas.unwrap();
-                                let aln_segs = deltas_to_aln_segs(
-                                    &deltas,
-                                    m.end0 as usize,
-                                    m.end1 as usize,
-                                    &base_frg,
-                                    &frg,
-                                );
+        pair_shmmrs(&shmmrs).iter().for_each(|(shmmr0, shmmr1)| {
+            let s0 = shmmr0.hash();
+            let s1 = shmmr1.hash();
+            let (shmmr_pair, orientation) = if s0 <= s1 {
+                ((s0, s1), 0_u8)
+            } else {
+                ((s1, s0), 1_u8)
+            };
+            let bgn = shmmr0.pos() + 1;
+            let end = shmmr1.pos() + 1;
+            let frag_len = end - bgn;
+            let frag = &seq[(bgn - self.shmmr_spec.k) as usize..end as usize];
+            let mut added = false;
 
-                                /*  // For debugging 
-                                let out = reconstruct_seq_from_aln_segs(base_frg, &aln_segs);
-                                if out != frg {
-                                    println!("DBG: {:?} {} {}", deltas, m.end0, m.end1);
-                                    println!("DBG: {:?} {:?} {:?} {} {}", String::from_utf8_lossy(base_frg), aln_segs, 
-                                    String::from_utf8_lossy(&frg), base_frg.len(), frg.len());
-                                };
-                                assert_eq!(out, frg);
-                                */
-
-                                if std::mem::align_of_val(&aln_segs) > (frg.len() >> 2) {
-                                    continue;
-                                }
-
-                                out_frag = Some((
-                                    shmmr_pair,
-                                    Fragment::AlnSegments((
-                                        t_frg_id.0,
-                                        rc,
-                                        frg.len() as u32,
-                                        aln_segs,
-                                    )),
-                                    bgn,
-                                    end,
-                                    orientation,
-                                ));
-                                aligned = true;
-                                break; // we aligned to the first one of the fragments
-                            } else {
-                                continue;
-                            }
+            if self.frag_map.contains_key(&shmmr_pair) {
+                let e = self.frag_map.get_mut(&shmmr_pair).unwrap();
+                
+                for t_frag in e.iter() {
+                    //if orientation != t_frag.4 {continue};
+                    let t_frag_id = t_frag.0;
+                    let t_frag_group_id = t_frag_id >> FRAG_SHIFT >> 2;
+                    if let Some(frag_group) = frag_groups.get_mut(t_frag_group_id as usize) {
+                        if let Some(sub_idx) = frag_group.add_uncompress_frag(frag) {
+                            let frag_id = (t_frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
+                            println!("2: {} {} {}", t_frag_group_id, frag_group_id, sub_idx);
+                            seq_frags.push(frag_id);
+                            seq_len += frag_len as usize;
+                            e.push((frag_id, id, bgn, end, orientation));
+                            added = true;
+                            break;
+                        } else {
+                            let mut frag_group = FragmentGroup::new();
+                            let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
+                            frag_groups.push(frag_group);
+                            let frag_id = (frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
+                            println!("3: {} {}", frag_group_id, sub_idx);
+                            seq_frags.push(frag_id);
+                            frag_group_id += 1;
+                            seq_len += frag_len as usize;
+                            e.push((frag_id, id, bgn, end, orientation));
+                            added = true;
+                            break;
                         }
                     }
-                };
-
-                if !aligned || !try_compress {
-                    let frg = seq[(bgn - self.shmmr_spec.k) as usize..end as usize].to_vec();
-                    out_frag = Some((shmmr_pair, Fragment::Internal(frg), bgn, end, orientation));
-                };
-                out_frag
-            })
-            .collect::<Vec<_>>();
-
-        // TODO: parallize by sharding the key
-        internal_frags.iter().for_each(|v| match v {
-            Some((shmmr, frg, bgn, end, orientation)) => {
-                if !self.frag_map.contains_key(shmmr) {
-                    self.frag_map
-                        .insert(*shmmr, Vec::<(u32, u32, u32, u32, u8)>::new());
                 }
-                let e = self.frag_map.get_mut(shmmr).unwrap();
-                e.push((frg_id, id, *bgn, *end, *orientation));
-                seq_len += (*end - *bgn) as usize;
-                frags.push(frg.clone());
-                seq_frags.push(frg_id);
-                frg_id += 1;
+            };
+            if !added {
+                let mut frag_group = FragmentGroup::new();
+                let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
+                assert!(sub_idx == 0);
+                frag_groups.push(frag_group);
+                let frag_id = (frag_group_id << FRAG_SHIFT | sub_idx as u32) << 2 | 0b01;
+                seq_frags.push(frag_id);
+                println!("4: {} {}", frag_group_id, sub_idx);
+                self.frag_map
+                        .insert(shmmr_pair, vec![(frag_id, id, bgn, end, orientation)]);
+                frag_group_id += 1;
+                seq_len += frag_len as usize;
             }
-            None => {}
         });
 
         // suffix
         let bgn = (shmmrs[shmmrs.len() - 1].pos() + 1) as usize;
-        let frg = seq[bgn..].to_vec();
-        seq_len += frg.len();
-        frags.push(Fragment::Suffix(frg));
-        seq_frags.push(frg_id);
+        let frag = &seq[bgn..];
+        let mut frag_group = FragmentGroup::new();
+        let sub_idx = frag_group.add_uncompress_frag(frag).unwrap(); // unwrap, first element
+        println!("5: {} {}", frag_group_id, sub_idx);
+        frag_groups.push(frag_group);
+        seq_frags.push((frag_group_id << 4 | sub_idx as u32) << 2 | 0b10);
+        frag_group_id += 1;
+        seq_len += frag.len();
 
         assert_eq!(seq_len, seq.len());
         CompactSeq {
             source,
             name,
             id,
-            seq_frag_range: (seq_frags[0] as u32, seq_frags.len() as u32),
+            seq_frags,
             len: seq.len(),
         }
     }
@@ -366,7 +359,7 @@ impl CompactSeqDB {
                     source,
                     name,
                     id,
-                    seq_frag_range: (0, 0),
+                    seq_frags: Vec::<_>::new(),
                     len: seqlen,
                 },
                 vec![],
@@ -395,17 +388,12 @@ impl CompactSeqDB {
             .collect::<Vec<_>>();
 
         let seq_frags: Vec<u32> = (0..(shmmr_pairs.len() as u32)).collect();
-        let seq_frag_range = if seq_frags.is_empty() {
-            (0, 0)
-        } else {
-            (seq_frags[0] as u32, seq_frags.len() as u32)
-        };
         (
             CompactSeq {
                 source,
                 name,
                 id,
-                seq_frag_range,
+                seq_frags,
                 len: seqlen,
             },
             internal_frags,
@@ -466,8 +454,8 @@ impl CompactSeqDB {
     fn load_seq_from_reader(&mut self, reader: &mut dyn Iterator<Item = io::Result<SeqRec>>) {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = self.seqs.len() as u32;
-        if self.frags.is_none() {
-            self.frags = Some(Fragments::new());
+        if self.frag_groups.is_none() {
+            self.frag_groups = Some(Vec::<FragmentGroup>::new());
         };
 
         loop {
@@ -500,8 +488,8 @@ impl CompactSeqDB {
     }
 
     pub fn load_seqs_from_seq_vec(&mut self, seqs: &Vec<(u32, Option<String>, String, Vec<u8>)>) {
-        if self.frags.is_none() {
-            self.frags = Some(Fragments::new());
+        if self.frag_groups.is_none() {
+            self.frag_groups = Some(Vec::<FragmentGroup>::new());
         }
         let all_shmmers = self.get_shmmrs_from_seqs(seqs);
         seqs.iter()
@@ -598,13 +586,12 @@ impl CompactSeqDB {
             .collect::<Vec<(u32, CompactSeq, Vec<_>)>>()
             .into_iter()
             .for_each(|(sid, cs, internal_frags)| {
-                internal_frags
-                    .iter()
-                    .zip(cs.seq_frag_range.0..cs.seq_frag_range.0 + cs.seq_frag_range.1)
-                    .for_each(|((shmmr, bgn, end, orientation), frg_id)| {
+                internal_frags.iter().zip(cs.seq_frags.clone()).for_each(
+                    |((shmmr, bgn, end, orientation), frg_id)| {
                         let e = self.frag_map.entry(*shmmr).or_default();
                         e.push((frg_id, sid, *bgn, *end, *orientation));
-                    });
+                    },
+                );
                 self.seqs.push(cs);
             });
     }
@@ -679,44 +666,33 @@ impl CompactSeqDB {
 impl CompactSeqDB {
     fn reconstruct_seq_from_frags<I: Iterator<Item = u32>>(&self, frag_ids: I) -> Vec<u8> {
         let mut reconstructed_seq = <Vec<u8>>::new();
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
+        let frag_groups = self.frag_groups.as_ref().unwrap();
         // let mut _p = 0;
         frag_ids.for_each(|frag_id| {
+            let t = frag_id & 0b11;
+            let sub_idx = (frag_id >> 2) & 0b1111;
+            let frag_group_id = frag_id >> 2 >> FRAG_SHIFT;
+            let b = frag_groups
+                .get(frag_group_id as usize)
+                .unwrap()
+                .get_uncompressed_frag(sub_idx);
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
-            match frags.get(frag_id as usize).unwrap() {
-                Fragment::Prefix(b) => {
+            match t {
+                0b00 => {
+                    //prefix
                     reconstructed_seq.extend_from_slice(&b[..]);
-                    //println!("P p: {} {} {}", frag_id, _p, _p + b.len());
+                }
+                0b10 => {
+                    //suffix
+                    reconstructed_seq.extend_from_slice(&b[..]);
                     //_p += b.len();
                 }
-                Fragment::Suffix(b) => {
-                    reconstructed_seq.extend_from_slice(&b[..]);
-                    //println!("S p: {} {} {}", frag_id, _p, _p + b.len());
-                    //_p += b.len();
-                }
-                Fragment::Internal(b) => {
+                0b01 => {
+                    // internal
                     reconstructed_seq.extend_from_slice(&b[self.shmmr_spec.k as usize..]);
-                    //println!("I p: {} {} {}", frag_id, _p, _p + b.len()-self.shmmr_spec.k as usize);
                     //_p += b.len()-self.shmmr_spec.k as usize;
                 }
-                Fragment::AlnSegments((frg_id, reversed, _length, a)) => {
-                    if let Fragment::Internal(base_seq) = frags.get(*frg_id as usize).unwrap() {
-                        let mut seq = reconstruct_seq_from_aln_segs(base_seq, a);
-                        /*  // for debugging
-                        if *_length as usize != seq.len() {
-                            println!("DBG X: {:?} {:?}", String::from_utf8_lossy(base_seq), a);
-                        }
-                        */
-                        
-                        assert_eq!(*_length as usize, seq.len());
-                        if *reversed {
-                            seq = reverse_complement(&seq);
-                        }
-                        reconstructed_seq.extend_from_slice(&seq[self.shmmr_spec.k as usize..]);
-                        // println!("A p: {} {} {}", frag_id, _p, _p + seq.len()-self.shmmr_spec.k as usize);
-                        // _p += seq.len()-self.shmmr_spec.k as usize;
-                    }
-                }
+                _ => (),
             }
         });
 
@@ -724,9 +700,7 @@ impl CompactSeqDB {
     }
 
     pub fn get_seq(&self, seq: &CompactSeq) -> Vec<u8> {
-        self.reconstruct_seq_from_frags(
-            (seq.seq_frag_range.0..seq.seq_frag_range.0 + seq.seq_frag_range.1).into_iter(),
-        )
+        self.reconstruct_seq_from_frags(seq.seq_frags.clone().into_iter())
     }
 
     /* TODO */
@@ -740,44 +714,13 @@ impl CompactSeqDB {
 impl GetSeq for CompactSeqDB {
     fn get_seq_by_id(&self, sid: u32) -> Vec<u8> {
         let seq = self.seqs.get(sid as usize).unwrap();
-        self.reconstruct_seq_from_frags(
-            (seq.seq_frag_range.0..seq.seq_frag_range.0 + seq.seq_frag_range.1).into_iter(),
-        )
+        self.reconstruct_seq_from_frags(seq.seq_frags.clone().into_iter())
     }
 
     fn get_sub_seq_by_id(&self, sid: u32, bgn: u32, end: u32) -> Vec<u8> {
         assert!((sid as usize) < self.seqs.len());
-        let frag_range = &self.seqs[sid as usize].seq_frag_range;
-
-        let mut _p = 0;
-        let mut base_offset = 0_u32;
-        let mut sub_seq_frag = vec![];
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
-        for frag_id in frag_range.0..frag_range.0 + frag_range.1 {
-            let f = &frags[frag_id as usize];
-            let frag_len = match f {
-                Fragment::AlnSegments(d) => d.2 - self.shmmr_spec.k,
-                Fragment::Prefix(b) => b.len() as u32,
-                Fragment::Internal(b) => b.len() as u32 - self.shmmr_spec.k,
-                Fragment::Suffix(b) => b.len() as u32,
-            };
-            if (base_offset <= bgn && bgn < base_offset + frag_len)
-                || (base_offset <= end && end < base_offset + frag_len)
-                || (bgn <= base_offset && base_offset + frag_len <= end)
-            {
-                sub_seq_frag.push((frag_id, base_offset));
-            }
-
-            base_offset += frag_len;
-        }
-
-        // println!("DBG0: {} {}" , sid,  sub_seq_frag.len() );
-        let reconstructed_seq = self.reconstruct_seq_from_frags(sub_seq_frag.iter().map(|v| v.0));
-
-        // println!("DBG: {} {} {} {} {}", sid, frag_range.1, sub_seq_frag.len(), end, reconstructed_seq.len() );
-        
-        let offset = bgn - sub_seq_frag[0].1;
-        reconstructed_seq[(offset as usize)..((offset + end - bgn) as usize)].to_vec()
+        let seq = self.get_seq_by_id(sid);
+        seq[bgn as usize..end as usize].into()
     }
 }
 
@@ -807,8 +750,9 @@ impl CompactSeqDB {
 
 impl CompactSeqDB {
     pub fn write_to_frag_files(&self, file_prefix: String) {
-        let mut sdx_file =
-            BufWriter::new(File::create(file_prefix.clone() + ".sdx").expect("sdx file creating fail\n"));
+        let mut sdx_file = BufWriter::new(
+            File::create(file_prefix.clone() + ".sdx").expect("sdx file creating fail\n"),
+        );
         let mut frg_file =
             BufWriter::new(File::create(file_prefix + ".frg").expect("frg file creating fail\n"));
 
@@ -818,36 +762,30 @@ impl CompactSeqDB {
         //    println!("{:?} {:?} {} {}", s.id, s.seq_frags.len(), s.seq_frags[0], s.seq_frags[s.seq_frags.len()-1]);
         //});
 
-        let compressed_frags = self
-            .frags
+        let compressed_frag_groups = self
+            .frag_groups
             .as_ref()
             .unwrap()
             .par_iter()
             .map(|f| {
-                let frag_len = match f {
-                    Fragment::AlnSegments(d) => d.2,
-                    Fragment::Prefix(b) => b.len() as u32,
-                    Fragment::Internal(b) => b.len() as u32,
-                    Fragment::Suffix(b) => b.len() as u32,
-                };
                 let w = bincode::encode_to_vec(f, config).unwrap();
                 let mut compressor = DeflateEncoder::new(Vec::new(), Compression::default());
                 compressor.write_all(&w).unwrap();
                 let compress_frag = compressor.finish().unwrap();
-                (frag_len, compress_frag)
+                compress_frag
             })
-            .collect::<Vec<(u32, Vec<u8>)>>();
+            .collect::<Vec<Vec<u8>>>();
 
-        let mut frag_addr_offeset = vec![];
+        let mut frag_grpup_addr_offeset = vec![];
         let mut offset = 0_usize;
-        compressed_frags.iter().for_each(|(frag_len, v)| {
+        compressed_frag_groups.iter().for_each(|v| {
             let l = v.len();
-            frag_addr_offeset.push((offset, v.len(), *frag_len));
+            frag_grpup_addr_offeset.push((offset, v.len()));
             offset += l;
             frg_file.write_all(v).expect("frag file writing error\n");
         });
 
-        bincode::encode_into_std_write((frag_addr_offeset, &self.seqs), &mut sdx_file, config)
+        bincode::encode_into_std_write((frag_grpup_addr_offeset, &self.seqs), &mut sdx_file, config)
             .expect("sdx file writing error\n");
         //bincode::encode_into_std_write(compressed_frags, &mut frg_file, config)
         //    .expect(" frag file writing error");
@@ -926,7 +864,6 @@ pub fn frag_map_to_adj_list(
         .collect::<AdjList>() // seq_id, node0, node1
 }
 
-
 pub fn generate_smp_adj_list_for_seq(
     seq: &Vec<u8>,
     sid: u32,
@@ -966,8 +903,16 @@ pub fn generate_smp_adj_list_for_seq(
                     vec![None]
                 } else {
                     vec![
-                        Some((sid, ShmmrGraphNode(v.0, v.1, v.4), ShmmrGraphNode(w.0, w.1, w.4))),
-                        Some((sid, ShmmrGraphNode(w.0, w.1, 1 - w.4), ShmmrGraphNode(v.0, v.1, 1 - v.4))),
+                        Some((
+                            sid,
+                            ShmmrGraphNode(v.0, v.1, v.4),
+                            ShmmrGraphNode(w.0, w.1, w.4),
+                        )),
+                        Some((
+                            sid,
+                            ShmmrGraphNode(w.0, w.1, 1 - w.4),
+                            ShmmrGraphNode(v.0, v.1, 1 - v.4),
+                        )),
                     ]
                 }
             })
@@ -975,8 +920,6 @@ pub fn generate_smp_adj_list_for_seq(
             .collect::<AdjList>()
     }
 }
-
-
 
 type PBundleNode = (
     // node, Option<previous_node>, node_weight, is_leaf, global_rank, branch, branch_rank
@@ -987,14 +930,13 @@ type PBundleNode = (
     u32,
     u32,
     u32,
-);  
+);
 
 pub fn sort_adj_list_by_weighted_dfs(
     frag_map: &ShmmrToFrags,
     adj_list: &[AdjPair],
     start: ShmmrGraphNode,
 ) -> Vec<PBundleNode> {
-
     use crate::graph_utils::BiDiGraphWeightedDfs;
 
     let mut g = DiGraphMap::<ShmmrGraphNode, ()>::new();
@@ -1042,10 +984,7 @@ pub fn get_principal_bundles_from_adj_list(
     frag_map: &ShmmrToFrags,
     adj_list: &[AdjPair],
     path_len_cutoff: usize,
-) -> (
-    Vec<Vec<ShmmrGraphNode>>,
-    AdjList,
-) {
+) -> (Vec<Vec<ShmmrGraphNode>>, AdjList) {
     assert!(!adj_list.is_empty());
     // println!("DBG: adj_list[0]: {:?}", adj_list[0]);
     let s = adj_list[0].1;
@@ -1233,7 +1172,8 @@ pub fn write_shmr_map_file(
     shmmr_map: &ShmmrToFrags,
     filepath: String,
 ) -> Result<(), std::io::Error> {
-    let mut out_file = File::create(filepath).expect("open fail while writing the SHIMMER map (.mdb) file\n");
+    let mut out_file =
+        File::create(filepath).expect("open fail while writing the SHIMMER map (.mdb) file\n");
     let mut buf = Vec::<u8>::new();
 
     buf.extend("mdb".to_string().into_bytes());
@@ -1265,7 +1205,8 @@ pub fn write_shmr_map_file(
 }
 
 pub fn read_mdb_file(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let mut in_file = File::open(filepath).expect("Error while opening the SHIMMER map file (.mdb) file");
+    let mut in_file =
+        File::open(filepath).expect("Error while opening the SHIMMER map file (.mdb) file");
     let mut buf = Vec::<u8>::new();
 
     let mut u64bytes = [0_u8; 8];
@@ -1346,7 +1287,8 @@ pub fn read_mdb_file(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::
 }
 
 pub fn read_mdb_file_parallel(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let mut in_file = File::open(filepath).expect("open fail while reading the SHIMMER map (.mdb) file");
+    let mut in_file =
+        File::open(filepath).expect("open fail while reading the SHIMMER map (.mdb) file");
     let mut buf = Vec::<u8>::new();
 
     let mut u64bytes = [0_u8; 8];
