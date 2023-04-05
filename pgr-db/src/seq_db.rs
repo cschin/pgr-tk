@@ -54,7 +54,7 @@ pub enum Fragment {
     Suffix(Bases),
 }
 
-pub const FRAG_SHIFT: usize = 4;
+pub const FRAG_SHIFT: usize = 5;
 pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
 #[derive(Debug, Clone, Decode, Encode)]
 pub struct FragmentGroup {
@@ -77,7 +77,7 @@ impl FragmentGroup {
     pub fn compress(&mut self) {
         let data = self.uncompressed_seqs.join(&0xFF);
         let options = EncodeOptions::with_lz77(DefaultLz77Encoder::new())
-            .block_size(16 * 1024);
+            .block_size(32 * 1024);
         let mut encoder = Encoder::with_options(Vec::new(), options);
         encoder.write_all(&data[..]).unwrap();
         self.compressed_data = encoder.finish().into_result().unwrap();
@@ -94,7 +94,7 @@ impl FragmentGroup {
         let length = self.uncompressed_seqs.len();
         if self.uncompressed_seqs.len() >= FRAG_GROUP_MAX {
             if !self.compressed {
-                // self.compress()
+                self.compress()
             };
             None
         } else if self.compressed {
