@@ -164,9 +164,9 @@ impl SeqIndexDB {
         Ok(())
     }
 
-    pub fn write_frag_and_index_files(&self, file_prefix: String) {
+    pub fn write_frag_and_index_files(&mut self, file_prefix: String) {
         if self.seq_db.is_some() {
-            let internal = self.seq_db.as_ref().unwrap();
+            let internal = self.seq_db.as_mut().unwrap();
 
             internal.write_to_frag_files(file_prefix.clone());
             internal

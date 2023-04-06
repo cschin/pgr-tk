@@ -55,7 +55,7 @@ pub enum Fragment {
     Suffix(Bases),
 }
 
-pub const FRAG_SHIFT: usize = 5;
+pub const FRAG_SHIFT: usize = 4;
 pub const FRAG_GROUP_MAX: usize = 1 << FRAG_SHIFT;
 #[derive(Debug, Clone, Decode, Encode)]
 pub struct FragmentGroup {
