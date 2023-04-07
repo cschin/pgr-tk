@@ -87,7 +87,7 @@ impl FragmentGroup {
         let data = self.seqs.iter().flat_map(|v| v.clone()).collect::<Vec<u8>>();
         self.compressed_data = encode_all(&data[..], 1).unwrap();
         self.compressed = true;
-        self.seqs.clear();
+        self.seqs = Vec::new(); // drop the old vec to release memory
         /*
         println!(
             "compress ratio {}/{}={} {}/{}={}",
