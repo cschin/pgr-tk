@@ -18,7 +18,7 @@ struct CmdOptions {
     output_prefix: String,
     /// using local alignment
     #[clap(long, short, default_value_t = false)]
-    local_aln: bool
+    local_aln: bool,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
@@ -110,16 +110,16 @@ fn align_bundles(
                 best_t_idx = t_idx;
             }
         });
-    let mut q_idx = if local_aln {best_q_idx} else {q_count - 1};
-    let mut t_idx = if local_aln {best_t_idx} else {t_count - 1};
-    let offset = q_bundles[q_idx].bgn as isize - t_bundles[t_idx].bgn as isize; 
+    let mut q_idx = if local_aln { best_q_idx } else { q_count - 1 };
+    let mut t_idx = if local_aln { best_t_idx } else { t_count - 1 };
+    let offset = q_bundles[q_idx].bgn as isize - t_bundles[t_idx].bgn as isize;
     let mut diff_len = 0_usize;
     let mut max_len = 1_usize;
     while let Some(aln_type) = t_map.get(&(q_idx, t_idx)) {
         // let qq_idx = q_idx;
         // let tt_idx = t_idx;
         if local_aln && *s_map.get(&(q_idx, t_idx)).unwrap_or(&0) == 0 {
-            break
+            break;
         }
         let (diff_len_delta, max_len_delta) = match aln_type {
             AlnType::Match => {
@@ -155,7 +155,12 @@ fn align_bundles(
         );
             */
     }
-    (diff_len as f32 / max_len as f32, diff_len, max_len, best_score, offset)
+    let diff = if diff_len == 0 && max_len == 1 {
+        1.0_f32
+    } else {
+        diff_len as f32 / max_len as f32
+    };
+    (diff, diff_len, max_len, best_score, offset)
 }
 
 fn main() -> Result<(), std::io::Error> {
@@ -223,12 +228,14 @@ fn main() -> Result<(), std::io::Error> {
             };
             let (ctg0, bundles0) = &ctg_data[ctg_idx0];
             let (ctg1, bundles1) = &ctg_data[ctg_idx1];
-            let (dist0, diff_len0, max_len0, best_score0, best_offset0) = align_bundles(bundles0, bundles1, args.local_aln);
-            let (dist1, diff_len1, max_len1, best_score1, _best_offset1) = align_bundles(bundles1, bundles0, args.local_aln);
-            let (dist, diff_len, max_len, best_score ) = if dist0 > dist1 {
-                (dist0, diff_len0, max_len0, best_score0 )
+            let (dist0, diff_len0, max_len0, best_score0, best_offset0) =
+                align_bundles(bundles0, bundles1, args.local_aln);
+            let (dist1, diff_len1, max_len1, best_score1, _best_offset1) =
+                align_bundles(bundles1, bundles0, args.local_aln);
+            let (dist, diff_len, max_len, best_score) = if dist0 > dist1 {
+                (dist0, diff_len0, max_len0, best_score0)
             } else {
-                (dist1, diff_len1, max_len1, best_score1 )
+                (dist1, diff_len1, max_len1, best_score1)
             };
             writeln!(
                 out_file,
@@ -244,28 +251,31 @@ fn main() -> Result<(), std::io::Error> {
                 )
                 .expect("writing error");
                 if args.local_aln {
-                    let d = 1.0/(best_score as f32 + 10.0).log10();
+                    let d = 1.0 / (best_score as f32 + 10.0).log10();
                     min_dist = if d < min_dist { d } else { min_dist };
                     max_dist = if d > max_dist { d } else { max_dist };
-                    dist_map.insert((ctg_idx0, ctg_idx1), 1.0/(best_score as f32 + 10.0).log10());
-                    offset_map.insert( (ctg_idx0, ctg_idx1), best_offset0);
-                    offset_map.insert( (ctg_idx1, ctg_idx0), -best_offset0);
+                    dist_map.insert(
+                        (ctg_idx0, ctg_idx1),
+                        1.0 / (best_score as f32 + 10.0).log10(),
+                    );
+                    offset_map.insert((ctg_idx0, ctg_idx1), best_offset0);
+                    offset_map.insert((ctg_idx1, ctg_idx0), -best_offset0);
                 } else {
                     dist_map.insert((ctg_idx0, ctg_idx1), dist);
-                    offset_map.insert( (ctg_idx0, ctg_idx1), 0);
-                    offset_map.insert( (ctg_idx1, ctg_idx0), 0);
+                    offset_map.insert((ctg_idx0, ctg_idx1), 0);
+                    offset_map.insert((ctg_idx1, ctg_idx0), 0);
                 }
             }
         });
 
-    let w = max_dist - min_dist + 0.01; 
+    let w = max_dist - min_dist + 0.01;
     dist_map.iter_mut().for_each(|(_k, v)| {
-        *v = (*v - min_dist + 0.01 ) / w;
+        *v = (*v - min_dist + 0.01) / w;
     });
     let mut dist_mat = vec![];
     (0..n_ctg - 1).for_each(|i| {
         (i + 1..n_ctg).for_each(|j| {
-            dist_mat.push( *dist_map.get(&(i, j)).unwrap() );
+            dist_mat.push(*dist_map.get(&(i, j)).unwrap());
         })
     });
     let dend = linkage(&mut dist_mat, n_ctg, Method::Average);
@@ -329,7 +339,7 @@ fn main() -> Result<(), std::io::Error> {
     let mut node_position_size = FxHashMap::<usize, ((f32, f32), usize)>::default();
     let mut position = 0.0_f32;
     let mut offset = 0_isize;
-    let mut p_idx: Option<usize> = None; 
+    let mut p_idx: Option<usize> = None;
     let mut offset_group = Vec::<_>::new();
     let mut group_min_offset = 100000_isize;
     nodes.iter().for_each(|&ctg_idx| {
@@ -343,32 +353,41 @@ fn main() -> Result<(), std::io::Error> {
             } else {
                 (ctg_idx, p_idx)
             };
-            if *dist_map.get( &(idx0, idx1) ).unwrap_or(&1.0) < 0.25 {
-
-                offset += *offset_map.get( &(p_idx, ctg_idx) ).unwrap_or(&0);
-                offset_group.push( (ctg_idx, offset) );
+            if *dist_map.get(&(idx0, idx1)).unwrap_or(&1.0) < 0.25 {
+                offset += *offset_map.get(&(p_idx, ctg_idx)).unwrap_or(&0);
+                offset_group.push((ctg_idx, offset));
                 if offset < group_min_offset {
                     group_min_offset = offset;
                 };
             } else {
-                offset_group.iter().for_each(| &(ctg_idx, offset ) | {
-                    writeln!(offset_file, "{}\t{}", ctg_data[ctg_idx].0, offset-group_min_offset)
+                offset_group.iter().for_each(|&(ctg_idx, offset)| {
+                    writeln!(
+                        offset_file,
+                        "{}\t{}",
+                        ctg_data[ctg_idx].0,
+                        offset - group_min_offset
+                    )
                     .expect("can't write the offset file");
-                 });
+                });
                 group_min_offset = 100000_isize;
-                offset_group.clear(); 
-                offset = 0; 
+                offset_group.clear();
+                offset = 0;
             }
         } else {
-            offset_group.push( (ctg_idx, offset) );
+            offset_group.push((ctg_idx, offset));
         };
         p_idx = Some(ctg_idx)
     });
 
-    offset_group.iter().for_each(| &(ctg_idx, offset ) | {
-        writeln!(offset_file, "{}\t{}", ctg_data[ctg_idx].0, offset-group_min_offset)
+    offset_group.iter().for_each(|&(ctg_idx, offset)| {
+        writeln!(
+            offset_file,
+            "{}\t{}",
+            ctg_data[ctg_idx].0,
+            offset - group_min_offset
+        )
         .expect("can't write the offset file");
-     });
+    });
 
     steps.into_iter().enumerate().for_each(|(c, s)| {
         let ((pos0, _), size0) = *node_position_size.get(&s.cluster1).unwrap();

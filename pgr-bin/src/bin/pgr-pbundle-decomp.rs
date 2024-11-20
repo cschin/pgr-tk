@@ -343,7 +343,6 @@ fn main() -> Result<(), std::io::Error> {
         .seq_info
         .unwrap()
         .into_iter()
-        .map(|(k, v)| (k, v))
         .collect::<Vec<_>>();
 
     seq_info.sort_by_key(|k| k.1 .0.clone());
