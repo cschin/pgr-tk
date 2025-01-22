@@ -97,7 +97,7 @@ fn main() -> Result<(), std::io::Error> {
         let ctg = fields[2].to_string();
         let bgn: usize = fields[3].parse().expect("can't parse bgn");
         let end: usize = fields[4].parse().expect("can't parse end");
-        let reversed: bool = fields[4].parse::<u32>().expect("can't parse strand") == 1;
+        let reversed: bool = fields[5].parse::<u32>().expect("can't parse strand") == 1;
         let mut seq = seq_index_db
             .get_sub_seq(src, ctg, bgn, end)
             .expect("fail to fetch sequence");
