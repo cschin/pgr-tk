@@ -24,13 +24,6 @@ This file contains the principal bundle decomposition results in BED format, whi
 
 The first line of the file contains a comment with the command used to run the tool.
 
-### Example:
-```
-#Command: pgr-pbundle-decomp -p 16 -k 16 -w 80 -r 0.001 demo.fa demo
-ctg1 1000 2500 bundle42:8:0:0:1500:U
-ctg1 3000 4200 bundle17:12:1:500:1700:R
-```
-
 ## 2. Contig Summary File (`[prefix].ctg.summary.tsv`)
 
 This tab-separated file provides detailed statistical information about bundle distribution across each contig, useful for quantitative analysis. This file is often used in conjunction with the principal bundle BED file for comprehensive analysis.
