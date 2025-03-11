@@ -87,14 +87,6 @@ This binary file contains the complete principal bundle data, essential for down
 - Bundle connectivity data
 - Sequence mapping metadata
 
-This file is used by other PGR-TK tools such as:
-- `pgr-pbundle-bed2svg` (see [Input File Formats for pgr-pbundle-bed2svg](input_file_formats_for_pgr-pbundle-bed.md))
-- `pgr-query`
-- `pgr-pbundle-aln`
-- `pgr-pbundle-bed2dist` and `pgr-pbundle-bed2offset`
-
-These tools perform subsequent analyses like visualization, querying, alignment, and distance calculations. The binary format ensures efficient loading and processing of the decomposition results.
-
 ## Related Documentation
 
 - [Principal Bundle BED File Format](principal_bundle_bed_file.md) - Detailed explanation of the principal bundle BED file format
