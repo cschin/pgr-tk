@@ -16,4 +16,5 @@ RUN cd /opt/ && git clone --recursive https://github.com/cschin/pgr-tk.git
 RUN cd /opt/pgr-tk/ && . /opt/cargo/env && cargo install maturin && bash build.sh
 RUN apt-get install -y python3-pip python3.12-venv
 RUN cd /opt/pgr-tk/ && python3 -m venv /opt/pgr-tk-py/ && /opt/pgr-tk-py/bin/pip install target/wheels/pgrtk-0.6.0-cp312-cp312-linux_x86_64.whl numpy
-
+RUN cd /opt/pgr-tk/ &&  . /opt/cargo/env && cargo clean
+ENV PATH="/opt/cargo/bin:$PATH"
