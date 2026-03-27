@@ -93,6 +93,6 @@ sqlite3 "$ARCHIVE" \
      ORDER BY sm.name, c.name;"
 
 echo
-echo "Archive size: $(du -sh "$ARCHIVE" | cut -f1)  (uncompressed input: ~$(gunzip -c "$TESTDATA"/*.fna.gz | wc -c | awk '{printf "%.0f MB", $1/1048576}'))"
+echo "Archive size: $(stat -f%z "$ARCHIVE" | awk '{printf "%.2f MB", $1/1048576}')  (uncompressed input: ~$(gunzip -c "$TESTDATA"/*.fna.gz | wc -c | awk '{printf "%.0f MB", $1/1048576}'))"
 echo
 echo "Done. Archive written to: $ARCHIVE"
