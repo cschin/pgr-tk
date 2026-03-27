@@ -678,16 +678,42 @@ mod test {
         //SimpleLogger::new().init().unwrap();
         let t_str = "ACATACATGTGTGTGAAAAATATATAAGTAAAAAAAATGCATGAAACCCCAAAAGTTGCATGAAACATACATGAAAATACATGAAAGTTGCATGAAACATACATGAAAAAAGTTGCATGAAACCCCATACATGAAAGTTGCATGAA";
         let q_str = "ACATACATGTGAAATATAATAAAAGTTGCATGAAAAAACATACATGAAAGTTGCATGAAACATACATGAAAAAAGTTGCAAAAGTTGCATGAAACATACATGAAAATGAAAAAACATACATGAAAGTTGCATGAA";
-        if let Some((t_aln_str, q_aln_str)) = wfa_align_bases(t_str, q_str, 20, 2, 2, 1) {
-            println!("{}", t_aln_str);
-            println!("{}", q_aln_str);
+        
+        // Test that alignment works and produces a result
+        let result = wfa_align_bases(t_str, q_str, 20, 2, 2, 1);
+        assert!(result.is_some(), "WFA alignment should produce a result");
+        
+        if let Some((t_aln_str, q_aln_str)) = result {
+            // Verify alignment strings have equal length
+            assert_eq!(t_aln_str.len(), q_aln_str.len(), "Alignment strings should have equal length");
+            
+            // Alignment strings should only contain valid characters
+            assert!(t_aln_str.chars().all(|c| c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == '-'), 
+                    "Target alignment string should only contain ACGT or gaps");
+            assert!(q_aln_str.chars().all(|c| c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == '-'), 
+                    "Query alignment string should only contain ACGT or gaps");
+            
+            // Generate alignment pairs
             let aln_pairs = aln_pair_map(&t_aln_str, &q_aln_str);
+            assert!(!aln_pairs.is_empty(), "Alignment pairs should not be empty");
+            
+            // Get variants
             let variants = get_variants_from_aln_pair_map(&aln_pairs, t_str, q_str);
-            variants.into_iter().for_each(|(t_pos, q_pos, t, s1, s2)| {
-                println!("{} {} {} {} {}", t_pos, q_pos, t, s1, s2);
-            });
+            
+            // Verify variants make sense
+            for (t_pos, q_pos, variant_type, t_segment, q_segment) in &variants {
+                // Positions should be valid
+                assert!(*t_pos < t_str.len() as u32, "Target position should be valid");
+                assert!(*q_pos < q_str.len() as u32, "Query position should be valid");
+                
+                // Variant type should be one of the expected values
+                assert!(*variant_type == 'X' || *variant_type == 'I' || *variant_type == 'D', 
+                        "Variant type should be X, I, or D");
+                
+                // For debug output
+                println!("{} {} {} {} {}", t_pos, q_pos, variant_type, t_segment, q_segment);
+            }
         }
-        // TODO: Test the output properly
     }
 
     #[test]
