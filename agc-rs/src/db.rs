@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::error::{AgcError, Result};
 
 /// The schema version stored in the `meta` table that this library expects.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// SQL statements that create the full agc-rs schema.
 const DDL: &str = "
@@ -27,10 +27,26 @@ CREATE TABLE IF NOT EXISTS contig (
     UNIQUE(sample_id, name)
 );
 
+-- kmer_front / kmer_back: canonical k-mer values at the segment boundaries used
+-- to split contigs (AGC splitter strategy).  NULL when no splitter is present
+-- (e.g. first / last segment of a contig, or fallback-matched segments).
 CREATE TABLE IF NOT EXISTS segment_group (
-    id       INTEGER PRIMARY KEY,
-    ref_data BLOB NOT NULL,
-    params   TEXT NOT NULL
+    id         INTEGER PRIMARY KEY,
+    ref_data   BLOB NOT NULL,
+    params     TEXT NOT NULL,
+    kmer_front INTEGER,
+    kmer_back  INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_seg_group_kmers
+    ON segment_group(kmer_front, kmer_back)
+    WHERE kmer_front IS NOT NULL AND kmer_back IS NOT NULL;
+
+-- splitter: canonical singleton k-mers chosen from the reference genome used
+-- to determine segment boundaries.  Persisted so that subsequent append calls
+-- can split new samples at the same positions.
+CREATE TABLE IF NOT EXISTS splitter (
+    kmer INTEGER PRIMARY KEY
 );
 
 CREATE TABLE IF NOT EXISTS segment (

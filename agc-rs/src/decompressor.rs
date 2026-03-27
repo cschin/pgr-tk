@@ -177,6 +177,18 @@ impl AgcFile {
                     seq_bits
                 };
 
+                // 7. Strip the overlap prefix.
+                //
+                // Stored segments include a k-base overlap prefix from the
+                // previous splitter k-mer (AGC's `split_pos = pos+1-k`
+                // scheme).  `raw_length` is the actual contig contribution
+                // (stored_len - k for non-first segments).  Deriving the
+                // overlap from the stored/decoded length avoids needing to
+                // know k explicitly, and is automatically zero for first
+                // segments (where raw_length == stored_length).
+                let overlap = seq_bits.len().saturating_sub(seg.raw_length as usize);
+                let seq_bits = &seq_bits[overlap..];
+
                 // Trim to the portion that falls within [start, end).
                 let local_start = if start > seg_start {
                     (start - seg_start) as usize

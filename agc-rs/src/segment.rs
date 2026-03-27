@@ -11,6 +11,8 @@ pub struct Params {
     pub min_match_len: u32,
     /// Target segment size in bases (default 60 000).
     pub segment_size: u32,
+    /// K-mer length used to find splitter boundaries (AGC strategy, default 31).
+    pub splitter_k: u32,
     /// LZ-diff encoding version (default V1).
     pub lz_version: LzVersion,
 }
@@ -20,6 +22,7 @@ impl Default for Params {
         Self {
             min_match_len: 18,
             segment_size: 60_000,
+            splitter_k: 31,
             lz_version: LzVersion::V1,
         }
     }
@@ -34,7 +37,7 @@ impl Default for Params {
 ///
 /// Compression level 13 is used for a good size/speed tradeoff.
 pub fn compress_reference(reference: &[u8]) -> Result<Vec<u8>> {
-    zstd::encode_all(reference, 13).map_err(|e| AgcError::Zstd(e.to_string()))
+    zstd::encode_all(reference, 19).map_err(|e| AgcError::Zstd(e.to_string()))
 }
 
 /// Decompress a `ref_data` BLOB back to its 2-bit encoded sequence.
@@ -53,7 +56,7 @@ pub fn decompress_reference(blob: &[u8]) -> Result<Vec<u8>> {
 /// Returns the BLOB suitable for the `segment.delta_data` column.
 pub fn compress_delta(lz: &mut LzDiff, query: &[u8]) -> Result<Vec<u8>> {
     let encoded = lz.encode(query);
-    zstd::encode_all(encoded.as_slice(), 13).map_err(|e| AgcError::Zstd(e.to_string()))
+    zstd::encode_all(encoded.as_slice(), 19).map_err(|e| AgcError::Zstd(e.to_string()))
 }
 
 /// Decompress a `delta_data` BLOB and decode the LZ-diff stream against the
