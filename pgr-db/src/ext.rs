@@ -91,7 +91,7 @@ impl SeqIndexDB {
         let frag_location_map =
             FxHashMap::<(u64, u64), (usize, usize)>::from_iter(frag_location_map);
 
-        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agc")?;
+        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agcrs")?;
 
         let fmap_file = File::open(prefix.clone() + ".mdb").expect("frag map file open fail");
         let frag_map_file =
