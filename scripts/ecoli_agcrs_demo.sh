@@ -8,12 +8,12 @@
 set -euo pipefail
 
 ARCHIVE=ecoli_demo.agcrs
-BIN=target/debug/agc-rs
+BIN=target/release/agc-rs
 TESTDATA=test_data/ecoli
 
 # ---- 0. Build the binary ---------------------------------------------------
-echo "=== Building agc-rs ==="
-cargo build -p agc-rs 2>&1 | tail -3
+echo "=== Building agc-rs (release) ==="
+cargo build --release -p agc-rs 2>&1 | tail -3
 
 # ---- 1. Create archive with MG1655 as the reference sample -----------------
 rm -f "$ARCHIVE" "$ARCHIVE-wal" "$ARCHIVE-shm"
