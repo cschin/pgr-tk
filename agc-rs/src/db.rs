@@ -79,10 +79,23 @@ impl AgcDb {
 
     /// Create a brand-new database at `path`.
     ///
-    /// The file must not exist yet (or must be empty). The full schema is
-    /// applied and `schema_version = 1` is written to the `meta` table.
+    /// Any existing file at `path` is removed first so that `create` always
+    /// produces a fresh archive.  The full schema is applied and the current
+    /// `schema_version` is written to the `meta` table.
     /// WAL mode is enabled so that concurrent readers do not block writers.
     pub fn create(path: &Path) -> Result<Self> {
+        // Remove any stale archive (old schema, partial write, etc.).
+        if path.exists() {
+            std::fs::remove_file(path)?;
+            // Also remove the WAL and SHM sidecar files if present.
+            let _ = std::fs::remove_file(path.with_extension("agcrs-wal"));
+            let _ = std::fs::remove_file(path.with_extension("agcrs-shm"));
+            // Generic SQLite WAL/SHM sidecars.
+            let wal = format!("{}-wal", path.display());
+            let shm = format!("{}-shm", path.display());
+            let _ = std::fs::remove_file(&wal);
+            let _ = std::fs::remove_file(&shm);
+        }
         let conn = Connection::open(path)?;
 
         // Enable WAL before touching anything else.
