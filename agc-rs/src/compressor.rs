@@ -307,17 +307,18 @@ pub fn split_contig(seq: &[u8], splitters: &HashSet<u64>, k: usize) -> Vec<SegIn
 
 /// Build a lookup map from canonical (sorted) kmer-pair → group_id.
 ///
-/// Only rows where both `kmer_front` and `kmer_back` are non-NULL are
-/// included.  The key is always `(min, max)` so it matches regardless of
-/// which orientation a query segment was scanned in.
+/// Includes both fully-bounded segments (both splitters non-NULL) and
+/// partial segments (exactly one splitter non-NULL, partner treated as
+/// SENTINEL = u64::MAX).  The key is always `(min, max)` so it matches
+/// regardless of orientation.
 fn build_exact_map(conn: &Connection) -> Result<HashMap<(u64, u64), i64>> {
-    let rows: Vec<(i64, i64, i64)> = {
+    let rows: Vec<(i64, Option<i64>, Option<i64>)> = {
         let mut stmt = conn.prepare(
             "SELECT id, kmer_front, kmer_back \
              FROM segment_group \
-             WHERE kmer_front IS NOT NULL AND kmer_back IS NOT NULL",
+             WHERE kmer_front IS NOT NULL OR kmer_back IS NOT NULL",
         )?;
-        let collected: Vec<(i64, i64, i64)> = stmt
+        let collected: Vec<(i64, Option<i64>, Option<i64>)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .filter_map(|r| r.ok())
             .collect();
@@ -325,12 +326,82 @@ fn build_exact_map(conn: &Connection) -> Result<HashMap<(u64, u64), i64>> {
     };
     let mut map = HashMap::with_capacity(rows.len());
     for (gid, kf, kb) in rows {
-        let kf = kf as u64;
-        let kb = kb as u64;
+        let kf = kf.map(|v| v as u64).unwrap_or(SENTINEL);
+        let kb = kb.map(|v| v as u64).unwrap_or(SENTINEL);
         let key = (kf.min(kb), kf.max(kb));
         map.insert(key, gid);
     }
     Ok(map)
+}
+
+/// Build a "terminators" map: splitter k-mer → list of partner k-mers it has
+/// been paired with in stored segment groups.
+///
+/// Includes SENTINEL (u64::MAX) as a valid partner for partial-boundary
+/// segments (exactly one splitter), matching AGC's `map_segments_terminators`
+/// which stores `~0ull` as the partner for terminal segments.
+fn build_terminators_map(conn: &Connection) -> Result<HashMap<u64, Vec<u64>>> {
+    let rows: Vec<(Option<i64>, Option<i64>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT kmer_front, kmer_back \
+             FROM segment_group \
+             WHERE kmer_front IS NOT NULL OR kmer_back IS NOT NULL",
+        )?;
+        let collected: Vec<(Option<i64>, Option<i64>)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    };
+    let mut map: HashMap<u64, Vec<u64>> = HashMap::new();
+    for (kf, kb) in rows {
+        let kf = kf.map(|v| v as u64).unwrap_or(SENTINEL);
+        let kb = kb.map(|v| v as u64).unwrap_or(SENTINEL);
+        if kf != SENTINEL {
+            map.entry(kf).or_default().push(kb);
+        }
+        if kb != SENTINEL {
+            map.entry(kb).or_default().push(kf);
+        }
+    }
+    Ok(map)
+}
+
+/// One-splitter lookup: given a segment with exactly one known boundary
+/// splitter, find the stored segment group whose reference size is closest
+/// to `seg_len` among all groups paired with that splitter.
+///
+/// Mirrors AGC's `find_cand_segment_with_one_splitter`: SENTINEL (u64::MAX)
+/// is a valid partner representing terminal segments stored with a partial
+/// boundary (matching AGC's `~0ull` sentinel).  Size-closeness heuristic
+/// is used instead of LZ estimation.
+fn find_one_splitter_group(
+    single_kmer: u64,
+    seg_len: usize,
+    terminators_map: &HashMap<u64, Vec<u64>>,
+    exact_map: &HashMap<(u64, u64), i64>,
+    ref_len_map: &HashMap<i64, usize>,
+) -> Option<i64> {
+    // If no partners known, try the partial-key (K, SENTINEL) directly.
+    let partners: &[u64] = match terminators_map.get(&single_kmer) {
+        Some(v) => v,
+        None => {
+            let key = (single_kmer.min(SENTINEL), single_kmer.max(SENTINEL));
+            return exact_map.get(&key).copied();
+        }
+    };
+    let seg_len = seg_len as i64;
+    partners
+        .iter()
+        .filter_map(|&partner| {
+            let key = (single_kmer.min(partner), single_kmer.max(partner));
+            exact_map.get(&key).map(|&gid| {
+                let ref_len = ref_len_map.get(&gid).copied().unwrap_or(0) as i64;
+                (gid, (ref_len - seg_len).abs())
+            })
+        })
+        .min_by_key(|(_, diff)| *diff)
+        .map(|(gid, _)| gid)
 }
 
 // ---------------------------------------------------------------------------
@@ -385,13 +456,17 @@ fn sample_kmers_2bit(seq: &[u8], kmer_len: usize, sample_rate: u64) -> Vec<u64> 
     sampled
 }
 
-/// Build k-mer inverted index and ref-data cache from all stored segment_groups.
+/// Build k-mer inverted index, ref-data cache, and ref-length map from all
+/// stored segment_groups.
+///
+/// Returns `(kmer_index, ref_data_map, ref_len_map)` where `ref_len_map`
+/// maps group_id → uncompressed reference sequence length in 2-bit bases.
 fn build_fallback_index(
     conn: &Connection,
     kmer_len: usize,
     sample_rate: u64,
     max_bucket: usize,
-) -> Result<(HashMap<u64, Vec<i64>>, HashMap<i64, Vec<u8>>)> {
+) -> Result<(HashMap<u64, Vec<i64>>, HashMap<i64, Vec<u8>>, HashMap<i64, usize>)> {
     let rows: Vec<(i64, Vec<u8>)> = {
         let mut stmt = conn.prepare("SELECT id, ref_data FROM segment_group")?;
         let collected: Vec<(i64, Vec<u8>)> = stmt
@@ -403,9 +478,11 @@ fn build_fallback_index(
 
     let mut kmer_index: HashMap<u64, Vec<i64>> = HashMap::new();
     let mut ref_data_map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(rows.len());
+    let mut ref_len_map: HashMap<i64, usize> = HashMap::with_capacity(rows.len());
 
     for (group_id, ref_blob) in rows {
         let seq_2bit = segment::decompress_reference(&ref_blob)?;
+        let seq_len = seq_2bit.len();
         for kmer in sample_kmers_2bit(&seq_2bit, kmer_len, sample_rate) {
             let bucket = kmer_index.entry(kmer).or_default();
             if bucket.len() < max_bucket {
@@ -413,9 +490,10 @@ fn build_fallback_index(
             }
         }
         ref_data_map.insert(group_id, ref_blob);
+        ref_len_map.insert(group_id, seq_len);
     }
 
-    Ok((kmer_index, ref_data_map))
+    Ok((kmer_index, ref_data_map, ref_len_map))
 }
 
 /// Vote-count similarity search over stored segment groups.
@@ -471,7 +549,8 @@ enum ChunkResult {
     Delta {
         group_id: i64,
         raw_length: usize,
-        delta_blob: Vec<u8>,
+        /// Raw (non-ZSTD) LZ-diff bytes — batch-compressed per group later.
+        raw_delta: Vec<u8>,
         is_rc: bool,
     },
     NewRef {
@@ -660,9 +739,13 @@ impl Compressor {
         // Exact (kmer_front, kmer_back) → group_id map.
         let exact_map = build_exact_map(self.db.conn())?;
 
-        // Fallback vote-based index (hash-sampled k-mers).
+        // Terminators map: splitter → list of partner splitters it has been
+        // paired with in stored segment groups (one-splitter lookup).
+        let terminators_map = build_terminators_map(self.db.conn())?;
+
+        // Fallback vote-based index (hash-sampled k-mers) and ref-len map.
         let sample_rate = compute_sample_rate(segment_size, kmer_len);
-        let (kmer_index, ref_data_map) =
+        let (kmer_index, ref_data_map, ref_len_map) =
             build_fallback_index(self.db.conn(), kmer_len, sample_rate, MAX_KMER_BUCKET)?;
 
         // All canonical k-mers from the reference genome: used by
@@ -717,8 +800,33 @@ impl Compressor {
                             None
                         };
 
-                        // Fall back to vote-based matching if no exact hit.
-                        let matched_group = exact_group.or_else(|| {
+                        // One-splitter lookup: if only one boundary k-mer is
+                        // known, find the best partner from stored pairs.
+                        // Mirrors AGC's find_cand_segment_with_one_splitter.
+                        let one_spl_group = if exact_group.is_none() {
+                            let single_kmer =
+                                if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
+                                    Some(seg.kmer_front)
+                                } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
+                                    Some(seg.kmer_back)
+                                } else {
+                                    None
+                                };
+                            single_kmer.and_then(|kmer| {
+                                find_one_splitter_group(
+                                    kmer,
+                                    seg.seq.len(),
+                                    &terminators_map,
+                                    &exact_map,
+                                    &ref_len_map,
+                                )
+                            })
+                        } else {
+                            None
+                        };
+
+                        // Fall back to vote-based matching if no hit yet.
+                        let matched_group = exact_group.or(one_spl_group).or_else(|| {
                             find_best_ref_group(&seg.seq, &kmer_index, kmer_len, sample_rate)
                         });
 
@@ -729,12 +837,12 @@ impl Compressor {
                                     .expect("group_id missing from ref_data_map");
                                 let mut lz = segment::lz_from_ref_blob(ref_blob, params_ref)
                                     .expect("lz_from_ref_blob");
-                                let delta_blob = segment::compress_delta(&mut lz, &seg.seq)
+                                let raw_delta = segment::compress_delta(&mut lz, &seg.seq)
                                     .expect("compress_delta");
                                 ChunkResult::Delta {
                                     group_id,
                                     raw_length: seg.raw_len,
-                                    delta_blob,
+                                    raw_delta,
                                     is_rc: seg.is_rc,
                                 }
                             }
@@ -768,6 +876,36 @@ impl Compressor {
             .collect();
 
         // --- Phase 3: insert in a single transaction -------------------------
+        //
+        // Strategy for batch delta compression:
+        // 1. Pre-query MAX(in_group_id) per group to find existing delta counts.
+        // 2. During the insert loop, assign sequential in_group_id per group and
+        //    accumulate raw LZ-diff bytes keyed by group_id.
+        // 3. After all segments are inserted, batch-ZSTD each group's raw deltas
+        //    and UPDATE segment_group.delta_blob.  For groups with an existing
+        //    delta_blob, extract all previous raw entries, append the new ones,
+        //    and re-compress the combined list.
+
+        // Pre-query existing in_group_id counts so appends get correct ids.
+        let existing_counts: HashMap<i64, i64> = {
+            let mut stmt = self.db.conn().prepare(
+                "SELECT group_id, MAX(in_group_id) \
+                 FROM segment WHERE in_group_id > 0 \
+                 GROUP BY group_id",
+            )?;
+            let collected: Vec<(i64, i64)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            collected.into_iter().collect()
+        };
+
+        // Per-group raw delta accumulator: group_id → list of raw LZ-diff bytes
+        // in in_group_id order (1-based, relative to this batch; caller adds
+        // existing_count offset).
+        let mut new_deltas_per_group: HashMap<i64, Vec<Vec<u8>>> = HashMap::new();
+        // in_group_id counter per group for this batch.
+        let mut next_in_group_id: HashMap<i64, i64> = HashMap::new();
 
         let conn = self.db.conn();
         let tx = conn.unchecked_transaction()?;
@@ -795,21 +933,33 @@ impl Compressor {
                     ChunkResult::Delta {
                         group_id,
                         raw_length,
-                        delta_blob,
+                        raw_delta,
                         is_rc,
                     } => {
+                        // Compute the 1-based in_group_id for this delta.
+                        let existing_base = existing_counts.get(group_id).copied().unwrap_or(0);
+                        let batch_pos = next_in_group_id.entry(*group_id).or_insert(0);
+                        *batch_pos += 1;
+                        let in_group_id = existing_base + *batch_pos;
+
+                        // Accumulate raw bytes for later batch compression.
+                        new_deltas_per_group
+                            .entry(*group_id)
+                            .or_default()
+                            .push(raw_delta.clone());
+
                         tx.execute(
                             "INSERT INTO segment \
                              (contig_id, seg_order, group_id, in_group_id, \
                               is_rev_comp, raw_length, delta_data) \
-                             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
                             params![
                                 contig_id,
                                 seg_order as i64,
                                 group_id,
+                                in_group_id,
                                 *is_rc,
-                                *raw_length as i64,
-                                delta_blob
+                                *raw_length as i64
                             ],
                         )?;
                     }
@@ -843,6 +993,34 @@ impl Compressor {
                     }
                 }
             }
+        }
+
+        // Finalize: batch-compress raw deltas per group and store in delta_blob.
+        for (group_id, new_raws) in &new_deltas_per_group {
+            // Load existing delta_blob (if this group already had deltas).
+            let existing_blob: Option<Vec<u8>> = tx.query_row(
+                "SELECT delta_blob FROM segment_group WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )?;
+
+            // Extract pre-existing raw deltas (if any) and append new ones.
+            let mut all_raws: Vec<Vec<u8>> = Vec::new();
+            if let Some(blob) = existing_blob {
+                let existing_count =
+                    existing_counts.get(group_id).copied().unwrap_or(0) as usize;
+                for idx in 0..existing_count {
+                    let raw = segment::extract_delta_from_batch(&blob, idx)?;
+                    all_raws.push(raw);
+                }
+            }
+            all_raws.extend_from_slice(new_raws);
+
+            let combined_blob = segment::batch_compress_deltas(&all_raws)?;
+            tx.execute(
+                "UPDATE segment_group SET delta_blob = ?1 WHERE id = ?2",
+                params![combined_blob, group_id],
+            )?;
         }
 
         tx.commit()?;

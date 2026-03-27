@@ -5,7 +5,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::error::{AgcError, Result};
 
 /// The schema version stored in the `meta` table that this library expects.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// SQL statements that create the full agc-rs schema.
 const DDL: &str = "
@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS segment_group (
     ref_data   BLOB NOT NULL,
     params     TEXT NOT NULL,
     kmer_front INTEGER,
-    kmer_back  INTEGER
+    kmer_back  INTEGER,
+    delta_blob BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_seg_group_kmers

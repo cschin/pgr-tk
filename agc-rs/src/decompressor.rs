@@ -140,7 +140,7 @@ impl AgcFile {
         }
 
         let mut stmt = self.db.conn().prepare(
-            "SELECT group_id, in_group_id, is_rev_comp, raw_length, delta_data \
+            "SELECT group_id, in_group_id, is_rev_comp, raw_length \
              FROM segment \
              WHERE contig_id = ?1 \
              ORDER BY seg_order",
@@ -153,7 +153,7 @@ impl AgcFile {
                     in_group_id: r.get(1)?,
                     is_rev_comp: r.get::<_, bool>(2)?,
                     raw_length: r.get::<_, i64>(3)? as u64,
-                    delta_data: r.get(4)?,
+                    delta_data: None,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -252,33 +252,41 @@ impl AgcFile {
 
     /// Decompress one segment.
     ///
-    /// If `in_group_id == 0` the segment *is* the reference (the delta stores
-    /// the reference sequence itself encoded as a delta against an empty
-    /// reference, or delta_data may be `None`).  For `in_group_id > 0` we
-    /// load the group's `ref_data`, build an `LzDiff`, and decode the delta.
+    /// If `in_group_id == 0` the segment *is* the reference (stored in
+    /// `segment_group.ref_data`).  For `in_group_id > 0` we load the group's
+    /// `ref_data` and `delta_blob`, extract the raw LZ-diff bytes for this
+    /// segment (at index `in_group_id - 1`), and decode against the reference.
     fn decompress_segment(
         &self,
         group_id: i64,
         in_group_id: i64,
-        delta_data: &Option<Vec<u8>>,
+        _delta_data: &Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        // Load the group's ref_data blob.
-        let ref_blob: Vec<u8> = self.db.conn().query_row(
-            "SELECT ref_data FROM segment_group WHERE id = ?1",
-            params![group_id],
-            |r| r.get(0),
-        )?;
-
         if in_group_id == 0 {
             // This segment IS the reference sequence.
+            let ref_blob: Vec<u8> = self.db.conn().query_row(
+                "SELECT ref_data FROM segment_group WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )?;
             segment::decompress_reference(&ref_blob)
         } else {
             // Delta-encoded against the reference.
-            let blob = delta_data.as_ref().ok_or_else(|| {
-                AgcError::LzDiff("non-reference segment has NULL delta_data".to_string())
+            let (ref_blob, delta_blob): (Vec<u8>, Option<Vec<u8>>) =
+                self.db.conn().query_row(
+                    "SELECT ref_data, delta_blob FROM segment_group WHERE id = ?1",
+                    params![group_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+            let blob = delta_blob.ok_or_else(|| {
+                AgcError::LzDiff(format!(
+                    "segment_group {} has no delta_blob",
+                    group_id
+                ))
             })?;
+            let raw = segment::extract_delta_from_batch(&blob, (in_group_id - 1) as usize)?;
             let lz = segment::lz_from_ref_blob(&ref_blob, &self.params)?;
-            segment::decompress_delta(&lz, blob)
+            segment::decompress_delta(&lz, &raw)
         }
     }
 }

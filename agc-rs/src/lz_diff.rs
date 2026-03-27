@@ -7,7 +7,7 @@
 use crate::error::{AgcError, Result};
 
 // ---------------------------------------------------------------------------
-// Constants (USE_SPARSE_HT is always enabled, matching the C++ build)
+// Constants (USE_SPARSE_HT disabled: dense HT matches AGC's default build)
 // ---------------------------------------------------------------------------
 const HASHING_STEP: u32 = 4;
 const DEFAULT_MIN_MATCH_LEN: u32 = 18;
