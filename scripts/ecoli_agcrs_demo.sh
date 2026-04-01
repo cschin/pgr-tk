@@ -63,14 +63,40 @@ echo "=== Full contig: W3110/NC_007779.1 (first 200 bp shown) ==="
 { "$BIN" get "$ARCHIVE" "W3110/NC_007779.1" 2>/dev/null || true; } \
     | awk 'NR==1{print} NR==2{print substr($0,1,200)"..."; exit}'
 
-# ---- 8. Subrange query -----------------------------------------------------
-echo
-echo "=== Subrange: MG1655/NC_000913.3:1000000-1000060 ==="
-"$BIN" get "$ARCHIVE" "MG1655/NC_000913.3:1000000-1000060"
+# ---- 8. Subrange queries with verification (5 regions) --------------------
+# Helper: check_range SAMPLE CONTIG START END FASTA_GZ
+# Fetches the range from the archive and from the original FASTA, then compares.
+check_range() {
+    local sample="$1" contig="$2" start="$3" end="$4" fasta="$5"
+    local len=$(( end - start ))
+    echo
+    echo "=== Subrange: $sample/$contig:$start-$end ==="
+    local got
+    got=$("$BIN" get "$ARCHIVE" "$sample/$contig:$start-$end" | tail -n +2 | tr -d '\n')
+    local ref
+    ref=$(gunzip -c "$fasta" \
+        | awk -v id="$contig" '/^>/{found=($0 ~ id); next} found{printf "%s",$0}' \
+        | cut -c$(( start + 1 ))-$end || true)
+    echo "  agc-rs : $got"
+    echo "  FASTA  : $ref"
+    if [ "$got" = "$ref" ] && [ "${#got}" -eq "$len" ]; then
+        echo "  PASS: sequences identical ($len bases)"
+    else
+        echo "  FAIL: mismatch (got ${#got} bases, expected $len)"
+        exit 1
+    fi
+}
 
-echo
-echo "=== Subrange: Sakai/NC_002695.2:500000-500060 ==="
-"$BIN" get "$ARCHIVE" "Sakai/NC_002695.2:500000-500060"
+# Region 1 – MG1655 chromosome, near start
+check_range MG1655  NC_000913.3  1000000  1000060  "$TESTDATA/ecoli_k12_mg1655.fna.gz"
+# Region 2 – MG1655 chromosome, near middle
+check_range MG1655  NC_000913.3  2300000  2300080  "$TESTDATA/ecoli_k12_mg1655.fna.gz"
+# Region 3 – W3110 chromosome, near end
+check_range W3110   NC_007779.1  4500000  4500100  "$TESTDATA/ecoli_k12_w3110.fna.gz"
+# Region 4 – Sakai chromosome
+check_range Sakai   NC_002695.2   500000   500060  "$TESTDATA/ecoli_o157h7_sakai.fna.gz"
+# Region 5 – Sakai plasmid pO157 (smaller contig)
+check_range Sakai   NC_002128.1    10000    10060  "$TESTDATA/ecoli_o157h7_sakai.fna.gz"
 
 # ---- 9. Verify round-trip with gunzip + diff ------------------------------
 echo
