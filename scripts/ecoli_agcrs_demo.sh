@@ -54,6 +54,10 @@ echo "=== Contigs: MG1655 ==="
 "$BIN" list --contigs MG1655 "$ARCHIVE"
 
 echo
+echo "=== Contigs: W3110 ==="
+"$BIN" list --contigs W3110 "$ARCHIVE"
+
+echo
 echo "=== Contigs: Sakai (chromosome + 2 plasmids) ==="
 "$BIN" list --contigs Sakai "$ARCHIVE"
 
