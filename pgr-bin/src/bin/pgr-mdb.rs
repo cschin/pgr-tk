@@ -41,12 +41,6 @@ struct CmdOptions {
     /// using sketch k-mer than minimizer
     #[clap(short, long)]
     sketch: bool,
-    /// set to use agc prefecting feature (more memory usage but faster, useful for agcfile with many small contigs)
-    #[clap(short, long)]
-    prefetching: bool,
-    /// number of parallel agc reader threads (more memory usage)
-    #[clap(long, short, default_value_t = 4)]
-    number_of_readers: usize,
 }
 
 #[cfg(feature = "with_agc")]
@@ -54,8 +48,6 @@ fn load_write_index_from_agcfile(
     path: String,
     prefix: String,
     shmmr_spec: &ShmmrSpec,
-    prefetching: bool,
-    number_of_readers: usize,
 ) -> Result<(), std::io::Error> {
     let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
     let filelist = File::open(path)?;
@@ -64,16 +56,11 @@ fn load_write_index_from_agcfile(
         .lines()
         .try_for_each(|fp| -> Result<(), std::io::Error> {
             let fp = fp.unwrap();
-            //println!("load file {}", fp);
-            let mut agcfile: AGCFile = AGCFile::new(fp)?;
-            agcfile.set_iter_thread(number_of_readers);
-            agcfile.set_prefetching(prefetching);
-            //println!("start to load index");
+            let agcfile: AGCFile = AGCFile::new(fp)?;
             let _ = sdb.load_index_from_agcfile(agcfile);
             Ok(())
         })?;
 
-    //seq_db::write_shmr_map_file(&sdb.frag_map, "test.db".to_string());
     sdb.write_shmmr_map_index(prefix)?;
     Ok(())
 }
@@ -97,14 +84,7 @@ fn main() {
     };
 
     #[cfg(feature = "with_agc")]
-    load_write_index_from_agcfile(
-        args.filepath,
-        args.prefix.clone(),
-        &shmmr_spec,
-        args.prefetching,
-        args.number_of_readers,
-    )
-    .unwrap();
+    load_write_index_from_agcfile(args.filepath, args.prefix.clone(), &shmmr_spec).unwrap();
 
     #[cfg(not(feature = "with_agc"))]
     panic!("the command is not compiled with `with_agc` feature")
