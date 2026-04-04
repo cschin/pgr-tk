@@ -5,6 +5,7 @@ use pgr_db::aln;
 use pgr_db::ext::{get_fastx_reader, GZFastaReader, SeqIndexDB};
 use pgr_db::fasta_io::{reverse_complement, SeqRec};
 use rayon::prelude::*;
+use rusqlite::{params, Connection};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::fs::File;
@@ -137,6 +138,117 @@ struct CtgMapSet {
     records: Vec<CtgMapRec>,
     target_length: Vec<(u32, String, u32)>,
     query_length: Vec<(u32, String, u32)>,
+}
+
+fn init_alndb(conn: &Connection) {
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS run_params (
+             key   TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS sequences (
+             seq_id   INTEGER PRIMARY KEY,
+             seq_name TEXT NOT NULL,
+             seq_type TEXT NOT NULL,
+             length   INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS chains (
+             aln_idx         INTEGER PRIMARY KEY,
+             target_name     TEXT NOT NULL,
+             target_start    INTEGER NOT NULL,
+             target_end      INTEGER NOT NULL,
+             query_name      TEXT NOT NULL,
+             query_start     INTEGER NOT NULL,
+             query_end       INTEGER NOT NULL,
+             orientation     INTEGER NOT NULL,
+             ctg_orientation INTEGER NOT NULL,
+             query_length    INTEGER NOT NULL,
+             target_dup      INTEGER NOT NULL,
+             target_ovlp     INTEGER NOT NULL,
+             query_dup       INTEGER NOT NULL,
+             query_ovlp      INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS blocks (
+             block_id        INTEGER PRIMARY KEY,
+             aln_idx         INTEGER NOT NULL,
+             block_type      INTEGER NOT NULL,
+             dup_flag        INTEGER NOT NULL,
+             ovlp_flag       INTEGER NOT NULL,
+             target_name     TEXT NOT NULL,
+             target_start    INTEGER NOT NULL,
+             target_end      INTEGER NOT NULL,
+             query_name      TEXT NOT NULL,
+             query_start     INTEGER NOT NULL,
+             query_end       INTEGER NOT NULL,
+             orientation     INTEGER NOT NULL,
+             ctg_orientation INTEGER,
+             sv_diff_type    INTEGER
+         );
+         CREATE TABLE IF NOT EXISTS variants (
+             variant_id   INTEGER PRIMARY KEY,
+             aln_idx      INTEGER NOT NULL,
+             dup_flag     INTEGER NOT NULL,
+             ovlp_flag    INTEGER NOT NULL,
+             target_name  TEXT NOT NULL,
+             target_start INTEGER NOT NULL,
+             target_end   INTEGER NOT NULL,
+             query_name   TEXT NOT NULL,
+             query_start  INTEGER NOT NULL,
+             query_end    INTEGER NOT NULL,
+             orientation  INTEGER NOT NULL,
+             target_diff  INTEGER NOT NULL,
+             query_diff   INTEGER NOT NULL,
+             target_coord INTEGER NOT NULL,
+             variant_type INTEGER NOT NULL,
+             ref_seq      TEXT NOT NULL,
+             alt_seq      TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS ctgmap (
+             ctgmap_id       INTEGER PRIMARY KEY,
+             target_name     TEXT NOT NULL,
+             target_start    INTEGER NOT NULL,
+             target_end      INTEGER NOT NULL,
+             query_name      TEXT NOT NULL,
+             query_start     INTEGER NOT NULL,
+             query_end       INTEGER NOT NULL,
+             ctg_len         INTEGER NOT NULL,
+             orientation     INTEGER NOT NULL,
+             ctg_orientation INTEGER NOT NULL,
+             target_dup      INTEGER NOT NULL,
+             target_ovlp     INTEGER NOT NULL,
+             query_dup       INTEGER NOT NULL,
+             query_ovlp      INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS sv_candidates (
+             svcnd_id     INTEGER PRIMARY KEY,
+             target_name  TEXT NOT NULL,
+             target_start INTEGER NOT NULL,
+             target_end   INTEGER NOT NULL,
+             sv_type      TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS ctgsv (
+             ctgsv_id    INTEGER PRIMARY KEY,
+             query_name  TEXT NOT NULL,
+             query_start INTEGER NOT NULL,
+             query_end   INTEGER NOT NULL,
+             sv_type     TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS sv_sequences (
+             svsq_id      INTEGER PRIMARY KEY,
+             target_name  TEXT NOT NULL,
+             target_start INTEGER NOT NULL,
+             target_end   INTEGER NOT NULL,
+             query_name   TEXT NOT NULL,
+             query_start  INTEGER NOT NULL,
+             query_end    INTEGER NOT NULL,
+             orientation  INTEGER NOT NULL,
+             target_seq   TEXT NOT NULL,
+             query_seq    TEXT NOT NULL
+         );",
+    )
+    .expect("failed to initialise alndb schema");
 }
 
 fn filter_aln(aln_segs: &AlignSegments) -> Vec<((u32, u32), (u32, u32))> {
@@ -297,6 +409,14 @@ fn main() -> Result<(), std::io::Error> {
         None
     };
 
+    // --- SQLite output (alongside legacy file outputs) ---
+    let db_path = Path::new(&args.output_prefix).with_extension("alndb");
+    if db_path.exists() {
+        std::fs::remove_file(&db_path).expect("failed to remove existing alndb");
+    }
+    let conn = Connection::open(&db_path).expect("failed to open alndb");
+    init_alndb(&conn);
+
     let mut query_seqs: Vec<SeqRec> = vec![];
     let mut add_seqs = |seq_iter: &mut dyn Iterator<Item = io::Result<SeqRec>>| {
         seq_iter.into_iter().for_each(|r| {
@@ -348,6 +468,43 @@ fn main() -> Result<(), std::io::Error> {
         .iter()
         .map(|(k, v)| (*k, v.2))
         .collect::<FxHashMap<_, _>>();
+
+    // --- run_params and sequences ---
+    {
+        let tx = conn.unchecked_transaction().expect("begin transaction");
+        let preset_str = format!("{:?}", args.preset);
+        for (k, v) in &[
+            ("w", parameters.w.to_string()),
+            ("k", parameters.k.to_string()),
+            ("r", parameters.r.to_string()),
+            ("min_span", parameters.min_span.to_string()),
+            ("max_sw_aln_size", parameters.max_sw_aln_size.to_string()),
+            ("preset", preset_str),
+        ] {
+            tx.execute(
+                "INSERT INTO run_params(key, value) VALUES(?1, ?2)",
+                params![k, v],
+            )
+            .expect("insert run_params");
+        }
+        for (id, name) in &target_name {
+            let len = *target_len.get(id).unwrap();
+            tx.execute(
+                "INSERT INTO sequences(seq_id, seq_name, seq_type, length) VALUES(?1,?2,'target',?3)",
+                params![id, name, len],
+            )
+            .expect("insert target sequence");
+        }
+        for (id, name) in &query_name {
+            let len = *query_len.get(id).unwrap() as u32;
+            tx.execute(
+                "INSERT INTO sequences(seq_id, seq_name, seq_type, length) VALUES(?1,?2,'query',?3)",
+                params![*id + 1_000_000u32, name, len],
+            )
+            .expect("insert query sequence");
+        }
+        tx.commit().expect("commit sequences");
+    }
 
     let all_records = query_seqs
         .par_iter()
@@ -843,10 +1000,23 @@ fn main() -> Result<(), std::io::Error> {
     //all_bed_record.extend(query_aln_bed_records);
     all_bed_records.sort();
 
-    all_bed_records.into_iter().for_each(|r| {
-        writeln!(out_svcnd, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
-            .expect("fail to write the 'in-alignment' sv candidate bed file");
-    });
+    {
+        let tx = conn.unchecked_transaction().expect("begin svcnd tx");
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO sv_candidates(target_name,target_start,target_end,sv_type)
+                 VALUES(?1,?2,?3,?4)",
+            )
+            .expect("prepare sv_candidates insert");
+        all_bed_records.iter().for_each(|r| {
+            writeln!(out_svcnd, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
+                .expect("fail to write the 'in-alignment' sv candidate bed file");
+            stmt.execute(params![r.0, r.1, r.2, r.3])
+                .expect("insert sv_candidates");
+        });
+        drop(stmt);
+        tx.commit().expect("commit sv_candidates");
+    }
 
     // output ctgmap file
 
@@ -934,6 +1104,29 @@ fn main() -> Result<(), std::io::Error> {
         serde_json::to_string(&ctg_map_set).expect("fail to construct json for ctg map");
     writeln!(out_ctgmap_json, "{}", ctgmap_json).expect("fail to write ctg map json file");
 
+    // --- ctgmap inserts ---
+    {
+        let tx = conn.unchecked_transaction().expect("begin ctgmap tx");
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO ctgmap(target_name,target_start,target_end,
+                  query_name,query_start,query_end,ctg_len,orientation,ctg_orientation,
+                  target_dup,target_ovlp,query_dup,query_ovlp)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            )
+            .expect("prepare ctgmap insert");
+        for r in &ctg_map_set.records {
+            stmt.execute(params![
+                r.t_name, r.ts, r.te, r.q_name, r.qs, r.qe, r.ctg_len,
+                r.orientation, r.ctg_orientation,
+                r.t_dup as i32, r.t_ovlp as i32, r.q_dup as i32, r.q_ovlp as i32
+            ])
+            .expect("insert ctgmap");
+        }
+        drop(stmt);
+        tx.commit().expect("commit ctgmap");
+    }
+
     let target_length_json = serde_json::to_string(&ctg_map_set.target_length)
         .expect("fail to construct json for ctg map");
     writeln!(out_target_len, "{}", target_length_json).expect("fail to write ctg map json file");
@@ -943,61 +1136,80 @@ fn main() -> Result<(), std::io::Error> {
     writeln!(out_query_len, "{}", query_length_json).expect("fail to write ctg map json file");
 
     query_aln_bed_records.sort();
-    query_aln_bed_records.into_iter().for_each(|r| {
-        writeln!(out_ctgsv, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
-            .expect("fail to write the 'in-alignment' sv candidate bed file");
-    });
+    {
+        let tx = conn.unchecked_transaction().expect("begin ctgsv tx");
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO ctgsv(query_name,query_start,query_end,sv_type)
+                 VALUES(?1,?2,?3,?4)",
+            )
+            .expect("prepare ctgsv insert");
+        query_aln_bed_records.iter().for_each(|r| {
+            writeln!(out_ctgsv, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
+                .expect("fail to write the 'in-alignment' sv candidate bed file");
+            stmt.execute(params![r.0, r.1, r.2, r.3])
+                .expect("insert ctgsv");
+        });
+        drop(stmt);
+        tx.commit().expect("commit ctgsv");
+    }
 
     let mut vcf_records = Vec::<(u32, u32, String, String, ShimmerMatchBlock)>::new();
 
     // the second round loop through all_records to output and tagged variant from duplicate / overlapped blocks
-    all_records
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .for_each(|(aln_idx, vr)| {
-            vr.into_iter().for_each(|r| {
-                let rec_out = match r.clone() {
+    let tx = conn.unchecked_transaction().expect("begin main tx");
+    let mut chain_stmt = tx
+        .prepare(
+            "INSERT INTO chains(aln_idx,target_name,target_start,target_end,
+              query_name,query_start,query_end,orientation,ctg_orientation,query_length,
+              target_dup,target_ovlp,query_dup,query_ovlp)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+        )
+        .expect("prepare chains insert");
+    let mut block_stmt = tx
+        .prepare(
+            "INSERT INTO blocks(aln_idx,block_type,dup_flag,ovlp_flag,
+              target_name,target_start,target_end,query_name,query_start,query_end,
+              orientation,ctg_orientation,sv_diff_type)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        )
+        .expect("prepare blocks insert");
+    let mut variant_stmt = tx
+        .prepare(
+            "INSERT INTO variants(aln_idx,dup_flag,ovlp_flag,
+              target_name,target_start,target_end,query_name,query_start,query_end,
+              orientation,target_diff,query_diff,target_coord,variant_type,ref_seq,alt_seq)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+        )
+        .expect("prepare variants insert");
+    let mut svsq_stmt = tx
+        .prepare(
+            "INSERT INTO sv_sequences(target_name,target_start,target_end,
+              query_name,query_start,query_end,orientation,target_seq,query_seq)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        )
+        .expect("prepare sv_sequences insert");
+
+    for (aln_idx, vr) in all_records.into_iter().flatten().enumerate() {
+        for r in vr.into_iter() {
+            let rec_out = match r.clone() {
                     Record::Bgn(match_block, q_len, ctg_orientation) => {
                         let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
                         let tn = target_name.get(&t_idx).unwrap();
                         let qn = query_name.get(&q_idx).unwrap();
-                        let t_dup = if target_duplicate_blocks.contains(&match_block) {
-                            1
-                        } else {
-                            0
-                        };
-                        let t_ovlp = if target_overlap_blocks.contains(&match_block) {
-                            1
-                        } else {
-                            0
-                        };
-                        let q_dup = if query_duplicate_blocks.contains(&match_block) {
-                            1
-                        } else {
-                            0
-                        };
-                        let q_ovlp = if query_overlap_blocks.contains(&match_block) {
-                            1
-                        } else {
-                            0
-                        };
+                        let t_dup = if target_duplicate_blocks.contains(&match_block) { 1 } else { 0 };
+                        let t_ovlp = if target_overlap_blocks.contains(&match_block) { 1 } else { 0 };
+                        let q_dup = if query_duplicate_blocks.contains(&match_block) { 1 } else { 0 };
+                        let q_ovlp = if query_overlap_blocks.contains(&match_block) { 1 } else { 0 };
+                        chain_stmt.execute(params![
+                            aln_idx as u32, tn, ts, te, qn, qs, qe,
+                            orientation, ctg_orientation, q_len,
+                            t_dup, t_ovlp, q_dup, q_ovlp
+                        ]).expect("insert chain");
                         format!(
                             "{:06}\tB\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx,
-                            tn,
-                            ts,
-                            te,
-                            qn,
-                            qs,
-                            qe,
-                            orientation,
-                            q_len,
-                            ctg_orientation,
-                            t_dup,
-                            t_ovlp,
-                            q_dup,
-                            q_ovlp
+                            aln_idx, tn, ts, te, qn, qs, qe, orientation,
+                            q_len, ctg_orientation, t_dup, t_ovlp, q_dup, q_ovlp
                         )
                     }
                     Record::End(match_block, q_len, ctg_orientation) => {
@@ -1043,6 +1255,11 @@ fn main() -> Result<(), std::io::Error> {
                             "M"
                         };
 
+                        block_stmt.execute(params![
+                            aln_idx as u32, 0i32, dup as i32, ovlp as i32,
+                            tn, ts, te, qn, qs, qe, orientation,
+                            rusqlite::types::Null, rusqlite::types::Null
+                        ]).expect("insert M block");
                         format!(
                             "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             aln_idx, match_type, tn, ts, te, qn, qs, qe, orientation
@@ -1106,6 +1323,15 @@ fn main() -> Result<(), std::io::Error> {
                             diff_type
                         );
 
+                        let sv_diff_code = match diff_type {
+                            'A' => 0i32, 'E' => 1, 'S' => 2, 'L' => 3, _ => 4,
+                        };
+                        block_stmt.execute(params![
+                            aln_idx as u32, 1i32, dup as i32, ovlp as i32,
+                            tn, ts, te, qn, qs, qe, orientation,
+                            ctg_orientation, sv_diff_code
+                        ]).expect("insert S block");
+
                         if let Some(out_sv_seq_file) = out_sv_seq_file.as_mut() {
                             let t_seq_slice = &ref_seq_index_db
                                 .get_sub_seq_by_id(t_idx, ts as usize, te as usize)
@@ -1120,9 +1346,12 @@ fn main() -> Result<(), std::io::Error> {
                                 )
                             };
                             let q_seq = String::from_utf8_lossy(&q_seq[..]);
-
                             writeln!(out_sv_seq_file, "{}\t{}\t{}", out, t_seq, q_seq)
                                 .expect("writing fasta for SV candidate fail");
+                            svsq_stmt.execute(params![
+                                tn, ts, te, qn, qs, qe, orientation,
+                                t_seq.as_ref(), q_seq.as_ref()
+                            ]).expect("insert sv_sequences");
                         };
 
                         out
@@ -1153,36 +1382,28 @@ fn main() -> Result<(), std::io::Error> {
                             false
                         };
 
-                        let variant_type = if dup {
-                            "V_D"
-                        } else if ovlp {
-                            "V_O"
-                        } else {
-                            "V"
-                        };
+                        let variant_type = if dup { "V_D" } else if ovlp { "V_O" } else { "V" };
+                        let vt_code: i32 = match vt { 'X' => 0, 'I' => 1, _ => 2 };
+                        variant_stmt.execute(params![
+                            aln_idx as u32, dup as i32, ovlp as i32,
+                            tn, ts, te, qn, qs, qe, orientation,
+                            td, qd, tc, vt_code, tvs, qvs
+                        ]).expect("insert variant");
                         format!(
                             "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx,
-                            variant_type,
-                            tn,
-                            ts,
-                            te,
-                            qn,
-                            qs,
-                            qe,
-                            orientation,
-                            td,
-                            qd,
-                            tc,
-                            vt,
-                            tvs,
-                            qvs
+                            aln_idx, variant_type, tn, ts, te, qn, qs, qe,
+                            orientation, td, qd, tc, vt, tvs, qvs
                         )
                     }
                 };
                 writeln!(out_alnmap, "{}", rec_out).expect("fail to write the output file");
-            });
-        });
+        }
+    }
+    drop(chain_stmt);
+    drop(block_stmt);
+    drop(variant_stmt);
+    drop(svsq_stmt);
+    tx.commit().expect("commit main alignment records");
 
     writeln!(out_vcf, "##fileformat=VCFv4.2").expect("fail to write the vcf file");
     ctg_map_set
@@ -1252,6 +1473,20 @@ fn main() -> Result<(), std::io::Error> {
             )
             .expect("fail to write the vcf file");
         });
+
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS blocks_pos
+             ON blocks(target_name, target_start, target_end);
+         CREATE INDEX IF NOT EXISTS variants_pos
+             ON variants(target_name, target_coord);
+         CREATE INDEX IF NOT EXISTS ctgmap_tgt
+             ON ctgmap(target_name, target_start, target_end);
+         CREATE INDEX IF NOT EXISTS ctgmap_qry
+             ON ctgmap(query_name, query_start, query_end);
+         CREATE INDEX IF NOT EXISTS svcnd_pos
+             ON sv_candidates(target_name, target_start, target_end);",
+    )
+    .expect("failed to create alndb indices");
 
     Ok(())
 }
