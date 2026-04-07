@@ -131,25 +131,47 @@ Output & \texttt{<prefix>.ctgmap.json}& Contig placement records (JSON) \\
 
 \subsection{Shimmers (Sparse K-mers)}
 
-A \emph{shimmer} is a minimizer-style sparse $k$-mer selected within a sliding
-window of size $w$ by a reduction factor $r$.
-Formally, for a sequence $S$ of length $L$, shimmers are the subset of
-$(w,k,r)$-minimizers retained after applying a modular reduction:
-only positions $p$ where $H(k\text{-mer at }p) \bmod r = 0$ are kept,
-where $H$ is a deterministic hash function.
+A \emph{shimmer} is a two-stage sparse $k$-mer anchor.
+The construction proceeds as follows:
+
+\begin{enumerate}
+  \item \textbf{Stage 1 — window minimizers.}
+        Standard $(w, k)$-minimizers are extracted from the sequence:
+        for each window of $w$ consecutive $k$-mers, the lexicographically
+        smallest canonical $k$-mer (forward or reverse complement, whichever
+        is smaller) is retained.
+
+  \item \textbf{Stage 2 — double reduction.}
+        The function \texttt{reduce\_shmmr} is applied \emph{twice} in
+        succession to the Stage-1 minimizer list.
+        Each call selects the minimum-valued element within a sliding window
+        of size $r$ over the \emph{already-sparse} minimizer list.
+        Applying the reduction twice with window $r$ achieves a sparsity
+        roughly equivalent to a single pass with window $r^2$, while the
+        two-pass design ensures boundary stability.
+\end{enumerate}
 
 \begin{definition}[Shimmer]
-  Given parameters $(w, k, r)$, a position $p$ in sequence $S$ defines
-  a shimmer if:
+  Given parameters $(w, k, r)$, a position $p$ in sequence $S$ is a shimmer if:
   \begin{enumerate}[noitemsep]
-    \item The $k$-mer at position $p$ is the lexicographic minimum within
-          the window $[p - w/2,\; p + w/2]$, and
-    \item $H(S[p \ldots p+k-1]) \bmod r = 0$.
+    \item The canonical $k$-mer at $p$ is the minimum in its $(w,k)$-minimizer
+          window (Stage 1), and
+    \item It survives both passes of \texttt{reduce\_shmmr} with window $r$
+          (Stage 2) — i.e.\ it is the minimum within a window of $r$ Stage-1
+          minimizers in both reduction sweeps.
   \end{enumerate}
 \end{definition}
 
-This two-level selection yields an index that is both sparse (fast to query)
-and sensitive (each shimmer represents a conserved sequence anchor).
+\begin{remark}
+  The reduction factor $r$ controls sparsity at the second level: larger $r$
+  yields fewer shimmers per kilobase and faster (but less sensitive) alignment.
+  Valid values are $1 \leq r < 13$ (enforced by assertion in the source).
+  With $r=1$ no reduction is applied and all Stage-1 minimizers are retained.
+  Additionally, shimmers are filtered by a minimum inter-shimmer spacing
+  (\texttt{min\_span}): a shimmer is discarded if the distance to either its
+  predecessor or successor is below \texttt{min\_span}, preventing dense
+  clusters in low-complexity regions.
+\end{remark}
 
 \subsection{Reference Index Construction}
 
@@ -161,8 +183,10 @@ The reference FASTA is loaded and indexed once per run:
 \Require Reference sequences $\mathcal{T}$, parameters $(w,k,r,\text{min\_span})$
 \Ensure Hash map $\mathcal{I}$: shimmer hash $\to$ list of (seq\_id, pos, strand)
 \ForAll{sequence $T \in \mathcal{T}$}
-  \State Extract all shimmers from $T$ with parameters $(w,k,r)$
-  \ForAll{consecutive shimmer pair $(s_i, s_{i+1})$ with span $\geq \text{min\_span}$}
+  \State Extract Stage-1 minimizers from $T$ with $(w,k)$
+  \State Apply \texttt{reduce\_shmmr} twice with window $r$ $\to$ shimmer list $\mathcal{S}_T$
+  \State Filter by \texttt{min\_span}: remove shimmers too close to neighbours
+  \ForAll{consecutive shimmer pair $(s_i, s_{i+1})$ in $\mathcal{S}_T$}
     \State $h \gets H(s_i, s_{i+1})$  \Comment{Paired-shimmer hash}
     \State $\mathcal{I}[h].\text{append}((\text{seq\_id}, s_i.\text{pos}, \text{strand}))$
   \EndFor
