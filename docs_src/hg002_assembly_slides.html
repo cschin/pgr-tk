@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HG002 Post-Assembly Analysis — PGR-TK</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #1a1a2e;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  min-height: 100vh;
+  user-select: none;
+}
+
+/* ── Deck container ── */
+#deck {
+  width: min(96vw, calc(96vh * 16/9));
+  aspect-ratio: 16/9;
+  position: relative;
+}
+
+/* ── Individual slides ── */
+.slide {
+  display: none;
+  width: 100%; height: 100%;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  position: absolute; top: 0; left: 0;
+  flex-direction: column;
+}
+.slide.active { display: flex; }
+
+/* header bar */
+.slide-header {
+  background: linear-gradient(135deg, #1e3a5f 0%, #2980b9 100%);
+  color: #fff;
+  padding: 2.2% 3.5%;
+  flex-shrink: 0;
+}
+.slide-header h1 { font-size: 2.6cqw; font-weight: 700; letter-spacing: -.01em; }
+.slide-header .sub { font-size: 1.4cqw; opacity: .8; margin-top: .3em; }
+
+/* title slide special */
+.slide.title-slide { flex-direction: column; justify-content: center; }
+.slide.title-slide .slide-header {
+  background: linear-gradient(135deg, #0d2137 0%, #1e3a5f 50%, #2980b9 100%);
+  flex: 1; display: flex; flex-direction: column; justify-content: center;
+  padding: 5% 8%;
+}
+.slide.title-slide .slide-header h1 { font-size: 4cqw; }
+.slide.title-slide .slide-header .sub { font-size: 2cqw; margin-top: .6em; }
+.slide.title-slide .slide-header .meta {
+  font-size: 1.4cqw; opacity: .65; margin-top: 2em; line-height: 1.7;
+}
+
+/* body */
+.slide-body {
+  flex: 1; overflow: hidden;
+  padding: 2% 3.5%;
+  display: flex; flex-direction: column; gap: 1.2%;
+  font-size: 1.55cqw;
+  color: #2c3e50;
+}
+
+/* two-column layout */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 2%; flex: 1; }
+.cols.c3 { grid-template-columns: 1fr 1fr 1fr; }
+
+/* section headings inside body */
+.slide-body h2 {
+  font-size: 1.7cqw; color: #1e3a5f;
+  border-bottom: 2px solid #2980b9;
+  padding-bottom: .2em; margin-bottom: .4em;
+}
+
+/* tables */
+table { border-collapse: collapse; width: 100%; font-size: 1.2cqw; }
+th { background: #1e3a5f; color: #fff; padding: .35em .7em; text-align: left; }
+td { padding: .3em .7em; border-bottom: 1px solid #e8ecf0; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f0f6fb; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.hi  { color: #27ae60; font-weight: 700; }
+td.warn{ color: #e74c3c; font-weight: 700; }
+td.blue{ color: #2980b9; font-weight: 700; }
+
+/* callout box */
+.callout {
+  background: #eaf4ff; border-left: 4px solid #2980b9;
+  padding: .5em .9em; border-radius: 0 6px 6px 0;
+  font-size: 1.2cqw; color: #1e3a5f; line-height: 1.5;
+}
+.callout.green { background: #e9f9f0; border-color: #27ae60; color: #1a5c33; }
+.callout.orange{ background: #fff5e6; border-color: #e67e22; color: #7d4500; }
+.callout.purple{ background: #f5eeff; border-color: #8e44ad; color: #4a1a6b; }
+
+/* stat cards */
+.cards { display: flex; gap: 1.5%; flex-wrap: wrap; }
+.card {
+  background: #fff; border: 1px solid #d6e4f0; border-radius: 8px;
+  padding: .6em 1em; flex: 1; min-width: 0; text-align: center;
+}
+.card .val { font-size: 2.8cqw; font-weight: 800; color: #2980b9; }
+.card .lbl { font-size: 1cqw; color: #7f8c8d; margin-top: .1em; }
+
+/* diagram box */
+.diagram {
+  background: #f8f8f8; border: 1px solid #ddd; border-radius: 6px;
+  padding: .6em 1em; font-family: monospace; font-size: 1.1cqw;
+  white-space: pre; line-height: 1.7; color: #333;
+}
+
+/* pipeline diagram */
+.pipeline {
+  background: #f0f6fb; border-radius: 8px;
+  padding: 1.5% 2%; font-family: monospace; font-size: 1.25cqw;
+  white-space: pre; line-height: 1.8; color: #1e3a5f;
+  flex: 1; display: flex; align-items: center;
+}
+.pipeline code { font-size: inherit; }
+
+/* bullet list */
+ul.bullets { list-style: none; padding: 0; }
+ul.bullets li { padding: .25em 0 .25em 1.4em; position: relative; font-size: 1.3cqw; line-height: 1.45; }
+ul.bullets li::before { content: "▸"; position: absolute; left: 0; color: #2980b9; }
+
+/* footer bar */
+.slide-footer {
+  background: #f0f4f8; border-top: 1px solid #d6e4f0;
+  padding: .4% 3.5%; font-size: 1cqw; color: #95a5a6;
+  display: flex; justify-content: space-between; align-items: center;
+  flex-shrink: 0;
+}
+
+/* slide number badge */
+.slide-num {
+  background: #2980b9; color: #fff; border-radius: 12px;
+  padding: .15em .7em; font-size: 1cqw;
+}
+
+/* ── Navigation ── */
+#nav {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 10px;
+}
+#nav button {
+  background: #2980b9; color: #fff; border: none;
+  border-radius: 6px; padding: 6px 18px; font-size: 14px;
+  cursor: pointer; transition: background .15s;
+}
+#nav button:hover { background: #1e6ea0; }
+#nav button:disabled { background: #4a5568; cursor: default; }
+#progress {
+  display: flex; gap: 5px;
+}
+.dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #4a5568; cursor: pointer; transition: background .15s;
+}
+.dot.active { background: #2980b9; }
+
+/* container query context */
+#deck { container-type: inline-size; }
+</style>
+</head>
+<body>
+
+<div id="deck">
+
+<!-- ── Slide 0 — Title ── -->
+<div class="slide title-slide active" data-idx="0">
+  <div class="slide-header">
+    <h1>HG002 Post-Assembly Analysis</h1>
+    <div class="sub">DGI Post-Assembly Report — mockup developed with PGR-TK + Claude Code</div>
+    <div class="meta">
+      Sample: HG002 (GIAB Ashkenazi trio — son)<br>
+      Reference: GRCh38 no-alt analysis set<br>
+      Assembly: hg002v1.1 &nbsp;·&nbsp; Maternal (hap0) + Paternal (hap1) &nbsp;·&nbsp; T2T-quality<br>
+      Date: 2026-04-07
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK Pipeline</span>
+    <span class="slide-num">1 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 1 — Pipeline ── -->
+<div class="slide" data-idx="1">
+  <div class="slide-header">
+    <h1>Analysis Pipeline Overview</h1>
+    <div class="sub">Slide 1 — What We Did</div>
+  </div>
+  <div class="slide-body">
+    <div class="callout">
+      <strong>Goal:</strong> Characterise how well a diploid human assembly matches GRCh38 — at the level of
+      alignments, structural variants, transcript liftover, and clinical variant annotation.
+    </div>
+    <div class="pipeline">Assembly (hap0 + hap1)
+       │
+       ▼
+pgr-alnmap          →  alignment chains, M-blocks, SV candidates  (.alndb)
+       │
+       ├──▶ pgr-generate-diploid-vcf  →  diploid VCF
+       │           │
+       │           └──▶ bcftools + ClinVar  →  clinical annotation
+       │
+       └──▶ pgr-liftover-gtf          →  transcript liftover  (_liftover.db)
+                   │
+                   └──▶ generate_e2e_report.py  →  HTML report (full + lite)</div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK Pipeline</span>
+    <span class="slide-num">2 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 2 — Liftover ── -->
+<div class="slide" data-idx="2">
+  <div class="slide-header">
+    <h1>Transcript Liftover — Hap0 (Maternal)</h1>
+    <div class="sub">Slide 2 — How completely is the assembly annotated?</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Transcript-level status</h2>
+        <table>
+          <thead><tr><th>Status</th><th class="num">Count</th><th class="num">%</th></tr></thead>
+          <tbody>
+            <tr><td>Fully mapped (≥ 90% exon coverage)</td><td class="num hi">188,095</td><td class="num hi">90.7%</td></tr>
+            <tr><td>Partial (50–89%)</td><td class="num">370</td><td class="num">0.2%</td></tr>
+            <tr><td>Multi-contig</td><td class="num">1,062</td><td class="num">0.5%</td></tr>
+            <tr><td>No hit</td><td class="num warn">17,599</td><td class="num warn">8.5%</td></tr>
+            <tr style="font-weight:700"><td>Total transcripts</td><td class="num">207,289</td><td class="num">100%</td></tr>
+          </tbody>
+        </table>
+        <br>
+        <h2>Gene-level HQ (≥ 90% coverage)</h2>
+        <table>
+          <thead><tr><th>Gene set</th><th class="num">HQ genes</th></tr></thead>
+          <tbody>
+            <tr><td>All gene symbols</td><td class="num">57,268</td></tr>
+            <tr><td>NM curated mRNA genes</td><td class="num hi">19,187 / 19,421</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4%">
+        <div class="card" style="flex:none">
+          <div class="val" style="color:#27ae60">98.8%</div>
+          <div class="lbl">NM protein-coding genes<br>fully covered in hap0</div>
+        </div>
+        <div class="callout green">
+          98.8% of curated protein-coding gene loci are fully covered — a hallmark of a
+          near-complete T2T-quality assembly.
+        </div>
+        <h2>No-hit root causes (NM genes)</h2>
+        <table>
+          <thead><tr><th>Cause</th><th class="num">Genes</th></tr></thead>
+          <tbody>
+            <tr><td>Alt / fix / unplaced locus only</td><td class="num">~1,598</td></tr>
+            <tr><td>Centromere / heterochromatin</td><td class="num">~1,113</td></tr>
+            <tr><td>chrY (absent in maternal hap)</td><td class="num">57</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK · pgr-liftover-gtf</span>
+    <span class="slide-num">3 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 3 — SV Candidates ── -->
+<div class="slide" data-idx="3">
+  <div class="slide-header">
+    <h1>Structural Variant Candidates</h1>
+    <div class="sub">Slide 3 — Alignment anomalies on two coordinate axes</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Ref view (.svcnd.bed) — reference axis</h2>
+        <table>
+          <thead><tr><th>Type</th><th class="num">Hap0</th><th class="num">Hap1</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><strong style="color:#e74c3c">SV</strong></td><td class="num">7,298</td><td class="num">7,120</td><td>Size-discordant gap — true SV</td></tr>
+            <tr><td><strong style="color:#3498db">TG</strong></td><td class="num">1,542</td><td class="num">1,725</td><td>Ref gap between contigs</td></tr>
+            <tr><td><strong style="color:#2ecc71">TD</strong></td><td class="num">5,747</td><td class="num">5,659</td><td>Contig duplicate</td></tr>
+            <tr><td><strong style="color:#e67e22">TO</strong></td><td class="num">164</td><td class="num">167</td><td>Contig overlap</td></tr>
+            <tr style="font-weight:700"><td>Total</td><td class="num">14,751</td><td class="num">14,671</td><td></td></tr>
+          </tbody>
+        </table>
+        <br>
+        <h2>Contig view (.ctgsv.bed) — assembly axis</h2>
+        <table>
+          <thead><tr><th>Type</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><strong style="color:#e74c3c">QG</strong></td><td>Contig gap — unaligned region between ref alignments</td></tr>
+            <tr><td><strong style="color:#3498db">QD</strong></td><td>Ref duplicate — ref block in a prior alignment</td></tr>
+            <tr><td><strong style="color:#2ecc71">QO</strong></td><td>Ref overlap — ref block partially overlapping prior</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4%">
+        <div class="cards">
+          <div class="card"><div class="val">7,298</div><div class="lbl">True SVs<br>Hap0</div></div>
+          <div class="card"><div class="val">7,120</div><div class="lbl">True SVs<br>Hap1</div></div>
+        </div>
+        <div class="callout orange">
+          <strong>SV</strong> candidates are gaps in the alignment chain where the ref–query size
+          difference exceeds the threshold — the most likely candidates for genuine
+          insertions or deletions relative to GRCh38.
+        </div>
+        <div class="callout">
+          <strong>TD / TO / QD / QO</strong> are alignment artefacts caused by segmental duplications
+          or assembly overlaps, not necessarily true SVs.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK · pgr-alnmap</span>
+    <span class="slide-num">4 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 4 — SV Gene Impact ── -->
+<div class="slide" data-idx="4">
+  <div class="slide-header">
+    <h1>SV Gene Impact Annotation</h1>
+    <div class="sub">Slide 4 — Which genes are hit, and how badly?</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Impact classification</h2>
+        <div class="diagram"><span style="color:#e74c3c;font-weight:700">exon disrupted</span>
+  SV:   |══════════════════════|
+  Exon:     |────────|            ← fully inside SV
+  → entire exon deleted; reading frame likely broken
+
+<span style="color:#e67e22;font-weight:700">exon partial</span>
+  SV:   |══════════════|
+  Exon:           |────────────|  ← only partly overlapped
+  → splice site disrupted; altered splicing possible
+
+<span style="color:#3498db;font-weight:700">intronic</span>   SV in gene body, no exon overlap
+<span style="color:#95a5a6;font-weight:700">intergenic</span> SV between genes (5′/3′ neighbor reported)</div>
+      </div>
+      <div>
+        <h2>Summary (ref view SVs only)</h2>
+        <table>
+          <thead><tr><th>Impact</th><th class="num">Hap0</th><th class="num">Hap1</th></tr></thead>
+          <tbody>
+            <tr><td style="color:#e74c3c;font-weight:600">exon disrupted</td><td class="num">4,256</td><td class="num">6,239</td></tr>
+            <tr><td style="color:#e67e22;font-weight:600">exon partial</td><td class="num">1,159</td><td class="num">1,152</td></tr>
+            <tr><td style="color:#3498db;font-weight:600">intronic</td><td class="num">2,553</td><td class="num">2,458</td></tr>
+          </tbody>
+        </table>
+        <br>
+        <div class="cards">
+          <div class="card"><div class="val" style="color:#8e44ad">3,139</div><div class="lbl">Genes with exon<br>impact — Hap0</div></div>
+          <div class="card"><div class="val" style="color:#8e44ad">5,108</div><div class="lbl">Genes with exon<br>impact — Hap1</div></div>
+        </div>
+        <br>
+        <div class="callout purple">
+          Genes with <strong>exon disrupted</strong> SVs are candidates for protein truncation or loss.
+          Genes with <strong>exon partial</strong> SVs may have altered splicing.
+          Full per-gene tables are in the HTML report.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK · gene index from _liftover.db</span>
+    <span class="slide-num">5 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 5 — ClinVar ── -->
+<div class="slide" data-idx="5">
+  <div class="slide-header">
+    <h1>ClinVar Annotation</h1>
+    <div class="sub">Slide 5 — Clinical variant interpretation</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Annotation pipeline</h2>
+        <ul class="bullets">
+          <li>pgr-alnmap → diploid VCF (hap0 + hap1)</li>
+          <li>pgr-annotate-vcf-file + hg38.ncbiRefSeq.gtf.gz</li>
+          <li>bcftools sort + strip chr prefix</li>
+          <li>bcftools annotate + ClinVar 2024 VCF</li>
+        </ul>
+        <br>
+        <h2>Variant counts by significance</h2>
+        <table>
+          <thead><tr><th>Category</th><th class="num">Variants</th><th class="num">%</th></tr></thead>
+          <tbody>
+            <tr><td>Benign / Likely benign</td><td class="num hi">40,974</td><td class="num">98.1%</td></tr>
+            <tr><td>Other / unclassified</td><td class="num">315</td><td class="num">0.75%</td></tr>
+            <tr><td>Uncertain significance (VUS)</td><td class="num">295</td><td class="num">0.71%</td></tr>
+            <tr><td>Drug response / risk factor</td><td class="num">192</td><td class="num">0.46%</td></tr>
+            <tr><td style="color:#e74c3c;font-weight:700">Pathogenic / Likely pathogenic</td><td class="num warn">9</td><td class="num warn">0.02%</td></tr>
+            <tr style="font-weight:700"><td>Total annotated</td><td class="num">41,785</td><td class="num">100%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4%">
+        <div class="card" style="flex:none">
+          <div class="val" style="color:#e74c3c">9</div>
+          <div class="lbl">Pathogenic / Likely pathogenic variants<br>in HG002 diploid assembly</div>
+        </div>
+        <h2>Zygosity annotation</h2>
+        <ul class="bullets">
+          <li><strong>Heterozygous</strong> — one ref + one alt allele; carrier state</li>
+          <li><strong>Homozygous</strong> — both alleles are the same alt; full penetrance expected</li>
+        </ul>
+        <div class="callout orange">
+          Homozygous pathogenic variants are prioritised — both alleles carry the
+          disease-associated change, so phenotypic effect is most likely.
+        </div>
+        <div class="callout">
+          Pathogenic table in the report includes coordinate, REF→ALT, gene,
+          zygosity, disease name, and ClinVar review status.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK · bcftools · ClinVar NCBI</span>
+    <span class="slide-num">6 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 6 — HTML Report ── -->
+<div class="slide" data-idx="6">
+  <div class="slide-header">
+    <h1>Interactive HTML Report</h1>
+    <div class="sub">Slide 6 — Self-contained, offline-capable, OneDrive-ready</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Two versions — generated automatically</h2>
+        <table>
+          <thead><tr><th>Version</th><th>File</th><th class="num">Size</th><th>Use</th></tr></thead>
+          <tbody>
+            <tr><td>Full</td><td>e2e_report.html</td><td class="num">~162 MB</td><td>Archive / analysis</td></tr>
+            <tr><td>Lite</td><td>e2e_report_lite.html</td><td class="num hi">~7 MB</td><td>Sharing / OneDrive</td></tr>
+          </tbody>
+        </table>
+        <br>
+        <h2>Report tabs</h2>
+        <table>
+          <thead><tr><th>Tab</th><th>Content</th></tr></thead>
+          <tbody>
+            <tr><td>Step Timings</td><td>Wall/CPU time per pipeline step</td></tr>
+            <tr><td>Alignment Plots</td><td>Whole-genome dot-plots, hap0 + hap1</td></tr>
+            <tr><td>ClinVar</td><td>Classification, per-chromosome, pathogenic list</td></tr>
+            <tr><td>Liftover</td><td>Transcript status, NM funnel, scatter plots</td></tr>
+            <tr><td>SV Candidates</td><td>Type counts, size, genome ideogram, gene impact</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3%">
+        <h2>Key features</h2>
+        <ul class="bullets">
+          <li>All CDN scripts inlined — fully offline, no server required</li>
+          <li>Genome-wide SV ideogram (Canvas, hover tooltip)</li>
+          <li>Scatter plots: transcript length in assembly vs reference</li>
+          <li>Collapsible gene impact tables with exon-impact diagram</li>
+          <li>Cross-link banners between full and lite versions</li>
+          <li>ClinVar zygosity (het / hom) annotation</li>
+        </ul>
+        <div class="callout green">
+          The lite report reduces the scatter-plot data from ~188 k to 5,000
+          randomly sampled points (seed = 42 for reproducibility), shrinking the
+          file from 162 MB to 7 MB while keeping all other sections intact.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK · generate_e2e_report.py</span>
+    <span class="slide-num">7 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 7 — Key Takeaways ── -->
+<div class="slide" data-idx="7">
+  <div class="slide-header">
+    <h1>Key Takeaways</h1>
+    <div class="sub">Slide 7</div>
+  </div>
+  <div class="slide-body">
+    <div class="cards" style="margin-bottom:1.5%">
+      <div class="card"><div class="val" style="color:#27ae60">98.8%</div><div class="lbl">NM gene loci fully covered</div></div>
+      <div class="card"><div class="val">~7,200</div><div class="lbl">True SVs per haplotype</div></div>
+      <div class="card"><div class="val" style="color:#8e44ad">3,139</div><div class="lbl">Genes with exon impact (hap0)</div></div>
+      <div class="card"><div class="val" style="color:#e74c3c">9</div><div class="lbl">Pathogenic / LP variants</div></div>
+      <div class="card"><div class="val" style="color:#2980b9">7 MB</div><div class="lbl">Lite report size</div></div>
+    </div>
+    <ul class="bullets" style="flex:1">
+      <li><strong>Near-complete assembly</strong> — 98.8% of curated NM protein-coding genes fully covered (≥ 90% exon bases) in the maternal haplotype.</li>
+      <li><strong>~7,200 true SVs per haplotype</strong> from alignment-chain anomalies; ~14,700 total candidate records per haplotype when assembly artefacts (TD/TO) are included.</li>
+      <li><strong>3,139 / 5,108 genes</strong> have at least one exon overlapped by an SV candidate (hap0/hap1) — a subset face probable protein truncation or splice disruption.</li>
+      <li><strong>9 Pathogenic / Likely pathogenic ClinVar variants</strong> identified in the diploid assembly; each annotated with gene, zygosity, and disease name.</li>
+      <li><strong>Self-contained HTML report</strong> — fully offline, OneDrive-shareable; lite version (7 MB) auto-generated alongside the full 162 MB archive.</li>
+    </ul>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK Pipeline</span>
+    <span class="slide-num">8 / 9</span>
+  </div>
+</div>
+
+<!-- ── Slide 8 — Appendix ── -->
+<div class="slide" data-idx="8">
+  <div class="slide-header">
+    <h1>Appendix — Reference Data &amp; Thresholds</h1>
+    <div class="sub">Tool versions and run parameters</div>
+  </div>
+  <div class="slide-body">
+    <div class="cols">
+      <div>
+        <h2>Input data</h2>
+        <table>
+          <thead><tr><th>Item</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Reference</td><td>GCA_000001405.15 GRCh38 no-alt analysis set</td></tr>
+            <tr><td>Assembly hap0</td><td>hg002v1.1 maternal + MT (PanSN format)</td></tr>
+            <tr><td>Assembly hap1</td><td>hg002v1.1 paternal (PanSN format)</td></tr>
+            <tr><td>GTF annotation</td><td>hg38.ncbiRefSeq.gtf.gz</td></tr>
+            <tr><td>ClinVar VCF</td><td>clinvar.vcf.gz (NCBI)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <h2>Analysis thresholds</h2>
+        <table>
+          <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>HQ liftover threshold</td><td>≥ 90% exon bases covered</td></tr>
+            <tr><td>Partial liftover threshold</td><td>≥ 50% exon bases covered</td></tr>
+            <tr><td>SV size bins</td><td>&lt;200 bp / 200 bp–1 kb / 1–10 kb / ≥10 kb</td></tr>
+            <tr><td>Lite report scatter sample</td><td>5,000 points / chart (seed = 42)</td></tr>
+            <tr><td>Exon disrupted criterion</td><td>SV fully contains exon (sv_start ≤ exon_start AND exon_end ≤ sv_end)</td></tr>
+            <tr><td>Exon partial criterion</td><td>SV partially overlaps exon</td></tr>
+          </tbody>
+        </table>
+        <br>
+        <h2>Key output databases</h2>
+        <table>
+          <thead><tr><th>File</th><th>Contents</th></tr></thead>
+          <tbody>
+            <tr><td>*.alndb</td><td>Chains, blocks, variants, SV candidates</td></tr>
+            <tr><td>*_liftover.db</td><td>Transcripts, exons, liftover hits, summaries</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer">
+    <span>PGR-TK Pipeline</span>
+    <span class="slide-num">9 / 9</span>
+  </div>
+</div>
+
+</div><!-- #deck -->
+
+<!-- ── Navigation ── -->
+<div id="nav">
+  <button id="btn-prev" onclick="go(-1)" disabled>◀ Prev</button>
+  <div id="progress"></div>
+  <button id="btn-next" onclick="go(1)">Next ▶</button>
+</div>
+
+<script>
+var slides = document.querySelectorAll('.slide');
+var cur = 0;
+
+function buildDots() {
+  var p = document.getElementById('progress');
+  slides.forEach(function(_, i) {
+    var d = document.createElement('div');
+    d.className = 'dot' + (i === 0 ? ' active' : '');
+    d.onclick = (function(idx){ return function(){ show(idx); }; })(i);
+    p.appendChild(d);
+  });
+}
+
+function show(n) {
+  slides[cur].classList.remove('active');
+  document.querySelectorAll('.dot')[cur].classList.remove('active');
+  cur = Math.max(0, Math.min(n, slides.length - 1));
+  slides[cur].classList.add('active');
+  document.querySelectorAll('.dot')[cur].classList.add('active');
+  document.getElementById('btn-prev').disabled = (cur === 0);
+  document.getElementById('btn-next').disabled = (cur === slides.length - 1);
+}
+
+function go(d) { show(cur + d); }
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') go(1);
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')  go(-1);
+});
+
+buildDots();
+</script>
+</body>
+</html>
