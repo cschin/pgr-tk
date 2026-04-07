@@ -9,13 +9,82 @@ All paths are resolved relative to the directory containing this script,
 so the script can be run from anywhere.
 """
 
-import sys, html, os, subprocess, shutil, argparse
+import sys, html, os, subprocess, shutil, argparse, urllib.request, re
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# ── CDN script cache (fetch once, reuse) ──────────────────────────────────────
+_cdn_cache = {}
+def inline_ext_scripts(html_str):
+    """Replace all <script src="..."> with fully inlined content for offline use."""
+    def _fetch(m):
+        url = m.group(1)
+        if url not in _cdn_cache:
+            try:
+                print(f"Fetching {url} ...", flush=True)
+                with urllib.request.urlopen(url, timeout=30) as r:
+                    _cdn_cache[url] = r.read().decode('utf-8')
+            except Exception as e:
+                print(f"Warning: could not fetch {url}: {e}", flush=True)
+                return m.group(0)   # keep original tag on failure
+        return f'<script>{_cdn_cache[url]}</script>'
+    return re.sub(r'<script\s+src="([^"]+)"[^>]*></script>', _fetch, html_str)
+
+import json as _json, random as _random
+
+def subsample_scatter_html(html_str, max_pts, seed=42):
+    """Replace large scatter-plot JSON arrays with random subsamples of max_pts points.
+
+    Targets arrays of the form [{"x":...,"y":...,"n":"..."},...] embedded in JS.
+    Uses a cache so identical arrays (shared between linear/log charts) get the
+    same subsample, and a fixed seed for reproducibility.
+    """
+    rng   = _random.Random(seed)
+    cache = {}   # original JSON str -> replacement str
+    # Each scatter array element contains only x/y/n keys with no nested [ or ]
+    _array_re = re.compile(r'\[[^\[\]]+\]')
+    orig_total = [0]   # track pre-subsample size for the note (first large array found)
+
+    def _replace(m):
+        orig = m.group(0)
+        # Only process arrays that look like scatter data
+        if not orig.startswith('[{"x"'):
+            return orig
+        if orig in cache:
+            return cache[orig]
+        try:
+            arr = _json.loads(orig)
+        except Exception:
+            cache[orig] = orig
+            return orig
+        if len(arr) <= max_pts:
+            cache[orig] = orig
+            return orig
+        if orig_total[0] == 0:
+            orig_total[0] = len(arr)
+        sampled = rng.sample(arr, max_pts)
+        result = _json.dumps(sampled, separators=(', ', ': '))
+        cache[orig] = result
+        return result
+
+    subsampled = _array_re.sub(_replace, html_str)
+
+    # Inject a visible note after each <canvas> tag inside the scatter section
+    if orig_total[0] > 0:
+        note = (f'<p style="font-size:.8em;color:#e67e22;margin:.2em 0 .8em">'
+                f'&#9888; Lite mode: showing {max_pts:,} randomly sampled points '
+                f'out of {orig_total[0]:,} total. Run without --lite for full data.</p>')
+        subsampled = re.sub(
+            r'(<canvas\s[^>]*id="sc[A-Za-z]+[^"]*"[^>]*>)',
+            r'\1' + note,
+            subsampled)
+    return subsampled
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--timelog", default=os.path.join(script_dir, "e2e_timings.tsv"))
 ap.add_argument("--out",     default=os.path.join(script_dir, "e2e_report.html"))
+ap.add_argument("--lite-pts", metavar="N", type=int, default=5000,
+                help="Max scatter points in the lite report (default: 5000)")
 args = ap.parse_args()
 
 tsv_path  = args.timelog
@@ -132,21 +201,29 @@ if bcftools and os.path.exists(clinvar_vcf):
 
     raw = subprocess.check_output(
         [bcftools, "query",
-         "-f", "%CHROM\t%POS\t%REF\t%ALT\t%TYPE\t%INFO/CLNSIG\t%INFO/CLNDN\t%INFO/CLNREVSTAT\t%INFO/GN\n",
+         "-f", "%CHROM\t%POS\t%REF\t%ALT\t%TYPE\t%INFO/CLNSIG\t%INFO/CLNDN\t%INFO/CLNREVSTAT\t%INFO/GN\t[%GT]\n",
          "-i", 'INFO/CLNSIG!="."',
          clinvar_vcf],
         stderr=subprocess.DEVNULL).decode()
 
+    def gt_zygosity(gt):
+        alleles = re.split(r'[|/]', gt)
+        non_ref = [a for a in alleles if a not in ('.', '0')]
+        if not non_ref:
+            return "ref"
+        return "hom" if len(set(non_ref)) == 1 and len(non_ref) > 1 else "het"
+
     records = []
     for line in raw.splitlines():
         parts = line.split('\t')
-        if len(parts) == 9:
+        if len(parts) == 10:
             records.append(parts)
     total_annotated = len(records)
 
     from collections import defaultdict
     cat_counts   = defaultdict(int)
     cat_by_chrom = defaultdict(lambda: defaultdict(int))
+    zyg_counts   = {"het": 0, "hom": 0}   # overall het/hom tally
     pathogenic_rows = []
 
     # Detect whether VCF uses "chr1" or bare "1" style
@@ -158,7 +235,16 @@ if bcftools and os.path.exists(clinvar_vcf):
     def chrom_label(c):
         return c if c.startswith("chr") else "chr" + c
 
-    for chrom, pos, ref, alt, vtype, clnsig, clndn, revstat, gene in records:
+    def _trunc(s, n=8):
+        return html.escape(s[:n]) + "…" if len(s) > n else html.escape(s)
+
+    ZYG_LABEL = {"het": "Heterozygous", "hom": "Homozygous", "ref": "Ref"}
+    ZYG_COLOR = {"het": "#2980b9", "hom": "#e74c3c", "ref": "#95a5a6"}
+
+    for chrom, pos, ref, alt, vtype, clnsig, clndn, revstat, gene, gt in records:
+        zyg = gt_zygosity(gt)
+        if zyg in zyg_counts:
+            zyg_counts[zyg] += 1
         for cat_name, predicate in CLNSIG_CATEGORIES:
             if predicate(clnsig):
                 cat_counts[cat_name] += 1
@@ -166,11 +252,9 @@ if bcftools and os.path.exists(clinvar_vcf):
                 if cat_name == "Pathogenic/Likely_pathogenic":
                     diseases = clndn.replace('_', ' ').replace('|', '; ')
                     coord    = f"{chrom_label(chrom)}:{pos}"
-                    def _trunc(s, n=8):
-                        return html.escape(s[:n]) + "…" if len(s) > n else html.escape(s)
                     variant  = f"{_trunc(ref)} &gt; {_trunc(alt)}"
                     pathogenic_rows.append(
-                        (coord, variant, gene, clnsig, diseases[:80],
+                        (coord, variant, gene, zyg, clnsig, diseases[:80],
                          revstat.replace('_', ' ')))
                 break
 
@@ -182,9 +266,13 @@ if bcftools and os.path.exists(clinvar_vcf):
     n_path = cat_counts["Pathogenic/Likely_pathogenic"]
     n_vus  = cat_counts["Uncertain_significance"]
     n_ben  = cat_counts["Benign/Likely_benign"]
+    n_het  = zyg_counts["het"]
+    n_hom  = zyg_counts["hom"]
 
     cards = (card(total_vars,      "total variants in VCF") +
              card(total_annotated, "ClinVar annotated",           "#8e44ad") +
+             card(n_het,           "Heterozygous",                "#2980b9") +
+             card(n_hom,           "Homozygous",                  "#e74c3c") +
              card(n_ben,           "Benign / Likely benign",      "#27ae60") +
              card(n_vus,           "Uncertain significance",      "#e67e22") +
              card(n_path,          "Pathogenic / Likely pathogenic", "#e74c3c"))
@@ -219,10 +307,13 @@ if bcftools and os.path.exists(clinvar_vcf):
                        f"<td class='num' style='color:#27ae60'>{b}</td></tr>")
 
     path_rows = ""
-    for coord, variant, gene, clnsig, diseases, rev in pathogenic_rows:
+    for coord, variant, gene, zyg, clnsig, diseases, rev in pathogenic_rows:
+        zyg_color = ZYG_COLOR.get(zyg, "#95a5a6")
+        zyg_label = ZYG_LABEL.get(zyg, zyg)
         path_rows += (f"<tr><td style='white-space:nowrap'>{html.escape(coord)}</td>"
                       f"<td style='font-family:monospace'>{variant}</td>"
                       f"<td><strong>{html.escape(gene)}</strong></td>"
+                      f"<td><span style='color:{zyg_color};font-weight:600'>{zyg_label}</span></td>"
                       f"<td>{html.escape(clnsig)}</td>"
                       f"<td>{html.escape(diseases)}</td>"
                       f"<td style='font-size:.8em;color:#7f8c8d'>{html.escape(rev)}</td></tr>")
@@ -257,16 +348,17 @@ if bcftools and os.path.exists(clinvar_vcf):
 <div class="subpanel" id="subpanel-clinvar-cv-pathogenic">
   <table style="width:100%;table-layout:fixed">
     <colgroup>
-      <col style="width:14%">
       <col style="width:12%">
-      <col style="width:8%">
-      <col style="width:18%">
-      <col style="width:30%">
+      <col style="width:10%">
+      <col style="width:7%">
+      <col style="width:10%">
+      <col style="width:16%">
+      <col style="width:27%">
       <col style="width:18%">
     </colgroup>
     <thead><tr><th>Coordinate</th><th>Variant</th><th>Gene</th>
-      <th>Classification</th><th>Disease</th><th>Review status</th></tr></thead>
-    <tbody style="word-break:break-word">{path_rows if path_rows else "<tr><td colspan='6'>None found</td></tr>"}</tbody>
+      <th>Zygosity</th><th>Classification</th><th>Disease</th><th>Review status</th></tr></thead>
+    <tbody style="word-break:break-word">{path_rows if path_rows else "<tr><td colspan='7'>None found</td></tr>"}</tbody>
   </table>
 </div>
 """
@@ -304,6 +396,19 @@ SIZE_BINS = [
     ("≥10 kb",     lambda s: s >= 10_000),
 ]
 CHROMS_ORDER = [f"chr{i}" for i in range(1, 23)] + ["chrX", "chrY", "chrM"]
+
+# GRCh38 primary chromosome lengths (bp)
+CHROM_LENGTHS = {
+    "chr1":  248956422, "chr2":  242193529, "chr3":  198295559,
+    "chr4":  190214555, "chr5":  181538259, "chr6":  170805979,
+    "chr7":  159345973, "chr8":  145138636, "chr9":  138394717,
+    "chr10": 133797422, "chr11": 135086622, "chr12": 133275309,
+    "chr13": 114364328, "chr14": 107043718, "chr15": 101991189,
+    "chr16":  90338345, "chr17":  83257441, "chr18":  80373285,
+    "chr19":  58617616, "chr20":  64444167, "chr21":  46709983,
+    "chr22":  50818468, "chrX":  156040895, "chrY":   57227415,
+    "chrM":      16569,
+}
 
 def parse_svcnd_bed(path):
     """Return list of (chrom, start, end, sv_type) stripping PanSN prefix."""
@@ -405,6 +510,470 @@ q_type_rows1  = sv_type_rows(q_type1,  total_q1,  ["QG", "QD", "QO"])
 sv_size_table = sv_size_rows(sv_size0, sv_size1)
 sv_chrom_table = sv_chrom_rows(sv_chrom0, sv_chrom1)
 
+# ── SV gene annotation (Steps 1–4) ────────────────────────────────────────────
+import sqlite3, bisect
+from collections import defaultdict, Counter
+
+IMPACT_COLOR = {
+    "exon disrupted": "#e74c3c",
+    "exon partial":   "#e67e22",
+    "intronic":       "#3498db",
+    "intergenic":     "#95a5a6",
+}
+
+def load_gene_exon_index(db_path):
+    """Return (gene_index, exon_index) built from liftover.db."""
+    gene_index = defaultdict(list)   # chrom → [(g_start, g_end, gene_name, strand)]
+    exon_index = defaultdict(list)   # (chrom, gene_name) → [(es, ee)]
+
+    if not os.path.exists(db_path):
+        return gene_index, exon_index
+
+    conn = sqlite3.connect(db_path)
+    # Gene bodies — one span per gene_name+chrom
+    for row in conn.execute("""
+        SELECT gene_name, ref_chrom,
+               MIN(ref_start) AS g_start, MAX(ref_end) AS g_end, ref_strand
+        FROM transcripts
+        WHERE gene_name != ''
+          AND ref_chrom NOT LIKE '%_alt%'
+          AND ref_chrom NOT LIKE '%_fix%'
+          AND ref_chrom NOT LIKE '%_random%'
+          AND ref_chrom NOT LIKE 'chrUn%'
+        GROUP BY gene_name, ref_chrom, ref_strand
+    """):
+        gene_name, chrom, g_start, g_end, strand = row
+        gene_index[chrom].append((g_start, g_end, gene_name, strand))
+
+    # Exons — collapse to unique ranges per gene
+    for row in conn.execute("""
+        SELECT DISTINCT t.gene_name, t.ref_chrom, e.exon_start, e.exon_end
+        FROM exons e JOIN transcripts t ON e.transcript_pk = t.transcript_pk
+        WHERE t.gene_name != ''
+          AND t.ref_chrom NOT LIKE '%_alt%'
+          AND t.ref_chrom NOT LIKE '%_fix%'
+          AND t.ref_chrom NOT LIKE '%_random%'
+          AND t.ref_chrom NOT LIKE 'chrUn%'
+    """):
+        gene_name, chrom, es, ee = row
+        exon_index[(chrom, gene_name)].append((es, ee))
+
+    conn.close()
+
+    # Sort for bisect queries
+    for chrom in gene_index:
+        gene_index[chrom].sort()
+    for key in exon_index:
+        exon_index[key].sort()
+
+    return gene_index, exon_index
+
+def overlapping_genes(chrom, sv_start, sv_end, gene_index):
+    entries = gene_index.get(chrom, [])
+    # entries sorted by g_start; find insertion point for sv_end
+    idx = bisect.bisect_left(entries, (sv_end,))
+    hits = []
+    for i in range(idx - 1, -1, -1):
+        g_start, g_end, gene_name, strand = entries[i]
+        if g_end <= sv_start:
+            break
+        hits.append((gene_name, strand, g_start, g_end))
+    return hits
+
+def exon_impact(chrom, gene_name, sv_start, sv_end, exon_index):
+    fully, partially = [], []
+    for (es, ee) in exon_index.get((chrom, gene_name), []):
+        if sv_start <= es and ee <= sv_end:
+            fully.append((es, ee))
+        elif sv_start < ee and sv_end > es:
+            partially.append((es, ee))
+    return fully, partially
+
+def nearest_genes(chrom, sv_start, sv_end, gene_index):
+    entries = gene_index.get(chrom, [])
+    if not entries:
+        return None, None
+    starts = [e[0] for e in entries]
+    idx = bisect.bisect_left(starts, sv_start)
+
+    upstream = None
+    for i in range(idx - 1, -1, -1):
+        g_start, g_end, gene_name, strand = entries[i]
+        if g_end <= sv_start:
+            upstream = (gene_name, sv_start - g_end, strand)
+            break
+
+    downstream = None
+    for i in range(idx, len(entries)):
+        g_start, g_end, gene_name, strand = entries[i]
+        if g_start >= sv_end:
+            downstream = (gene_name, g_start - sv_end, strand)
+            break
+
+    return upstream, downstream
+
+def sv_ideogram_html(svcnd0, svcnd1):
+    """Return HTML+JS for a genome-wide canvas ideogram of SV positions."""
+    import json
+    type_to_idx = {"SV": 0, "TG": 1, "TD": 2, "TO": 3}
+    sv_data = {"hap0": {}, "hap1": {}}
+    for chrom, start, end, sv_type in svcnd0:
+        sv_data["hap0"].setdefault(chrom, []).append([(start + end) // 2,
+                                                       type_to_idx.get(sv_type, 0)])
+    for chrom, start, end, sv_type in svcnd1:
+        sv_data["hap1"].setdefault(chrom, []).append([(start + end) // 2,
+                                                       type_to_idx.get(sv_type, 0)])
+    sv_json        = json.dumps(sv_data)
+    chrom_len_json = json.dumps({c: CHROM_LENGTHS[c] for c in CHROMS_ORDER if c in CHROM_LENGTHS})
+    chroms_json    = json.dumps(CHROMS_ORDER)
+    # colours match SV_TYPE_COLOR: SV, TG, TD, TO
+    colors_json    = json.dumps(["#e74c3c", "#3498db", "#2ecc71", "#e67e22"])
+    labels_json    = json.dumps([
+        "SV — structural variant",
+        "TG — ref gap",
+        "TD — contig duplicate",
+        "TO — contig overlap",
+    ])
+    n_rows  = len(CHROMS_ORDER)
+    row_h   = 28          # px per chromosome row
+    legend  = 55          # px for legend area
+    top_pad = 10
+    canvas_h = top_pad + n_rows * row_h + legend
+
+    return f"""
+<p style="font-size:.85em;color:#666">
+  Each horizontal bar represents one chromosome (GRCh38 primary assembly, to scale).
+  Ticks <b>above</b> a bar = Hap0 SV candidates; ticks <b>below</b> = Hap1.
+  Colors indicate SV type.
+</p>
+<canvas id="sv-ideogram" width="1100" height="{canvas_h}"
+        style="display:block;max-width:100%;cursor:crosshair"></canvas>
+<div id="sv-ideogram-tip"
+     style="position:fixed;background:rgba(0,0,0,.75);color:#fff;padding:4px 8px;
+            border-radius:4px;font-size:12px;pointer-events:none;display:none"></div>
+<script>
+(function(){{
+  var svData    = {sv_json};
+  var chromLens = {chrom_len_json};
+  var chroms    = {chroms_json};
+  var colors    = {colors_json};
+  var typeNames = ["SV","TG","TD","TO"];
+  var typeLabels= {labels_json};
+
+  var LABEL_W = 52, RIGHT_PAD = 12;
+  var ROW_H   = {row_h};
+  var TOP     = {top_pad};
+  var LEGEND_H= {legend};
+  var BAR_THICK = 6, MARK_H = 7;
+  var MAX_LEN = 248956422;  // chr1
+
+  function getScale(canvas) {{
+    return (canvas.width - LABEL_W - RIGHT_PAD) / MAX_LEN;
+  }}
+
+  function drawIdeogram() {{
+    var canvas = document.getElementById('sv-ideogram');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var W = canvas.width;
+    ctx.clearRect(0, 0, W, canvas.height);
+    var scale = getScale(canvas);
+    ctx.font = '11px sans-serif';
+
+    for (var i = 0; i < chroms.length; i++) {{
+      var chrom = chroms[i];
+      var clen  = chromLens[chrom] || 0;
+      if (!clen) continue;
+      var bw = clen * scale;
+      var cy = TOP + i * ROW_H + ROW_H / 2;
+
+      // chromosome bar
+      ctx.fillStyle = '#c8c8c8';
+      ctx.fillRect(LABEL_W, cy - BAR_THICK/2, bw, BAR_THICK);
+
+      // label
+      ctx.fillStyle = '#333';
+      ctx.textAlign  = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(chrom, LABEL_W - 4, cy);
+
+      // Hap0 ticks above
+      var h0 = (svData.hap0 || {{}})[chrom] || [];
+      ctx.lineWidth = 1;
+      for (var j = 0; j < h0.length; j++) {{
+        ctx.strokeStyle  = colors[h0[j][1]];
+        ctx.globalAlpha  = 0.55;
+        var xp = LABEL_W + h0[j][0] * scale;
+        ctx.beginPath();
+        ctx.moveTo(xp, cy - BAR_THICK/2 - MARK_H);
+        ctx.lineTo(xp, cy - BAR_THICK/2);
+        ctx.stroke();
+      }}
+
+      // Hap1 ticks below
+      var h1 = (svData.hap1 || {{}})[chrom] || [];
+      for (var j = 0; j < h1.length; j++) {{
+        ctx.strokeStyle  = colors[h1[j][1]];
+        ctx.globalAlpha  = 0.55;
+        var xp = LABEL_W + h1[j][0] * scale;
+        ctx.beginPath();
+        ctx.moveTo(xp, cy + BAR_THICK/2);
+        ctx.lineTo(xp, cy + BAR_THICK/2 + MARK_H);
+        ctx.stroke();
+      }}
+      ctx.globalAlpha = 1.0;
+    }}
+
+    // legend
+    ctx.textAlign    = 'left';
+    ctx.textBaseline = 'middle';
+    var ly = TOP + chroms.length * ROW_H + 12;
+    ctx.fillStyle = '#555';
+    ctx.fillText('\\u25b2 Hap0  \\u25bc Hap1', LABEL_W, ly);
+    ly += 18;
+    var lx = LABEL_W;
+    for (var t = 0; t < typeNames.length; t++) {{
+      ctx.fillStyle = colors[t];
+      ctx.fillRect(lx, ly - 6, 12, 12);
+      ctx.fillStyle = '#333';
+      ctx.fillText(typeLabels[t], lx + 16, ly);
+      lx += 240;
+    }}
+  }}
+
+  // Tooltip on mousemove
+  var canvas = document.getElementById('sv-ideogram');
+  var tip    = document.getElementById('sv-ideogram-tip');
+  if (canvas && tip) {{
+    canvas.addEventListener('mousemove', function(e) {{
+      var rect  = canvas.getBoundingClientRect();
+      var mx    = (e.clientX - rect.left) * (canvas.width / rect.width);
+      var my    = (e.clientY - rect.top)  * (canvas.height / rect.height);
+      var scale = getScale(canvas);
+      var found = null;
+      for (var i = 0; i < chroms.length; i++) {{
+        var cy = TOP + i * ROW_H + ROW_H / 2;
+        if (Math.abs(my - cy) > ROW_H) continue;
+        var chrom = chroms[i];
+        var pos   = (mx - LABEL_W) / scale;
+        var hap   = my < cy ? 'hap0' : 'hap1';
+        var arr   = (svData[hap] || {{}})[chrom] || [];
+        var best  = null, bestD = 8 / scale;  // 8px tolerance
+        for (var j = 0; j < arr.length; j++) {{
+          var d = Math.abs(arr[j][0] - pos);
+          if (d < bestD) {{ bestD = d; best = arr[j]; }}
+        }}
+        if (best) {{
+          found = chrom + ':' + best[0].toLocaleString() +
+                  '  ' + typeNames[best[1]] + '  (' + hap + ')';
+        }}
+        break;
+      }}
+      if (found) {{
+        tip.textContent = found;
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX + 12) + 'px';
+        tip.style.top  = (e.clientY - 20) + 'px';
+      }} else {{
+        tip.style.display = 'none';
+      }}
+    }});
+    canvas.addEventListener('mouseleave', function() {{
+      tip.style.display = 'none';
+    }});
+  }}
+
+  // Lazy draw: called by showSubTab when this panel becomes visible
+  window._svIdeogramDraw = drawIdeogram;
+}})();
+</script>
+"""
+
+def annotate_svcnd(records, gene_index, exon_index):
+    ann = []
+    for chrom, start, end, sv_type in records:
+        hits = overlapping_genes(chrom, start, end, gene_index)
+        if hits:
+            for gene_name, strand, g_start, g_end in hits:
+                fully, partially = exon_impact(chrom, gene_name, start, end, exon_index)
+                impact = ("exon disrupted" if fully else
+                          "exon partial"   if partially else
+                          "intronic")
+                ann.append(dict(
+                    chrom=chrom, start=start, end=end, sv_type=sv_type,
+                    context="genic", gene=gene_name, strand=strand,
+                    impact=impact,
+                    n_exon_full=len(fully), n_exon_partial=len(partially),
+                    upstream=None, downstream=None,
+                ))
+        else:
+            up, dn = nearest_genes(chrom, start, end, gene_index)
+            ann.append(dict(
+                chrom=chrom, start=start, end=end, sv_type=sv_type,
+                context="intergenic", gene=None, strand=None,
+                impact="intergenic",
+                n_exon_full=0, n_exon_partial=0,
+                upstream=up, downstream=dn,
+            ))
+    return ann
+
+def sv_gene_impact_html(ann, hap_label):
+    if not ann:
+        return "<p><em>No data.</em></p>"
+
+    # ── summary counts ──
+    total     = len(ann)
+    n_genic   = sum(1 for r in ann if r['context'] == 'genic')
+    n_interg  = sum(1 for r in ann if r['context'] == 'intergenic')
+    n_exon_d  = sum(1 for r in ann if r['impact'] == 'exon disrupted')
+    n_exon_p  = sum(1 for r in ann if r['impact'] == 'exon partial')
+    n_intron  = sum(1 for r in ann if r['impact'] == 'intronic')
+
+    def scard(val, lbl, color="#2980b9"):
+        return (f'<div style="background:#fff;border:1px solid #ddd;border-radius:8px;'
+                f'padding:.6em 1em;text-align:center;min-width:120px">'
+                f'<div style="font-size:1.6em;font-weight:700;color:{color}">{val:,}</div>'
+                f'<div style="font-size:.8em;color:#7f8c8d">{lbl}</div></div>')
+
+    cards = (scard(total,    "total records") +
+             scard(n_genic,  "genic",            "#e67e22") +
+             scard(n_interg, "intergenic",        "#95a5a6") +
+             scard(n_exon_d, "exon disrupted",    "#e74c3c") +
+             scard(n_exon_p, "exon partial",      "#e67e22") +
+             scard(n_intron, "intronic",          "#3498db"))
+
+    # ── impact × SV type cross-tab ──
+    sv_types_present = sorted({r['sv_type'] for r in ann})
+    impacts = ["exon disrupted", "exon partial", "intronic", "intergenic"]
+    cross = defaultdict(lambda: defaultdict(int))
+    for r in ann:
+        cross[r['impact']][r['sv_type']] += 1
+
+    cross_head = "".join(f"<th>{t}</th>" for t in sv_types_present)
+    cross_rows = ""
+    for imp in impacts:
+        color = IMPACT_COLOR.get(imp, "#222")
+        row = f"<tr><td style='font-weight:600;color:{color}'>{imp}</td>"
+        for t in sv_types_present:
+            row += f"<td class='num'>{cross[imp].get(t, 0):,}</td>"
+        cross_rows += row + "</tr>"
+
+    # ── top 20 affected genes ──
+    gene_hits = Counter(r['gene'] for r in ann if r['gene'])
+    gene_impacts = defaultdict(set)
+    for r in ann:
+        if r['gene']:
+            gene_impacts[r['gene']].add(r['impact'])
+
+    top_gene_rows = ""
+    for gene_name, count in gene_hits.most_common(20):
+        imps = ", ".join(sorted(gene_impacts[gene_name]))
+        top_gene_rows += (f"<tr><td><strong>{html.escape(gene_name)}</strong></td>"
+                          f"<td class='num'>{count}</td>"
+                          f"<td style='font-size:.85em'>{html.escape(imps)}</td></tr>")
+
+    # ── full annotation table (first 200 rows) ──
+    def fmt_neighbor(n):
+        if n is None:
+            return "—"
+        gene, dist, strand = n
+        return f"{html.escape(gene)} ({strand}, {dist:,} bp)"
+
+    ann_rows = ""
+    for r in sorted(ann, key=lambda x: (x['chrom'], x['start']))[:200]:
+        size = r['end'] - r['start']
+        impact_color = IMPACT_COLOR.get(r['impact'], "#222")
+        if r['context'] == 'genic':
+            gene_cell  = f"<strong>{html.escape(r['gene'])}</strong> ({r['strand']})"
+            n_exon_cell = f"{r['n_exon_full']} full / {r['n_exon_partial']} partial"
+            up_cell    = "—"
+            dn_cell    = "—"
+        else:
+            gene_cell  = "<span style='color:#95a5a6'>—</span>"
+            n_exon_cell = "—"
+            up_cell    = fmt_neighbor(r['upstream'])
+            dn_cell    = fmt_neighbor(r['downstream'])
+
+        sv_color = SV_TYPE_COLOR.get(r['sv_type'], "#222")
+        ann_rows += (
+            f"<tr>"
+            f"<td style='white-space:nowrap'>{html.escape(r['chrom'])}:{r['start']:,}</td>"
+            f"<td class='num'>{size:,}</td>"
+            f"<td><span style='color:{sv_color};font-weight:bold'>{r['sv_type']}</span></td>"
+            f"<td style='color:{impact_color};font-weight:600'>{r['impact']}</td>"
+            f"<td>{gene_cell}</td>"
+            f"<td class='num' style='font-size:.85em'>{n_exon_cell}</td>"
+            f"<td style='font-size:.8em'>{up_cell}</td>"
+            f"<td style='font-size:.8em'>{dn_cell}</td>"
+            f"</tr>"
+        )
+    note = "" if len(ann) <= 200 else f"<p class='note'>Showing first 200 of {len(ann):,} records.</p>"
+
+    return f"""
+<h4>{html.escape(hap_label)}</h4>
+<div style="display:flex;flex-wrap:wrap;gap:.8em;margin-bottom:1.2em">{cards}</div>
+
+<div style="display:grid;grid-template-columns:auto auto;gap:2em;align-items:start;margin-bottom:1.5em">
+  <div>
+    <h5 style="color:#34495e;margin-bottom:.4em">Impact × SV type</h5>
+    <table>
+      <thead><tr><th>Impact</th>{cross_head}</tr></thead>
+      <tbody>{cross_rows}</tbody>
+    </table>
+  </div>
+  <div>
+    <h5 style="color:#34495e;margin-bottom:.4em">Top 20 affected genes</h5>
+    <table>
+      <thead><tr><th>Gene</th><th>SV records</th><th>Impact types</th></tr></thead>
+      <tbody>{top_gene_rows}</tbody>
+    </table>
+  </div>
+</div>
+
+<h5 style="color:#34495e;margin-bottom:.4em">Per-SV annotation (first 200)</h5>
+{note}
+<table style="table-layout:fixed;width:100%">
+  <colgroup>
+    <col style="width:13%"><col style="width:7%"><col style="width:5%">
+    <col style="width:11%"><col style="width:13%"><col style="width:11%">
+    <col style="width:20%"><col style="width:20%">
+  </colgroup>
+  <thead><tr>
+    <th>Position</th><th>Size</th><th>Type</th><th>Impact</th>
+    <th>Gene</th><th>Exons</th><th>5′ neighbor</th><th>3′ neighbor</th>
+  </tr></thead>
+  <tbody style="word-break:break-word">{ann_rows}</tbody>
+</table>
+"""
+
+# Load gene/exon index (from hap0 DB; both haps share the same reference annotation)
+_db0 = os.path.join(base_dir, "hg002_hap0_liftover.db")
+_db1 = os.path.join(base_dir, "hg002_hap1_liftover.db")
+_have_db = os.path.exists(_db0) or os.path.exists(_db1)
+
+sv_ideogram_section = sv_ideogram_html(svcnd0, svcnd1) if (svcnd0 or svcnd1) else ""
+
+sv_gene_section0 = ""
+sv_gene_section1 = ""
+if (svcnd0 or svcnd1) and _have_db:
+    print("Building gene/exon index ...", flush=True)
+    _ref_db = _db0 if os.path.exists(_db0) else _db1
+    gene_index, exon_index = load_gene_exon_index(_ref_db)
+    print(f"  {sum(len(v) for v in gene_index.values()):,} gene spans, "
+          f"{sum(len(v) for v in exon_index.values()):,} exon ranges loaded", flush=True)
+
+    print("Annotating SV candidates ...", flush=True)
+    ann0 = annotate_svcnd(svcnd0, gene_index, exon_index)
+    ann1 = annotate_svcnd(svcnd1, gene_index, exon_index)
+    print(f"  hap0: {len(ann0):,} records  hap1: {len(ann1):,} records", flush=True)
+
+    sv_gene_section0 = sv_gene_impact_html(ann0, "Hap0")
+    sv_gene_section1 = sv_gene_impact_html(ann1, "Hap1")
+elif svcnd0 or svcnd1:
+    _no_db_msg = "<p><em>Liftover DB not found — run get_tx_seqs.sh first to enable gene impact annotation.</em></p>"
+    sv_gene_section0 = _no_db_msg
+    sv_gene_section1 = _no_db_msg
+
 if svcnd0 or svcnd1:
     sv_section = f"""
 <h2>SV Candidate Summary</h2>
@@ -420,77 +989,158 @@ if svcnd0 or svcnd1:
   <b>QO</b> = ref overlap (ref block partially overlapping a previous one)
 </p>
 
-<h3>Ref view (svcnd.bed)</h3>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:2em;margin-bottom:1.5em">
-  <div>
-    <h4>Hap0 — {total_sv0:,} records</h4>
-    <table>
-      <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
-      <tbody>{sv_type_rows0}</tbody>
-    </table>
-  </div>
-  <div>
-    <h4>Hap1 — {total_sv1:,} records</h4>
-    <table>
-      <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
-      <tbody>{sv_type_rows1}</tbody>
-    </table>
+<div class="subtabbar">
+  <button class="active" onclick="showSubTab('svcnd','sv-ref')"     id="subbtn-svcnd-sv-ref">Ref view</button>
+  <button onclick="showSubTab('svcnd','sv-contig')"   id="subbtn-svcnd-sv-contig">Contig view</button>
+  <button onclick="showSubTab('svcnd','sv-sizechr')"  id="subbtn-svcnd-sv-sizechr">Size &amp; Chromosome</button>
+  <button onclick="showSubTab('svcnd','sv-genome')"   id="subbtn-svcnd-sv-genome">Genome View</button>
+  <button onclick="showSubTab('svcnd','sv-gene0')"    id="subbtn-svcnd-sv-gene0">Gene Impact — Hap0</button>
+  <button onclick="showSubTab('svcnd','sv-gene1')"    id="subbtn-svcnd-sv-gene1">Gene Impact — Hap1</button>
+</div>
+
+<!-- Ref view -->
+<div class="subpanel active" id="subpanel-svcnd-sv-ref">
+  <h3>Ref view — SV type breakdown (svcnd.bed)</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2em">
+    <div>
+      <h4>Hap0 — {total_sv0:,} records</h4>
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
+        <tbody>{sv_type_rows0}</tbody>
+      </table>
+    </div>
+    <div>
+      <h4>Hap1 — {total_sv1:,} records</h4>
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
+        <tbody>{sv_type_rows1}</tbody>
+      </table>
+    </div>
   </div>
 </div>
 
-<h3>Contig view (ctgsv.bed)</h3>
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:2em;margin-bottom:1.5em">
-  <div>
-    <h4>Hap0 — {total_q0:,} records</h4>
-    <table>
-      <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
-      <tbody>{q_type_rows0}</tbody>
-    </table>
-  </div>
-  <div>
-    <h4>Hap1 — {total_q1:,} records</h4>
-    <table>
-      <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
-      <tbody>{q_type_rows1}</tbody>
-    </table>
+<!-- Contig view -->
+<div class="subpanel" id="subpanel-svcnd-sv-contig">
+  <h3>Contig view — SV type breakdown (ctgsv.bed)</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2em">
+    <div>
+      <h4>Hap0 — {total_q0:,} records</h4>
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
+        <tbody>{q_type_rows0}</tbody>
+      </table>
+    </div>
+    <div>
+      <h4>Hap1 — {total_q1:,} records</h4>
+      <table>
+        <thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th><th></th></tr></thead>
+        <tbody>{q_type_rows1}</tbody>
+      </table>
+    </div>
   </div>
 </div>
 
-<div style="display:grid;grid-template-columns:auto 1fr;gap:2em;align-items:start">
-  <div>
-    <h3>Size distribution (ref view)</h3>
-    <table style="width:auto">
-      <thead><tr><th>Size bin</th><th>Hap0</th><th>Hap1</th></tr></thead>
-      <tbody>{sv_size_table}</tbody>
-    </table>
+<!-- Size & Chromosome -->
+<div class="subpanel" id="subpanel-svcnd-sv-sizechr">
+  <h3>Size distribution &amp; Per-chromosome breakdown (ref view)</h3>
+  <div style="display:grid;grid-template-columns:auto 1fr;gap:2em;align-items:start">
+    <div>
+      <h4>Size distribution</h4>
+      <table style="width:auto">
+        <thead><tr><th>Size bin</th><th>Hap0</th><th>Hap1</th></tr></thead>
+        <tbody>{sv_size_table}</tbody>
+      </table>
+    </div>
+    <div>
+      <h4>Per-chromosome (primary chromosomes)</h4>
+      <table>
+        <thead><tr>
+          <th>Chrom</th>
+          <th>Hap0 total</th><th style="color:#e74c3c">Hap0 SV</th>
+          <th>Hap1 total</th><th style="color:#e74c3c">Hap1 SV</th>
+        </tr></thead>
+        <tbody>{sv_chrom_table}</tbody>
+      </table>
+    </div>
   </div>
-  <div>
-    <h3>Per-chromosome (primary, ref view)</h3>
-    <table>
-      <thead><tr>
-        <th>Chrom</th>
-        <th>Hap0 total</th><th style="color:#e74c3c">Hap0 SV</th>
-        <th>Hap1 total</th><th style="color:#e74c3c">Hap1 SV</th>
-      </tr></thead>
-      <tbody>{sv_chrom_table}</tbody>
-    </table>
-  </div>
+</div>
+
+<!-- Genome View -->
+<div class="subpanel" id="subpanel-svcnd-sv-genome">
+  <h3>Genome-wide SV candidate distribution</h3>
+  {sv_ideogram_section}
+</div>
+
+<!-- Gene Impact Hap0 -->
+<div class="subpanel" id="subpanel-svcnd-sv-gene0">
+  <h3>Gene Impact Annotation — Hap0</h3>
+  {sv_gene_section0}
+</div>
+
+<!-- Gene Impact Hap1 -->
+<div class="subpanel" id="subpanel-svcnd-sv-gene1">
+  <h3>Gene Impact Annotation — Hap1</h3>
+  {sv_gene_section1}
 </div>
 """
 else:
     sv_section = ("<h2>SV Candidate Summary</h2>"
                   "<p><em>hg002_hap*.svcnd.bed not found — run pgr-alnmap first.</em></p>")
 
-# ── Liftover report (embedded iframe) ────────────────────────────────────────
-liftover_iframe = ""
+# ── Liftover report (inlined, tabs → subtabs) ─────────────────────────────────
+import re as _re
+
+liftover_inline = ""
 _liftover_path = os.path.join(base_dir, "liftover_report.html")
 if os.path.exists(_liftover_path):
     with open(_liftover_path) as _f:
         _liftover_content = _f.read()
-    _liftover_escaped = _liftover_content.replace("&", "&amp;").replace('"', "&quot;")
-    liftover_iframe = (f'<iframe srcdoc="{_liftover_escaped}"'
-                       f' style="width:100%;height:calc(100vh - 120px);border:none;" '
-                       f'sandbox="allow-scripts"></iframe>')
+
+    # Extract <style> block (strip .tabbar/.tabpanel rules — e2e report provides them)
+    _style_m = _re.search(r'<style>(.*?)</style>', _liftover_content, _re.S)
+    _liftover_style = _style_m.group(1) if _style_m else ""
+
+    # Extract <body> content
+    _body_m = _re.search(r'<body>(.*?)</body>', _liftover_content, _re.S)
+    _liftover_body = _body_m.group(1) if _body_m else _liftover_content
+
+    # Inline all external <script src="..."> tags (CDN → self-contained)
+    _ext_script_tags = inline_ext_scripts(
+        "".join(_re.findall(r'<script\s+src="[^"]*"[^>]*></script>', _liftover_content)))
+
+    # Extract inline <script> blocks (no src attribute)
+    _scripts = _re.findall(r'<script(?![^>]*src)[^>]*>(.*?)</script>', _liftover_content, _re.S)
+    _liftover_script = "\n".join(_scripts)
+
+    # Namespace: rename tabbar/tabpanel → subtabbar/subpanel and prefix IDs/functions
+    def _ns(s):
+        s = s.replace('class="tabbar"',          'class="subtabbar"')
+        s = s.replace("class='tabbar'",          "class='subtabbar'")
+        s = s.replace('class="tabpanel active"', 'class="subpanel active"')
+        s = s.replace('class="tabpanel"',        'class="subpanel"')
+        s = s.replace("class='tabpanel active'", "class='subpanel active'")
+        s = s.replace("class='tabpanel'",        "class='subpanel'")
+        s = s.replace("id=\"btn-",               'id="lo-btn-')
+        s = s.replace("id=\"tab-",               'id="lo-tab-')
+        s = s.replace("id='btn-",                "id='lo-btn-")
+        s = s.replace("id='tab-",                "id='lo-tab-")
+        s = s.replace("'tab-",                   "'lo-tab-")
+        s = s.replace("'btn-",                   "'lo-btn-")
+        s = s.replace("showTab(",                "loShowTab(")
+        s = s.replace("function showTab",        "function loShowTab")
+        s = s.replace("initChartsForTab(",       "loInitCharts(")
+        s = s.replace("function initChartsForTab", "function loInitCharts")
+        s = s.replace("initCovChart",            "loInitCovChart")
+        s = s.replace("initScatterCharts",       "loInitScatterCharts")
+        s = s.replace("_chartsDone",             "_loChartsDone")
+        s = s.replace(".querySelectorAll('.tabpanel')", ".querySelectorAll('.subpanel')")
+        s = s.replace(".querySelectorAll('.tabbar button')", ".querySelectorAll('.subtabbar button')")
+        return s
+
+    liftover_inline = (f'<style>{_ns(_liftover_style)}</style>'
+                       f'{_ext_script_tags}'
+                       f'{_ns(_liftover_body)}'
+                       f'<script>{_ns(_liftover_script)}</script>')
 
 # ── Determine which tabs to show ──────────────────────────────────────────────
 tabs = []
@@ -499,7 +1149,7 @@ if plots_html:
     tabs.append(("plots", "Alignment Plots"))
 if clinvar_section:
     tabs.append(("clinvar", "ClinVar"))
-if liftover_iframe:
+if liftover_inline:
     tabs.append(("liftover", "Liftover"))
 if svcnd0 or svcnd1 or ctgsv0 or ctgsv1:
     tabs.append(("svcnd", "SV Candidates"))
@@ -607,8 +1257,8 @@ doc = f"""<!DOCTYPE html>
 </div>
 
 <!-- Tab: Liftover -->
-<div class="tabpanel" id="tab-liftover" style="padding:0">
-  {liftover_iframe}
+<div class="tabpanel" id="tab-liftover">
+  {liftover_inline}
 </div>
 
 <!-- Tab: SV Candidates -->
@@ -629,12 +1279,46 @@ function showSubTab(parentId, subId) {{
   panel.querySelectorAll('.subtabbar button').forEach(b => b.classList.remove('active'));
   document.getElementById('subpanel-' + parentId + '-' + subId).classList.add('active');
   document.getElementById('subbtn-' + parentId + '-' + subId).classList.add('active');
+  if (parentId === 'svcnd' && subId === 'sv-genome' && window._svIdeogramDraw) {{
+    window._svIdeogramDraw();
+    window._svIdeogramDraw = null;
+  }}
 }}
 </script>
 </body>
 </html>
 """
 
+# ── Derive lite filename: e2e_report.html → e2e_report_lite.html ─────────────
+_base, _ext = os.path.splitext(html_path)
+lite_path = _base + "_lite" + _ext
+lite_pts  = args.lite_pts
+
+# Build lite doc: subsample scatter arrays, add a banner at the top
+print(f"Building lite report (≤{lite_pts:,} scatter points) ...", flush=True)
+_lite_doc = subsample_scatter_html(doc, lite_pts)
+
+# Cross-link banners (inserted just after <body> opening)
+_full_banner = (
+    f'<div style="background:#eaf4ff;border-bottom:1px solid #b3d4f5;padding:.5em 1.5em;'
+    f'font-size:.85em">Full report &mdash; scatter plots contain all data points. '
+    f'<a href="{os.path.basename(lite_path)}">Switch to lite version</a> '
+    f'(faster to load, {lite_pts:,} points per chart).</div>')
+
+_lite_banner = (
+    f'<div style="background:#fff8e1;border-bottom:1px solid #ffe082;padding:.5em 1.5em;'
+    f'font-size:.85em">&#9888; Lite report &mdash; scatter plots comparing transcripts only show {lite_pts:,} randomly '
+    f'sampled points. '
+    f'<a href="{os.path.basename(html_path)}">Switch to full version</a> '
+    f'(all data, larger file).</div>')
+
+doc       = doc.replace('<body>', '<body>' + _full_banner, 1)
+_lite_doc = _lite_doc.replace('<body>', '<body>' + _lite_banner, 1)
+
 with open(html_path, "w") as f:
     f.write(doc)
 print(f"Report written to {html_path}")
+
+with open(lite_path, "w") as f:
+    f.write(_lite_doc)
+print(f"Lite report written to {lite_path}")

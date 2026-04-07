@@ -347,48 +347,48 @@ doc = f"""<!DOCTYPE html>
 <title>PGR-TK GTF Liftover Report — HG002</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  body  {{ font-family: sans-serif; margin: 2em; background: #f5f6fa; color: #222; }}
-  h1   {{ color: #2c3e50; margin-bottom:.3em; }}
-  h2   {{ color: #2c3e50; border-bottom: 2px solid #dce1e7; padding-bottom:.3em; margin-top:2em; }}
-  h3   {{ color: #34495e; margin-bottom:.4em; }}
+  body  {{ font-family: sans-serif; margin: 0; background: #f9f9f9; color: #222; }}
+  h2    {{ color: #2c3e50; }}
+  h3    {{ color: #34495e; margin-bottom: .4em; }}
+  h4    {{ color: #34495e; margin-bottom: .4em; }}
+  /* ── summary cards ── */
   .summary-grid {{
     display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr));
     gap: 1em; margin-bottom: 2em;
   }}
-  .card {{
-    background:#fff; border:1px solid #dce1e7; border-radius:8px;
-    padding:1em 1.2em; text-align:center;
-  }}
-  .card .val  {{ font-size:2em; font-weight:700; color:#2980b9; }}
-  .card .lbl  {{ font-size:.85em; color:#7f8c8d; margin-top:.2em; }}
+  .card {{ background:#fff; border:1px solid #ddd; border-radius:8px;
+           padding:1em 1.2em; text-align:center; }}
+  .card .val {{ font-size:2em; font-weight:700; color:#2980b9; }}
+  .card .lbl {{ font-size:.85em; color:#7f8c8d; margin-top:.2em; }}
   .col2 {{ display:grid; grid-template-columns:1fr 1fr; gap:2em; }}
-  table.data {{ border-collapse:collapse; background:#fff;
-                border:1px solid #dce1e7; border-radius:6px;
-                overflow:hidden; width:100%; margin-bottom:1.5em; }}
-  table.data th {{ background:#2c3e50; color:#fff; padding:.5em 1em; text-align:left; font-size:.9em; }}
-  table.data td {{ padding:.4em 1em; border-bottom:1px solid #eee; font-size:.88em; }}
+  /* ── tables ── */
+  table.data {{ border-collapse:collapse; width:100%; background:#fff;
+                border:1px solid #ddd; border-radius:6px; overflow:hidden;
+                margin-bottom:1.5em; }}
+  table.data th {{ background:#2c3e50; color:#fff; padding:.6em 1em; text-align:left; }}
+  table.data td {{ padding:.5em 1em; border-bottom:1px solid #eee; }}
   table.data tr:last-child td {{ border-bottom:none; }}
   table.data tr:hover td {{ background:#f0f4f8; }}
   .num  {{ text-align:right; font-variant-numeric:tabular-nums; }}
-  .chart-wrap {{ background:#fff; border:1px solid #dce1e7; border-radius:8px;
+  .chart-wrap {{ background:#fff; border:1px solid #ddd; border-radius:8px;
                  padding:1em; margin-bottom:1.5em; }}
   .note {{ font-size:.82em; color:#7f8c8d; margin:.3em 0 1em; }}
-  /* ── tab bar ── */
-  .tabbar {{ display:flex; background:#2c3e50; padding:0 1em; }}
+  /* ── nav bar (subtab style — consistent with e2e report subtabs) ── */
+  .tabbar {{ display: flex; gap: 0; background: #ecf0f1;
+             border-bottom: 2px solid #bdc3c7; margin-bottom: 0; }}
   .tabbar button {{
-    background:transparent; border:none; color:#bdc3c7;
-    padding:.65em 1.3em; font-size:.92em; cursor:pointer;
-    border-bottom:3px solid transparent; transition:color .15s;
+    background: transparent; border: none; color: #7f8c8d;
+    padding: .55em 1.3em; font-size: .92em; cursor: pointer;
+    border-bottom: 3px solid transparent; margin-bottom: -2px;
+    transition: color .15s;
   }}
-  .tabbar button:hover  {{ color:#ecf0f1; }}
-  .tabbar button.active {{ color:#fff; border-bottom-color:#2980b9; font-weight:600; }}
-  .tabpanel {{ display:none; padding:1.5em; }}
-  .tabpanel.active {{ display:block; }}
+  .tabbar button:hover  {{ color: #2c3e50; }}
+  .tabbar button.active {{ color: #2980b9; border-bottom-color: #2980b9; font-weight: 600; }}
+  .tabpanel {{ display: none; padding: 1.5em 2em; }}
+  .tabpanel.active {{ display: block; }}
 </style>
 </head>
 <body>
-<h1 style="margin:0;padding:.6em 1.5em;background:#fff;border-bottom:1px solid #ddd;font-size:1.3em;color:#2c3e50">
-  PGR-TK GTF Liftover Report — HG002</h1>
 <div class="tabbar">
   <button class="active" onclick="showTab('summary')"   id="btn-summary">Summary</button>
   <button onclick="showTab('status')"    id="btn-status">Liftover Status</button>
