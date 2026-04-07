@@ -829,18 +829,26 @@ def sv_gene_impact_html(ann, hap_label):
     n_exon_p  = sum(1 for r in ann if r['impact'] == 'exon partial')
     n_intron  = sum(1 for r in ann if r['impact'] == 'intronic')
 
-    def scard(val, lbl, color="#2980b9"):
+    # unique genes with any exon impact (potential protein truncation / splicing change)
+    genes_exon_d   = {r['gene'] for r in ann if r['impact'] == 'exon disrupted' and r['gene']}
+    genes_exon_p   = {r['gene'] for r in ann if r['impact'] == 'exon partial'   and r['gene']}
+    genes_exon_any = genes_exon_d | genes_exon_p
+
+    def scard(val, lbl, color="#2980b9", subtitle=""):
+        sub = f'<div style="font-size:.72em;color:#aaa;margin-top:.1em">{subtitle}</div>' if subtitle else ""
         return (f'<div style="background:#fff;border:1px solid #ddd;border-radius:8px;'
                 f'padding:.6em 1em;text-align:center;min-width:120px">'
                 f'<div style="font-size:1.6em;font-weight:700;color:{color}">{val:,}</div>'
-                f'<div style="font-size:.8em;color:#7f8c8d">{lbl}</div></div>')
+                f'<div style="font-size:.8em;color:#7f8c8d">{lbl}</div>{sub}</div>')
 
     cards = (scard(total,    "total records") +
              scard(n_genic,  "genic",            "#e67e22") +
              scard(n_interg, "intergenic",        "#95a5a6") +
              scard(n_exon_d, "exon disrupted",    "#e74c3c") +
              scard(n_exon_p, "exon partial",      "#e67e22") +
-             scard(n_intron, "intronic",          "#3498db"))
+             scard(n_intron, "intronic",          "#3498db") +
+             scard(len(genes_exon_any), "genes with exon impact", "#8e44ad",
+                   subtitle=f"{len(genes_exon_d)} fully disrupted · {len(genes_exon_p)} partial"))
 
     # ── impact × SV type cross-tab ──
     sv_types_present = sorted({r['sv_type'] for r in ann})
@@ -871,6 +879,46 @@ def sv_gene_impact_html(ann, hap_label):
         top_gene_rows += (f"<tr><td><strong>{html.escape(gene_name)}</strong></td>"
                           f"<td class='num'>{count}</td>"
                           f"<td style='font-size:.85em'>{html.escape(imps)}</td></tr>")
+
+    # ── genes with exon impact (potential protein truncation / splicing change) ──
+    # Collect per-gene SV count and worst impact for sorting
+    exon_gene_info = {}   # gene -> {sv_count, has_full, has_partial, chroms}
+    for r in ann:
+        if r['impact'] not in ('exon disrupted', 'exon partial'):
+            continue
+        g = r['gene']
+        if g not in exon_gene_info:
+            exon_gene_info[g] = {'sv_count': 0, 'has_full': False, 'has_partial': False,
+                                 'chroms': set(), 'strand': r['strand']}
+        exon_gene_info[g]['sv_count'] += 1
+        if r['impact'] == 'exon disrupted':
+            exon_gene_info[g]['has_full'] = True
+        else:
+            exon_gene_info[g]['has_partial'] = True
+        exon_gene_info[g]['chroms'].add(r['chrom'])
+
+    # Sort: fully-disrupted first, then by SV count desc
+    exon_gene_sorted = sorted(
+        exon_gene_info.items(),
+        key=lambda kv: (not kv[1]['has_full'], -kv[1]['sv_count']))
+
+    exon_gene_rows = ""
+    for gene_name, info in exon_gene_sorted:
+        worst = "exon disrupted" if info['has_full'] else "exon partial"
+        wcolor = "#e74c3c" if info['has_full'] else "#e67e22"
+        note = ("protein truncation / loss likely" if info['has_full']
+                else "altered splicing possible")
+        chroms_str = ", ".join(sorted(info['chroms'],
+                                      key=lambda c: CHROMS_ORDER.index(c)
+                                      if c in CHROMS_ORDER else 99))
+        exon_gene_rows += (
+            f"<tr>"
+            f"<td><strong>{html.escape(gene_name)}</strong> ({info['strand']})</td>"
+            f"<td>{html.escape(chroms_str)}</td>"
+            f"<td class='num'>{info['sv_count']}</td>"
+            f"<td style='color:{wcolor};font-weight:600'>{worst}</td>"
+            f"<td style='font-size:.85em;color:#555'>{note}</td>"
+            f"</tr>")
 
     # ── full annotation table (first 200 rows) ──
     def fmt_neighbor(n):
@@ -907,43 +955,92 @@ def sv_gene_impact_html(ann, hap_label):
             f"<td style='font-size:.8em'>{dn_cell}</td>"
             f"</tr>"
         )
-    note = "" if len(ann) <= 200 else f"<p class='note'>Showing first 200 of {len(ann):,} records.</p>"
+    note = "" if len(ann) <= 200 else f"showing first 200 of {len(ann):,} records"
 
     return f"""
 <h4>{html.escape(hap_label)}</h4>
+
+<h4 style="color:#8e44ad;margin:.4em 0 .4em">Genes with exon impact — potential protein truncation or splicing change
+  <span style="font-weight:400;font-size:.8em;color:#7f8c8d">({len(genes_exon_any)} unique genes:
+  {len(genes_exon_d)} with fully disrupted exon · {len(genes_exon_p)} with partial exon overlap)</span>
+</h4>
+<div style="background:#f8f8f8;border:1px solid #ddd;border-radius:6px;
+            padding:.7em 1.2em;margin:.3em 0 .8em;font-size:.85em;color:#444">
+  <div style="margin-bottom:.5em"><strong>How impact is classified:</strong></div>
+  <table style="border:none;background:none;margin:0;width:auto">
+    <tr style="border:none">
+      <td style="border:none;padding:.2em 1.2em .2em 0;white-space:nowrap;vertical-align:top">
+        <span style="color:#e74c3c;font-weight:600">exon disrupted</span>
+      </td>
+      <td style="border:none;padding:.2em 0;font-family:monospace;white-space:pre;line-height:1.4">SV:    |&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;|
+Exon:      |&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;|          &#x2190; fully inside SV
+&#x21d2; entire exon deleted/replaced; reading frame likely broken</td>
+    </tr>
+    <tr style="border:none">
+      <td style="border:none;padding:.4em 1.2em .2em 0;white-space:nowrap;vertical-align:top">
+        <span style="color:#e67e22;font-weight:600">exon partial</span>
+      </td>
+      <td style="border:none;padding:.4em 0;font-family:monospace;white-space:pre;line-height:1.4">SV:    |&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;&#x2550;|
+Exon:              |&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;|  &#x2190; only partly overlapped
+&#x21d2; splice site may be disrupted; partial coding-sequence change</td>
+    </tr>
+  </table>
+</div>
+<h4 style="color:#34495e;margin:1.2em 0 .4em">Summary</h4>
 <div style="display:flex;flex-wrap:wrap;gap:.8em;margin-bottom:1.2em">{cards}</div>
 
-<div style="display:grid;grid-template-columns:auto auto;gap:2em;align-items:start;margin-bottom:1.5em">
-  <div>
-    <h5 style="color:#34495e;margin-bottom:.4em">Impact × SV type</h5>
-    <table>
-      <thead><tr><th>Impact</th>{cross_head}</tr></thead>
-      <tbody>{cross_rows}</tbody>
-    </table>
-  </div>
-  <div>
-    <h5 style="color:#34495e;margin-bottom:.4em">Top 20 affected genes</h5>
-    <table>
-      <thead><tr><th>Gene</th><th>SV records</th><th>Impact types</th></tr></thead>
-      <tbody>{top_gene_rows}</tbody>
-    </table>
-  </div>
-</div>
+<details>
+  <summary style="cursor:pointer;font-weight:600;color:#8e44ad;margin:.4em 0 .6em;
+                  list-style:none;display:flex;align-items:center;gap:.4em">
+    <span id="exon-gene-toggle-{hap_label}">&#9654;</span>
+    Show / hide gene table ({len(exon_gene_info)} genes)
+  </summary>
+  <table>
+    <thead><tr>
+      <th>Gene (strand)</th><th>Chromosome(s)</th><th>SV records</th>
+      <th>Worst impact</th><th>Consequence</th>
+    </tr></thead>
+    <tbody>{exon_gene_rows}</tbody>
+  </table>
+</details>
 
-<h5 style="color:#34495e;margin-bottom:.4em">Per-SV annotation (first 200)</h5>
-{note}
-<table style="table-layout:fixed;width:100%">
-  <colgroup>
-    <col style="width:13%"><col style="width:7%"><col style="width:5%">
-    <col style="width:11%"><col style="width:13%"><col style="width:11%">
-    <col style="width:20%"><col style="width:20%">
-  </colgroup>
-  <thead><tr>
-    <th>Position</th><th>Size</th><th>Type</th><th>Impact</th>
-    <th>Gene</th><th>Exons</th><th>5′ neighbor</th><th>3′ neighbor</th>
-  </tr></thead>
-  <tbody style="word-break:break-word">{ann_rows}</tbody>
-</table>
+<details>
+  <summary style="cursor:pointer;font-weight:600;color:#34495e;margin:.6em 0 .4em">
+    Impact × SV type
+  </summary>
+  <table>
+    <thead><tr><th>Impact</th>{cross_head}</tr></thead>
+    <tbody>{cross_rows}</tbody>
+  </table>
+</details>
+
+<details>
+  <summary style="cursor:pointer;font-weight:600;color:#34495e;margin:.6em 0 .4em">
+    Top 20 affected genes
+  </summary>
+  <table>
+    <thead><tr><th>Gene</th><th>SV records</th><th>Impact types</th></tr></thead>
+    <tbody>{top_gene_rows}</tbody>
+  </table>
+</details>
+
+<details>
+  <summary style="cursor:pointer;font-weight:600;color:#34495e;margin:.6em 0 .4em">
+    Per-SV annotation (first 200){" — " + note.strip() if note.strip() else ""}
+  </summary>
+  <table style="table-layout:fixed;width:100%">
+    <colgroup>
+      <col style="width:13%"><col style="width:7%"><col style="width:5%">
+      <col style="width:11%"><col style="width:13%"><col style="width:11%">
+      <col style="width:20%"><col style="width:20%">
+    </colgroup>
+    <thead><tr>
+      <th>Position</th><th>Size</th><th>Type</th><th>Impact</th>
+      <th>Gene</th><th>Exons</th><th>5′ neighbor</th><th>3′ neighbor</th>
+    </tr></thead>
+    <tbody style="word-break:break-word">{ann_rows}</tbody>
+  </table>
+</details>
 """
 
 # Load gene/exon index (from hap0 DB; both haps share the same reference annotation)
@@ -990,18 +1087,17 @@ if svcnd0 or svcnd1:
 </p>
 
 <div class="subtabbar">
-  <button class="active" onclick="showSubTab('svcnd','sv-ref')"     id="subbtn-svcnd-sv-ref">Ref view</button>
-  <button onclick="showSubTab('svcnd','sv-contig')"   id="subbtn-svcnd-sv-contig">Contig view</button>
+  <button class="active" onclick="showSubTab('svcnd','sv-types')"   id="subbtn-svcnd-sv-types">SV Types</button>
   <button onclick="showSubTab('svcnd','sv-sizechr')"  id="subbtn-svcnd-sv-sizechr">Size &amp; Chromosome</button>
   <button onclick="showSubTab('svcnd','sv-genome')"   id="subbtn-svcnd-sv-genome">Genome View</button>
   <button onclick="showSubTab('svcnd','sv-gene0')"    id="subbtn-svcnd-sv-gene0">Gene Impact — Hap0</button>
   <button onclick="showSubTab('svcnd','sv-gene1')"    id="subbtn-svcnd-sv-gene1">Gene Impact — Hap1</button>
 </div>
 
-<!-- Ref view -->
-<div class="subpanel active" id="subpanel-svcnd-sv-ref">
-  <h3>Ref view — SV type breakdown (svcnd.bed)</h3>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2em">
+<!-- SV Types (ref + contig combined) -->
+<div class="subpanel active" id="subpanel-svcnd-sv-types">
+  <h3>Ref view — SV candidate type breakdown (svcnd.bed)</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:2em;margin-bottom:1.5em">
     <div>
       <h4>Hap0 — {total_sv0:,} records</h4>
       <table>
@@ -1017,11 +1113,7 @@ if svcnd0 or svcnd1:
       </table>
     </div>
   </div>
-</div>
-
-<!-- Contig view -->
-<div class="subpanel" id="subpanel-svcnd-sv-contig">
-  <h3>Contig view — SV type breakdown (ctgsv.bed)</h3>
+  <h3>Contig view — SV candidate type breakdown (ctgsv.bed)</h3>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:2em">
     <div>
       <h4>Hap0 — {total_q0:,} records</h4>
