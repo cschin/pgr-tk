@@ -46,7 +46,7 @@ struct CmdOptions {
     gap_penalty_factor: f32,
 
     /// merge hits with the specified distance
-    #[clap(long, short, default_value_t = 100000)]
+    #[clap(long, short = 'M', default_value_t = 100000)]
     merge_range_tol: usize,
 
     /// the max count of SHIMMER used for the sparse alignment
