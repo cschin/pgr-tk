@@ -87,10 +87,12 @@ impl LzDiff {
 
     // -----------------------------------------------------------------------
     /// Encode `text` (2-bit DNA) against the prepared reference.
-    pub fn encode(&mut self, text: &[u8]) -> Vec<u8> {
-        if !self.index_ready {
-            self.prepare_index();
-        }
+    ///
+    /// Requires that `prepare()` has already been called (as done by
+    /// `segment::lz_from_ref_blob`).  The method takes `&self` because
+    /// neither `encode_v1` nor `encode_v2` mutates any field of `LzDiff`.
+    pub fn encode(&self, text: &[u8]) -> Vec<u8> {
+        debug_assert!(self.index_ready, "LzDiff::encode called before prepare()");
         match self.version {
             LzVersion::V1 => self.encode_v1(text),
             LzVersion::V2 => self.encode_v2(text),
@@ -579,7 +581,7 @@ impl LzDiff {
     // -----------------------------------------------------------------------
     // V1 encode
     // -----------------------------------------------------------------------
-    fn encode_v1(&mut self, text: &[u8]) -> Vec<u8> {
+    fn encode_v1(&self, text: &[u8]) -> Vec<u8> {
         let text_size = text.len();
         let key_len = self.key_len as usize;
         let mut encoded: Vec<u8> = Vec::new();
@@ -651,7 +653,7 @@ impl LzDiff {
     // -----------------------------------------------------------------------
     // V2 encode
     // -----------------------------------------------------------------------
-    fn encode_v2(&mut self, text: &[u8]) -> Vec<u8> {
+    fn encode_v2(&self, text: &[u8]) -> Vec<u8> {
         let text_size = text.len();
         let key_len = self.key_len as usize;
         let ref_len = self.reference.len() - key_len; // unpadded reference length
@@ -862,6 +864,12 @@ impl LzDiff {
         Ok(decoded)
     }
 }
+
+// LzDiff holds only Vec<u8>/Vec<u16>/Vec<u32> and plain scalars.
+// After prepare() is called all fields are effectively read-only during
+// encode(), so it is safe to share across threads.
+unsafe impl Send for LzDiff {}
+unsafe impl Sync for LzDiff {}
 
 // ===========================================================================
 // Tests

@@ -55,7 +55,7 @@ pub fn decompress_reference(blob: &[u8]) -> Result<Vec<u8>> {
 /// The caller is responsible for compression: either store the bytes
 /// temporarily in `segment.delta_data` and batch-compress later via
 /// [`batch_compress_deltas`], or compress individually for testing.
-pub fn compress_delta(lz: &mut LzDiff, query: &[u8]) -> Result<Vec<u8>> {
+pub fn compress_delta(lz: &LzDiff, query: &[u8]) -> Result<Vec<u8>> {
     Ok(lz.encode(query))
 }
 

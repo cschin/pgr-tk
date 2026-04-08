@@ -1,5 +1,6 @@
 const VERSION_STRING: &str = env!("VERSION_STRING");
 use clap::{self, CommandFactory, Parser};
+use rusqlite::Connection;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
 use std::collections::hash_map::DefaultHasher;
@@ -101,18 +102,83 @@ fn calculate_hash<T: Hash>(t: &T) -> u64 {
     s.finish()
 }
 
+fn load_ctgmap_from_db(db_path: &str) -> CtgMapSet {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("can't open alndb file");
+
+    let mut records = Vec::<CtgMapRec>::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT target_name, target_start, target_end,
+                        query_name, query_start, query_end,
+                        ctg_len, orientation, ctg_orientation,
+                        target_dup, target_ovlp, query_dup, query_ovlp
+                 FROM ctgmap",
+            )
+            .expect("prepare ctgmap query");
+        let mut rows = stmt.query([]).expect("query ctgmap");
+        while let Some(row) = rows.next().expect("ctgmap row") {
+            records.push(CtgMapRec {
+                t_name: row.get(0).unwrap(),
+                ts: row.get(1).unwrap(),
+                te: row.get(2).unwrap(),
+                q_name: row.get(3).unwrap(),
+                qs: row.get(4).unwrap(),
+                qe: row.get(5).unwrap(),
+                ctg_len: row.get(6).unwrap(),
+                orientation: row.get(7).unwrap(),
+                ctg_orientation: row.get(8).unwrap(),
+                t_dup: row.get::<_, i32>(9).unwrap() != 0,
+                t_ovlp: row.get::<_, i32>(10).unwrap() != 0,
+                q_dup: row.get::<_, i32>(11).unwrap() != 0,
+                q_ovlp: row.get::<_, i32>(12).unwrap() != 0,
+            });
+        }
+    }
+
+    let mut target_length = Vec::<(u32, String, u32)>::new();
+    let mut query_length = Vec::<(u32, String, u32)>::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT seq_id, seq_name, length FROM sequences")
+            .expect("prepare sequences query");
+        let mut rows = stmt.query([]).expect("query sequences");
+        while let Some(row) = rows.next().expect("sequences row") {
+            let seq_id: u32 = row.get(0).unwrap();
+            let seq_name: String = row.get(1).unwrap();
+            let length: u32 = row.get(2).unwrap();
+            // query seqs have seq_id >= 1_000_000 (offset applied at write time)
+            if seq_id >= 1_000_000 {
+                query_length.push((seq_id - 1_000_000, seq_name, length));
+            } else {
+                target_length.push((seq_id, seq_name, length));
+            }
+        }
+    }
+
+    CtgMapSet {
+        records,
+        target_length,
+        query_length,
+    }
+}
+
 fn main() -> Result<(), std::io::Error> {
     CmdOptions::command().version(VERSION_STRING).get_matches();
     let args = CmdOptions::parse();
 
-    let mut ctgmap_json_file = BufReader::new(
-        File::open(Path::new(&args.ctgmap_json_path)).expect("can't open the input file"),
-    );
-
-    let mut buffer = Vec::new();
-    ctgmap_json_file.read_to_end(&mut buffer)?;
-    let mut ctgmap_set: CtgMapSet = serde_json::from_str(&String::from_utf8_lossy(&buffer[..]))
-        .expect("can't parse the ctgmap.json file");
+    let mut ctgmap_set: CtgMapSet = if args.ctgmap_json_path.ends_with(".alndb") {
+        load_ctgmap_from_db(&args.ctgmap_json_path)
+    } else {
+        let mut ctgmap_json_file = BufReader::new(
+            File::open(Path::new(&args.ctgmap_json_path)).expect("can't open the input file"),
+        );
+        let mut buffer = Vec::new();
+        ctgmap_json_file.read_to_end(&mut buffer)?;
+        serde_json::from_str(&String::from_utf8_lossy(&buffer[..]))
+            .expect("can't parse the ctgmap.json file")
+    };
 
     let cytobands = if let Some(cytoband_path) = args.cytoband_json.clone() {
         let mut cytoband_file = BufReader::new(

@@ -2,6 +2,7 @@ const VERSION_STRING: &str = env!("VERSION_STRING");
 use clap::{self, CommandFactory, Parser};
 use iset::set::IntervalSet;
 // use rayon::prelude::*;
+use rusqlite::Connection;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -13,15 +14,16 @@ use std::path::Path;
 #[clap(author, version)]
 #[clap(about, long_about = None)]
 struct CmdOptions {
-    /// path to the first haplotype alnmap file
+    /// path to the first haplotype alnmap or alndb file
     hap0_path: String,
-    /// path to the second haplotype alnmap file
+    /// path to the second haplotype alnmap or alndb file
     hap1_path: String,
-    /// path to a ctgmap.json file
-    target_len_json_path: String,
     /// the prefix of the output files
     output_prefix: String,
-    /// the prefix of the output files
+    /// path to target_len.json (required when using .alnmap input; inferred from .alndb)
+    #[clap(long)]
+    target_len_json: Option<String>,
+    /// the sample name in the VCF
     #[clap(long, default_value = "Sample")]
     sample_name: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
@@ -34,90 +36,157 @@ type TargetSeqLength = Vec<(u32, String, u32)>;
 type ShimmerMatchBlock = (String, u32, u32, String, u32, u32, u32);
 type VariantRecord = (String, u32, u32, u64, u8, String, String, String); //t_name, tc, tl, aln_block_id, hap_type, tvs, qvs, rec_type
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+fn get_variant_recs_from_db(
+    db_path: &str,
+    hap_type: u8,
+) -> (
+    Vec<VariantRecord>,
+    FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+    FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+) {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("can't open alndb file");
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(args.number_of_thread)
-        .build_global()
-        .unwrap();
+    let mut variant_records = Vec::<VariantRecord>::new();
+    let mut aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
+    let mut unique_aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
 
-    let mut target_length_json_file = BufReader::new(
-        File::open(Path::new(&args.target_len_json_path)).expect("can't open the input file"),
+    // Variant records from the variants table
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT aln_idx, dup_flag, ovlp_flag, target_name, target_coord,
+                        ref_seq, alt_seq
+                 FROM variants ORDER BY target_name, target_coord",
+            )
+            .expect("prepare variants query");
+        let mut rows = stmt.query([]).expect("query variants");
+        while let Some(row) = rows.next().expect("variants row") {
+            let aln_idx: u64 = row.get(0).unwrap();
+            let dup_flag: i32 = row.get(1).unwrap();
+            let ovlp_flag: i32 = row.get(2).unwrap();
+            let t_name: String = row.get(3).unwrap();
+            let tc: u32 = row.get(4).unwrap();
+            let tvs: String = row.get(5).unwrap();
+            let qvs: String = row.get(6).unwrap();
+            let rec_type = if dup_flag != 0 {
+                "V_D".to_string()
+            } else if ovlp_flag != 0 {
+                "V_O".to_string()
+            } else {
+                "V".to_string()
+            };
+            let tl = tvs.len() as u32;
+            variant_records.push((t_name, tc, tl, aln_idx, hap_type, tvs, qvs, rec_type));
+        }
+    }
+
+    // Block-level coords from both M blocks and V records contribute to aln_blocks
+    let add_blocks = |stmt_sql: &str,
+                      aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+                      unique_aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>| {
+        let mut stmt = conn.prepare(stmt_sql).expect("prepare blocks query");
+        let mut rows = stmt.query([]).expect("query blocks");
+        while let Some(row) = rows.next().expect("blocks row") {
+            let aln_idx: u64 = row.get(0).unwrap();
+            let dup_flag: i32 = row.get(1).unwrap();
+            let ovlp_flag: i32 = row.get(2).unwrap();
+            let t_name: String = row.get(3).unwrap();
+            let ts: u32 = row.get(4).unwrap();
+            let te: u32 = row.get(5).unwrap();
+            let q_name: String = row.get(6).unwrap();
+            let qs: u32 = row.get(7).unwrap();
+            let qe: u32 = row.get(8).unwrap();
+            let orientation: u32 = row.get(9).unwrap();
+            let smb: ShimmerMatchBlock = (t_name, ts, te, q_name, qs, qe, orientation);
+            aln_blocks.entry(aln_idx).or_default().push(smb.clone());
+            if dup_flag == 0 && ovlp_flag == 0 {
+                unique_aln_blocks.entry(aln_idx).or_default().push(smb);
+            }
+        }
+    };
+
+    add_blocks(
+        "SELECT aln_idx, dup_flag, ovlp_flag, target_name, target_start, target_end,
+                query_name, query_start, query_end, orientation
+         FROM blocks WHERE block_type = 0",
+        &mut aln_blocks,
+        &mut unique_aln_blocks,
     );
-    let mut buffer = Vec::new();
-    target_length_json_file.read_to_end(&mut buffer)?;
-    let mut target_length: TargetSeqLength =
-        serde_json::from_str(&String::from_utf8_lossy(&buffer[..]))
-            .expect("can't parse the target_len.json file");
+    add_blocks(
+        "SELECT aln_idx, dup_flag, ovlp_flag, target_name, target_start, target_end,
+                query_name, query_start, query_end, orientation
+         FROM variants",
+        &mut aln_blocks,
+        &mut unique_aln_blocks,
+    );
 
-    target_length.sort();
+    (variant_records, aln_blocks, unique_aln_blocks)
+}
 
-    let hap0_alnmap_file = BufReader::new(File::open(Path::new(&args.hap0_path)).unwrap());
+#[allow(clippy::type_complexity)]
+fn get_variant_recs_from_alnmap(
+    f: BufReader<File>,
+    hap_type: u8,
+) -> (
+    Vec<VariantRecord>,
+    FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+    FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+) {
+    let mut variant_records = Vec::<VariantRecord>::new();
+    let mut aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
+    let mut unique_aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
 
-    let hap1_alnmap_file = BufReader::new(File::open(Path::new(&args.hap1_path)).unwrap());
+    f.lines().for_each(|line| {
+        if let Ok(line) = line {
+            if line.trim().starts_with('#') {
+                return;
+            };
+            let fields = line.split('\t').collect::<Vec<&str>>();
+            assert!(fields.len() > 3);
+            let rec_type = fields[1];
+            if rec_type.starts_with('V') {
+                assert!(fields.len() == 15 || fields.len() == 17);
+                let err_msg = format!("fail to parse on {}", line);
+                let aln_block_id = fields[0].parse::<u64>().expect(&err_msg);
+                let t_name = fields[2];
+                let tc = fields[11].parse::<u32>().expect(&err_msg);
+                let tvs = fields[13];
+                let qvs = fields[14];
+                variant_records.push((
+                    t_name.to_string(),
+                    tc,
+                    tvs.len() as u32,
+                    aln_block_id,
+                    hap_type,
+                    tvs.to_string(),
+                    qvs.to_string(),
+                    rec_type.to_string(),
+                ));
+            };
 
-    #[allow(clippy::type_complexity)]
-    let get_variant_recs = |f: BufReader<File>,
-                            hap_type: u8|
-     -> (
-        Vec<VariantRecord>,
-        FxHashMap<u64, Vec<ShimmerMatchBlock>>,
-        FxHashMap<u64, Vec<ShimmerMatchBlock>>,
-    ) {
-        let mut variant_records = Vec::<VariantRecord>::new();
-        let mut aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
-        let mut unique_aln_blocks = FxHashMap::<u64, Vec<ShimmerMatchBlock>>::default();
-
-        f.lines().for_each(|line| {
-            if let Ok(line) = line {
-                if line.trim().starts_with('#') {
-                    return;
-                };
-                let fields = line.split('\t').collect::<Vec<&str>>();
-                assert!(fields.len() > 3);
-                let rec_type = fields[1];
-                if rec_type.starts_with('V') {
-                    assert!(fields.len() == 15 || fields.len() == 17);
-                    let err_msg = format!("fail to parse on {}", line);
-                    let aln_block_id = fields[0].parse::<u64>().expect(&err_msg);
-                    let t_name = fields[2];
-                    // let ts = fields[3].parse::<u32>().expect(&err_msg);
-                    // let te = fields[4].parse::<u32>().expect(&err_msg);
-                    // let q_name = fields[5];
-                    // let qs = fields[6].parse::<u32>().expect(&err_msg);
-                    // let qe = fields[7].parse::<u32>().expect(&err_msg);
-                    // let orientation = fields[8].parse::<u32>().expect(&err_msg);
-                    // let td = fields[9].parse::<u32>().expect(&err_msg);
-                    // let qd = fields[10].parse::<u32>().expect(&err_msg);
-                    let tc = fields[11].parse::<u32>().expect(&err_msg);
-                    // let tt = fields[12].chars().next().expect(&err_msg);
-                    let tvs = fields[13];
-                    let qvs = fields[14];
-                    variant_records.push((
-                        t_name.to_string(),
-                        tc,
-                        tvs.len() as u32,
-                        aln_block_id,
-                        hap_type,
-                        tvs.to_string(),
-                        qvs.to_string(),
-                        rec_type.to_string(),
-                    ));
-                };
-
-                if rec_type.starts_with('M') || rec_type.starts_with('V') {
-                    let err_msg = format!("fail to parse on {}", line);
-                    let aln_block_id = fields[0].parse::<u64>().expect(&err_msg);
-                    let t_name = fields[2];
-                    let ts = fields[3].parse::<u32>().expect(&err_msg);
-                    let te = fields[4].parse::<u32>().expect(&err_msg);
-                    let q_name = fields[5];
-                    let qs = fields[6].parse::<u32>().expect(&err_msg);
-                    let qe = fields[7].parse::<u32>().expect(&err_msg);
-                    let orientation = fields[8].parse::<u32>().expect(&err_msg);
-                    let e = aln_blocks.entry(aln_block_id).or_default();
+            if rec_type.starts_with('M') || rec_type.starts_with('V') {
+                let err_msg = format!("fail to parse on {}", line);
+                let aln_block_id = fields[0].parse::<u64>().expect(&err_msg);
+                let t_name = fields[2];
+                let ts = fields[3].parse::<u32>().expect(&err_msg);
+                let te = fields[4].parse::<u32>().expect(&err_msg);
+                let q_name = fields[5];
+                let qs = fields[6].parse::<u32>().expect(&err_msg);
+                let qe = fields[7].parse::<u32>().expect(&err_msg);
+                let orientation = fields[8].parse::<u32>().expect(&err_msg);
+                let e = aln_blocks.entry(aln_block_id).or_default();
+                e.push((
+                    t_name.to_string(),
+                    ts,
+                    te,
+                    q_name.to_string(),
+                    qs,
+                    qe,
+                    orientation,
+                ));
+                if rec_type == "M" || rec_type == "V" {
+                    let e = unique_aln_blocks.entry(aln_block_id).or_default();
                     e.push((
                         t_name.to_string(),
                         ts,
@@ -127,27 +196,72 @@ fn main() -> Result<(), std::io::Error> {
                         qe,
                         orientation,
                     ));
-                    if rec_type == "M" || rec_type == "V" {
-                        let e = unique_aln_blocks.entry(aln_block_id).or_default();
-                        e.push((
-                            t_name.to_string(),
-                            ts,
-                            te,
-                            q_name.to_string(),
-                            qs,
-                            qe,
-                            orientation,
-                        ));
-                    }
                 }
             }
-        });
-        (variant_records, aln_blocks, unique_aln_blocks)
+        }
+    });
+    (variant_records, aln_blocks, unique_aln_blocks)
+}
+
+fn main() -> Result<(), std::io::Error> {
+    CmdOptions::command().version(VERSION_STRING).get_matches();
+    let args = CmdOptions::parse();
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(args.number_of_thread)
+        .build_global()
+        .unwrap();
+
+    let use_db = args.hap0_path.ends_with(".alndb");
+
+    let mut target_length: TargetSeqLength = if use_db {
+        let conn = Connection::open_with_flags(
+            &args.hap0_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("can't open hap0 alndb");
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq_id, seq_name, length FROM sequences WHERE seq_type='target'",
+            )
+            .expect("prepare sequences query");
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+            ))
+        })
+        .expect("query sequences")
+        .map(|r| r.expect("sequence row"))
+        .collect()
+    } else {
+        let json_path = args
+            .target_len_json
+            .as_ref()
+            .expect("--target-len-json is required when not using .alndb input");
+        let mut json_file =
+            BufReader::new(File::open(Path::new(json_path)).expect("can't open the input file"));
+        let mut buffer = Vec::new();
+        json_file.read_to_end(&mut buffer)?;
+        serde_json::from_str(&String::from_utf8_lossy(&buffer[..]))
+            .expect("can't parse the target_len.json file")
     };
-    let (hap0_recs, hap0_aln_blocks, hap0_unique_aln_blocks) =
-        get_variant_recs(hap0_alnmap_file, 0);
-    let (hap1_recs, hap1_aln_blocks, hap1_unique_aln_blocks) =
-        get_variant_recs(hap1_alnmap_file, 1);
+
+    target_length.sort();
+
+    let (hap0_recs, hap0_aln_blocks, hap0_unique_aln_blocks) = if use_db {
+        get_variant_recs_from_db(&args.hap0_path, 0)
+    } else {
+        let f = BufReader::new(File::open(Path::new(&args.hap0_path)).unwrap());
+        get_variant_recs_from_alnmap(f, 0)
+    };
+    let (hap1_recs, hap1_aln_blocks, hap1_unique_aln_blocks) = if use_db {
+        get_variant_recs_from_db(&args.hap1_path, 1)
+    } else {
+        let f = BufReader::new(File::open(Path::new(&args.hap1_path)).unwrap());
+        get_variant_recs_from_alnmap(f, 1)
+    };
 
     let blocks_to_intervals =
         |blocks: FxHashMap<u64, Vec<ShimmerMatchBlock>>| -> FxHashMap<String, IntervalSet<u32>> {

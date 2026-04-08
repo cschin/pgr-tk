@@ -10,7 +10,7 @@ path = "src/bin/agc.rs"
 [dependencies]
 rusqlite   = { version = "0.31", features = ["bundled"] }
 zstd       = "0.13"
-flate2     = "1"
+flate2     = "1.1.9" 
 rayon      = "1"
 rustc-hash = "1"
 thiserror  = "1"

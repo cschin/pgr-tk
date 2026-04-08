@@ -34,16 +34,32 @@ const MAX_KMER_BUCKET: usize = 20;
 /// count occurrences, and return the set of singletons (appear exactly once).
 /// Mirrors AGC's `start_kmer_collecting_threads` + `remove_non_singletons`.
 fn collect_singleton_kmers(records: &[FastaRecord], k: usize) -> HashSet<u64> {
-    let mut counts: HashMap<u64, u32> = HashMap::new();
-    for rec in records {
-        let mut km = Kmer::new(k as u8);
-        for &b in &rec.seq {
-            if km.push_bits(b) && km.full() {
-                let c = counts.entry(km.canonical()).or_insert(0);
-                *c = c.saturating_add(1);
-            }
-        }
-    }
+    // Count per-record in parallel, then merge counts across threads.
+    let counts: HashMap<u64, u32> = records
+        .par_iter()
+        .fold(
+            || HashMap::<u64, u32>::new(),
+            |mut acc, rec| {
+                let mut km = Kmer::new(k as u8);
+                for &b in &rec.seq {
+                    if km.push_bits(b) && km.full() {
+                        let c = acc.entry(km.canonical()).or_insert(0);
+                        *c = c.saturating_add(1);
+                    }
+                }
+                acc
+            },
+        )
+        .reduce(
+            || HashMap::new(),
+            |mut a, b| {
+                for (kmer, cnt) in b {
+                    let e = a.entry(kmer).or_insert(0);
+                    *e = e.saturating_add(cnt);
+                }
+                a
+            },
+        );
     counts
         .into_iter()
         .filter(|(_, cnt)| *cnt == 1)
@@ -110,11 +126,13 @@ fn find_splitters_in_contigs(
     k: usize,
     segment_size: usize,
 ) -> HashSet<u64> {
-    let mut splitters: HashSet<u64> = HashSet::new();
-    for rec in records {
-        splitters.extend(find_splitters_in_seq(&rec.seq, singletons, k, segment_size));
-    }
-    splitters
+    records
+        .par_iter()
+        .map(|rec| find_splitters_in_seq(&rec.seq, singletons, k, segment_size))
+        .reduce(HashSet::new, |mut a, b| {
+            a.extend(b);
+            a
+        })
 }
 
 /// Convenience wrapper: determine the full splitter set from the reference.
@@ -135,15 +153,20 @@ pub fn determine_splitters(
 /// k-mers that are singletons within the contig itself and absent from the
 /// reference genome entirely.
 ///
-/// Faithfully reproduces AGC's `find_new_splitters`:
+/// Reproduces AGC's `find_new_splitters`:
 /// 1. Collect all canonical k-mers from the contig.
 /// 2. Keep only those that appear exactly once (singletons).
-/// 3. Remove k-mers that appear anywhere in the reference genome
-///    (`ref_kmers` = the full k-mer set of the reference, not just splitters).
+/// 3. Remove k-mers present in `known_kmers` (the global splitter set, which
+///    is already in memory).  This is a conservative approximation of AGC's
+///    full reference exclusion: novel contigs — the only ones that reach this
+///    path — are highly divergent, so their k-mers rarely appear in the
+///    reference outside of the splitter boundaries anyway.  Using the full
+///    reference k-mer set would require O(genome_size) memory (~13 GB for
+///    human) which is impractical.
 /// 4. Run the standard splitter-finding scan over the local candidates.
 fn find_local_splitters(
     seq: &[u8],
-    ref_kmers: &HashSet<u64>,
+    known_kmers: &HashSet<u64>,
     k: usize,
     segment_size: usize,
 ) -> HashSet<u64> {
@@ -160,8 +183,8 @@ fn find_local_splitters(
         .into_iter()
         .filter(|(_, cnt)| *cnt == 1)
         .map(|(kmer, _)| kmer)
-        // Step 3: exclude any k-mer that appears in the reference genome.
-        .filter(|kmer| !ref_kmers.contains(kmer))
+        // Step 3: exclude k-mers already used as global splitters.
+        .filter(|kmer| !known_kmers.contains(kmer))
         .collect();
 
     if local_candidates.is_empty() {
@@ -170,38 +193,6 @@ fn find_local_splitters(
 
     // Step 4: apply the standard splitter-finding scan.
     find_splitters_in_seq(seq, &local_candidates, k, segment_size)
-}
-
-/// Collect all canonical k-mers from the stored reference sequences
-/// (all segment_group ref_data blobs) into a single set.
-///
-/// Used by `find_local_splitters` to faithfully reproduce AGC's exclusion of
-/// any k-mer that appears anywhere in the reference genome (not just splitters).
-fn collect_ref_kmers(
-    conn: &rusqlite::Connection,
-    k: usize,
-    params: &Params,
-) -> crate::error::Result<HashSet<u64>> {
-    let blobs: Vec<Vec<u8>> = {
-        let mut stmt = conn.prepare("SELECT ref_data FROM segment_group")?;
-        let collected: Vec<Vec<u8>> = stmt
-            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        collected
-    };
-    let mut all_kmers: HashSet<u64> = HashSet::new();
-    for blob in &blobs {
-        let seq = segment::decompress_reference(blob)?;
-        let mut km = Kmer::new(k as u8);
-        for &b in &seq {
-            if km.push_bits(b) && km.full() {
-                all_kmers.insert(km.canonical());
-            }
-        }
-    }
-    let _ = params; // reserved for future use
-    Ok(all_kmers)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +458,7 @@ fn build_fallback_index(
     sample_rate: u64,
     max_bucket: usize,
 ) -> Result<(HashMap<u64, Vec<i64>>, HashMap<i64, Vec<u8>>, HashMap<i64, usize>)> {
+    // Serial DB load
     let rows: Vec<(i64, Vec<u8>)> = {
         let mut stmt = conn.prepare("SELECT id, ref_data FROM segment_group")?;
         let collected: Vec<(i64, Vec<u8>)> = stmt
@@ -476,21 +468,31 @@ fn build_fallback_index(
         collected
     };
 
-    let mut kmer_index: HashMap<u64, Vec<i64>> = HashMap::new();
-    let mut ref_data_map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(rows.len());
-    let mut ref_len_map: HashMap<i64, usize> = HashMap::with_capacity(rows.len());
+    // Parallel: decompress + sample k-mers per group
+    let processed: Vec<(i64, Vec<u64>, Vec<u8>, usize)> = rows
+        .par_iter()
+        .map(|(group_id, ref_blob)| {
+            let seq_2bit = segment::decompress_reference(ref_blob)
+                .expect("decompress_reference");
+            let seq_len = seq_2bit.len();
+            let kmers = sample_kmers_2bit(&seq_2bit, kmer_len, sample_rate);
+            (*group_id, kmers, ref_blob.clone(), seq_len)
+        })
+        .collect();
 
-    for (group_id, ref_blob) in rows {
-        let seq_2bit = segment::decompress_reference(&ref_blob)?;
-        let seq_len = seq_2bit.len();
-        for kmer in sample_kmers_2bit(&seq_2bit, kmer_len, sample_rate) {
+    // Serial merge into output maps (fast — no decompression here)
+    let mut kmer_index: HashMap<u64, Vec<i64>> = HashMap::new();
+    let mut ref_data_map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(processed.len());
+    let mut ref_len_map: HashMap<i64, usize> = HashMap::with_capacity(processed.len());
+    for (group_id, kmers, blob, len) in processed {
+        for kmer in kmers {
             let bucket = kmer_index.entry(kmer).or_default();
             if bucket.len() < max_bucket {
                 bucket.push(group_id);
             }
         }
-        ref_data_map.insert(group_id, ref_blob);
-        ref_len_map.insert(group_id, seq_len);
+        ref_data_map.insert(group_id, blob);
+        ref_len_map.insert(group_id, len);
     }
 
     Ok((kmer_index, ref_data_map, ref_len_map))
@@ -748,12 +750,6 @@ impl Compressor {
         let (kmer_index, ref_data_map, ref_len_map) =
             build_fallback_index(self.db.conn(), kmer_len, sample_rate, MAX_KMER_BUCKET)?;
 
-        // All canonical k-mers from the reference genome: used by
-        // `find_local_splitters` to faithfully exclude any reference k-mer
-        // (not just the chosen splitters) from the local candidate set,
-        // matching AGC's `find_new_splitters` exclusion logic.
-        let ref_kmers = collect_ref_kmers(self.db.conn(), splitter_k, params_ref)?;
-
         // --- Phase 2: parallel compression with adaptive splitting -----------
         //
         // For each contig, split with global splitters.  If no global splitter
@@ -762,6 +758,11 @@ impl Compressor {
         // reference k-mer set) and re-split with those local splitters.  The
         // local splitters are returned alongside the chunk results so they can
         // be saved to the DB for future append calls.
+        //
+        // LzDiff instances are cached per-record in a local HashMap so that
+        // multiple segments of the same record mapping to the same group only
+        // build the index once.  Memory is bounded to (groups in one contig) ×
+        // (LzDiff size) per thread, rather than all groups simultaneously.
 
         let compressed_per_record: Vec<(Vec<ChunkResult>, Vec<u64>)> = records
             .par_iter()
@@ -774,7 +775,7 @@ impl Compressor {
                 // Adaptive: one big segment with no boundaries → try local splitters.
                 if segs.len() == 1 && rec.seq.len() >= segment_size {
                     let new_spl =
-                        find_local_splitters(&rec.seq, &ref_kmers, splitter_k, segment_size);
+                        find_local_splitters(&rec.seq, &splitters, splitter_k, segment_size);
                     if !new_spl.is_empty() {
                         let combined: HashSet<u64> = splitters
                             .iter()
@@ -786,90 +787,97 @@ impl Compressor {
                     }
                 }
 
-                let chunks: Vec<ChunkResult> = segs
-                    .into_iter()
-                    .map(|seg| {
-                        // Try exact kmer-pair lookup first.
-                        let exact_group = if seg.kmer_front != SENTINEL
-                            && seg.kmer_back != SENTINEL
-                        {
-                            let kf = seg.kmer_front;
-                            let kb = seg.kmer_back;
-                            exact_map.get(&(kf.min(kb), kf.max(kb))).copied()
-                        } else {
-                            None
-                        };
+                // Per-record LzDiff cache: built on demand, dropped after this
+                // record is done.  Avoids rebuilding hash tables for groups that
+                // appear in multiple segments of the same contig.
+                let mut lz_local: HashMap<i64, crate::lz_diff::LzDiff> = HashMap::new();
 
-                        // One-splitter lookup: if only one boundary k-mer is
-                        // known, find the best partner from stored pairs.
-                        // Mirrors AGC's find_cand_segment_with_one_splitter.
-                        let one_spl_group = if exact_group.is_none() {
-                            let single_kmer =
-                                if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
-                                    Some(seg.kmer_front)
-                                } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
-                                    Some(seg.kmer_back)
-                                } else {
-                                    None
-                                };
-                            single_kmer.and_then(|kmer| {
-                                find_one_splitter_group(
-                                    kmer,
-                                    seg.seq.len(),
-                                    &terminators_map,
-                                    &exact_map,
-                                    &ref_len_map,
-                                )
-                            })
-                        } else {
-                            None
-                        };
+                let mut chunks: Vec<ChunkResult> = Vec::with_capacity(segs.len());
+                for seg in segs {
+                    // Try exact kmer-pair lookup first.
+                    let exact_group = if seg.kmer_front != SENTINEL
+                        && seg.kmer_back != SENTINEL
+                    {
+                        let kf = seg.kmer_front;
+                        let kb = seg.kmer_back;
+                        exact_map.get(&(kf.min(kb), kf.max(kb))).copied()
+                    } else {
+                        None
+                    };
 
-                        // Fall back to vote-based matching if no hit yet.
-                        let matched_group = exact_group.or(one_spl_group).or_else(|| {
-                            find_best_ref_group(&seg.seq, &kmer_index, kmer_len, sample_rate)
-                        });
+                    // One-splitter lookup.
+                    let one_spl_group = if exact_group.is_none() {
+                        let single_kmer =
+                            if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
+                                Some(seg.kmer_front)
+                            } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
+                                Some(seg.kmer_back)
+                            } else {
+                                None
+                            };
+                        single_kmer.and_then(|kmer| {
+                            find_one_splitter_group(
+                                kmer,
+                                seg.seq.len(),
+                                &terminators_map,
+                                &exact_map,
+                                &ref_len_map,
+                            )
+                        })
+                    } else {
+                        None
+                    };
 
-                        match matched_group {
-                            Some(group_id) => {
+                    // Fall back to vote-based matching if no hit yet.
+                    let matched_group = exact_group.or(one_spl_group).or_else(|| {
+                        find_best_ref_group(&seg.seq, &kmer_index, kmer_len, sample_rate)
+                    });
+
+                    let chunk = match matched_group {
+                        Some(group_id) => {
+                            // Build LzDiff for this group on first use, reuse thereafter.
+                            if !lz_local.contains_key(&group_id) {
                                 let ref_blob = ref_data_map
                                     .get(&group_id)
                                     .expect("group_id missing from ref_data_map");
-                                let mut lz = segment::lz_from_ref_blob(ref_blob, params_ref)
+                                let lz = segment::lz_from_ref_blob(ref_blob, params_ref)
                                     .expect("lz_from_ref_blob");
-                                let raw_delta = segment::compress_delta(&mut lz, &seg.seq)
-                                    .expect("compress_delta");
-                                ChunkResult::Delta {
-                                    group_id,
-                                    raw_length: seg.raw_len,
-                                    raw_delta,
-                                    is_rc: seg.is_rc,
-                                }
+                                lz_local.insert(group_id, lz);
                             }
-                            None => {
-                                let ref_blob = segment::compress_reference(&seg.seq)
-                                    .expect("compress_reference");
-                                let kf = if seg.kmer_front != SENTINEL {
-                                    Some(seg.kmer_front as i64)
-                                } else {
-                                    None
-                                };
-                                let kb = if seg.kmer_back != SENTINEL {
-                                    Some(seg.kmer_back as i64)
-                                } else {
-                                    None
-                                };
-                                ChunkResult::NewRef {
-                                    raw_length: seg.raw_len,
-                                    ref_blob,
-                                    kmer_front: kf,
-                                    kmer_back: kb,
-                                    is_rc: seg.is_rc,
-                                }
+                            let lz = lz_local.get(&group_id).unwrap();
+                            let raw_delta = segment::compress_delta(lz, &seg.seq)
+                                .expect("compress_delta");
+                            ChunkResult::Delta {
+                                group_id,
+                                raw_length: seg.raw_len,
+                                raw_delta,
+                                is_rc: seg.is_rc,
                             }
                         }
-                    })
-                    .collect();
+                        None => {
+                            let ref_blob = segment::compress_reference(&seg.seq)
+                                .expect("compress_reference");
+                            let kf = if seg.kmer_front != SENTINEL {
+                                Some(seg.kmer_front as i64)
+                            } else {
+                                None
+                            };
+                            let kb = if seg.kmer_back != SENTINEL {
+                                Some(seg.kmer_back as i64)
+                            } else {
+                                None
+                            };
+                            ChunkResult::NewRef {
+                                raw_length: seg.raw_len,
+                                ref_blob,
+                                kmer_front: kf,
+                                kmer_back: kb,
+                                is_rc: seg.is_rc,
+                            }
+                        }
+                    };
+                    chunks.push(chunk);
+                }
 
                 (chunks, local_splitters)
             })
@@ -995,28 +1003,49 @@ impl Compressor {
             }
         }
 
-        // Finalize: batch-compress raw deltas per group and store in delta_blob.
-        for (group_id, new_raws) in &new_deltas_per_group {
-            // Load existing delta_blob (if this group already had deltas).
-            let existing_blob: Option<Vec<u8>> = tx.query_row(
-                "SELECT delta_blob FROM segment_group WHERE id = ?1",
-                params![group_id],
-                |r| r.get(0),
-            )?;
+        // Finalize: batch-compress raw deltas per group.
+        //
+        // Step A — load existing delta_blobs from DB before the transaction
+        // (read-only, no lock held).
+        let existing_blobs: HashMap<i64, Option<Vec<u8>>> = new_deltas_per_group
+            .keys()
+            .map(|gid| {
+                let blob: Option<Vec<u8>> = self
+                    .db
+                    .conn()
+                    .query_row(
+                        "SELECT delta_blob FROM segment_group WHERE id = ?1",
+                        params![gid],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(None);
+                (*gid, blob)
+            })
+            .collect();
 
-            // Extract pre-existing raw deltas (if any) and append new ones.
-            let mut all_raws: Vec<Vec<u8>> = Vec::new();
-            if let Some(blob) = existing_blob {
-                let existing_count =
-                    existing_counts.get(group_id).copied().unwrap_or(0) as usize;
-                for idx in 0..existing_count {
-                    let raw = segment::extract_delta_from_batch(&blob, idx)?;
-                    all_raws.push(raw);
+        // Step B — parallel ZSTD recompression, one task per group.
+        let combined_blobs: HashMap<i64, Vec<u8>> = new_deltas_per_group
+            .par_iter()
+            .map(|(group_id, new_raws)| {
+                let mut all_raws: Vec<Vec<u8>> = Vec::new();
+                if let Some(Some(blob)) = existing_blobs.get(group_id) {
+                    let existing_count =
+                        existing_counts.get(group_id).copied().unwrap_or(0) as usize;
+                    for idx in 0..existing_count {
+                        let raw = segment::extract_delta_from_batch(blob, idx)
+                            .expect("extract_delta_from_batch");
+                        all_raws.push(raw);
+                    }
                 }
-            }
-            all_raws.extend_from_slice(new_raws);
+                all_raws.extend_from_slice(new_raws);
+                let blob = segment::batch_compress_deltas(&all_raws)
+                    .expect("batch_compress_deltas");
+                (*group_id, blob)
+            })
+            .collect();
 
-            let combined_blob = segment::batch_compress_deltas(&all_raws)?;
+        // Step C — inside the transaction: fast UPDATE only (no ZSTD here).
+        for (group_id, combined_blob) in &combined_blobs {
             tx.execute(
                 "UPDATE segment_group SET delta_blob = ?1 WHERE id = ?2",
                 params![combined_blob, group_id],

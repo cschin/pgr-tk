@@ -425,6 +425,7 @@ fn main() -> Result<(), std::io::Error> {
             };
         });
     };
+   
 
     match get_fastx_reader(args.assembly_contig_path, true)? {
         #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
@@ -433,7 +434,7 @@ fn main() -> Result<(), std::io::Error> {
         #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
         GZFastaReader::RegularFile(reader) => add_seqs(&mut reader.into_iter()),
     };
-
+    
     let kmer_size = parameters.k;
 
     let query_name = query_seqs

@@ -5,19 +5,85 @@ use pgr_db::aln::{wfa_align_bases, aln_pair_map};
 // use rayon::prelude::*;
 use pgr_db::ext::{get_fastx_reader, GZFastaReader};
 use pgr_db::fasta_io::{reverse_complement, SeqRec};
+use rusqlite::Connection;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 
-/// given as alnmap file, two sequence files and the a list of the coordinates in the query sequence,
+fn get_aln_blocks_from_db(db_path: &str) -> FxHashMap<u32, Vec<ShimmerMatchBlock>> {
+    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("can't open alndb file");
+    let mut aln_blocks = FxHashMap::<u32, Vec<ShimmerMatchBlock>>::default();
+
+    // M blocks (block_type = 0)
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT aln_idx, target_name, target_start, target_end,
+                        query_name, query_start, query_end, orientation
+                 FROM blocks WHERE block_type = 0",
+            )
+            .expect("prepare blocks query");
+        let mut rows = stmt.query([]).expect("query blocks");
+        while let Some(row) = rows.next().expect("blocks row") {
+            let aln_idx: u32 = row.get::<_, i64>(0).unwrap() as u32;
+            let t_name: String = row.get(1).unwrap();
+            let ts: u32 = row.get(2).unwrap();
+            let te: u32 = row.get(3).unwrap();
+            let q_name: String = row.get(4).unwrap();
+            let qs: u32 = row.get(5).unwrap();
+            let qe: u32 = row.get(6).unwrap();
+            let orientation: u32 = row.get::<_, i64>(7).unwrap() as u32;
+            let e = aln_blocks.entry(aln_idx).or_default();
+            e.push((t_name, ts, te, q_name, qs, qe, orientation, "M".to_string()));
+        }
+    }
+
+    // V records from variants table
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT aln_idx, dup_flag, ovlp_flag, target_name, target_start, target_end,
+                        query_name, query_start, query_end, orientation
+                 FROM variants",
+            )
+            .expect("prepare variants query");
+        let mut rows = stmt.query([]).expect("query variants");
+        while let Some(row) = rows.next().expect("variants row") {
+            let aln_idx: u32 = row.get::<_, i64>(0).unwrap() as u32;
+            let dup_flag: i32 = row.get(1).unwrap();
+            let ovlp_flag: i32 = row.get(2).unwrap();
+            let t_name: String = row.get(3).unwrap();
+            let ts: u32 = row.get(4).unwrap();
+            let te: u32 = row.get(5).unwrap();
+            let q_name: String = row.get(6).unwrap();
+            let qs: u32 = row.get(7).unwrap();
+            let qe: u32 = row.get(8).unwrap();
+            let orientation: u32 = row.get::<_, i64>(9).unwrap() as u32;
+            let rec_type = if dup_flag != 0 {
+                "V_D".to_string()
+            } else if ovlp_flag != 0 {
+                "V_O".to_string()
+            } else {
+                "V".to_string()
+            };
+            let e = aln_blocks.entry(aln_idx).or_default();
+            e.push((t_name, ts, te, q_name, qs, qe, orientation, rec_type));
+        }
+    }
+
+    aln_blocks
+}
+
+/// given an alnmap or alndb file, two sequence files and a list of coordinates in the query sequence,
 /// map those coordinates in the target sequence according to the alnmap
 #[derive(Parser, Debug)]
 #[clap(name = "pgr-map-coordinate")]
 #[clap(author, version)]
 #[clap(about, long_about = None)]
 struct CmdOptions {
-    /// path to the alnmap file
+    /// path to the alnmap or alndb file
     alnmap_path: String,
     /// path to the target fasta file
     target_fasta_path: String,
@@ -43,46 +109,44 @@ fn main() -> Result<(), std::io::Error> {
         .build_global()
         .unwrap();
 
-    let alnmap_file = BufReader::new(File::open(Path::new(&args.alnmap_path)).unwrap());
-
-    #[allow(clippy::type_complexity)]
-    let get_aln_blocks = |f: BufReader<File>| -> FxHashMap<u32, Vec<ShimmerMatchBlock>> {
-        let mut aln_blocks = FxHashMap::<u32, Vec<ShimmerMatchBlock>>::default();
-
-        f.lines().for_each(|line| {
-            if let Ok(line) = line {
-                if line.trim().starts_with('#') {
-                    return;
-                };
-                let fields = line.split('\t').collect::<Vec<&str>>();
-                assert!(fields.len() > 3);
-                let rec_type = fields[1];
-
-                let err_msg = format!("fail to parse on {}", line);
-                let aln_block_id = fields[0].parse::<u32>().expect(&err_msg);
-                let t_name = fields[2];
-                let ts = fields[3].parse::<u32>().expect(&err_msg);
-                let te = fields[4].parse::<u32>().expect(&err_msg);
-                let q_name = fields[5];
-                let qs = fields[6].parse::<u32>().expect(&err_msg);
-                let qe = fields[7].parse::<u32>().expect(&err_msg);
-                let orientation = fields[8].parse::<u32>().expect(&err_msg);
-                let e = aln_blocks.entry(aln_block_id).or_default();
-                e.push((
-                    t_name.to_string(),
-                    ts,
-                    te,
-                    q_name.to_string(),
-                    qs,
-                    qe,
-                    orientation,
-                    rec_type.to_string(),
-                ));
-            }
-        });
-        aln_blocks
-    };
-    let aln_blocks = get_aln_blocks(alnmap_file);
+    let aln_blocks: FxHashMap<u32, Vec<ShimmerMatchBlock>> =
+        if args.alnmap_path.ends_with(".alndb") {
+            get_aln_blocks_from_db(&args.alnmap_path)
+        } else {
+            let f = BufReader::new(File::open(Path::new(&args.alnmap_path)).unwrap());
+            let mut aln_blocks = FxHashMap::<u32, Vec<ShimmerMatchBlock>>::default();
+            f.lines().for_each(|line| {
+                if let Ok(line) = line {
+                    if line.trim().starts_with('#') {
+                        return;
+                    };
+                    let fields = line.split('\t').collect::<Vec<&str>>();
+                    assert!(fields.len() > 3);
+                    let rec_type = fields[1];
+                    let err_msg = format!("fail to parse on {}", line);
+                    let aln_block_id = fields[0].parse::<u32>().expect(&err_msg);
+                    let t_name = fields[2];
+                    let ts = fields[3].parse::<u32>().expect(&err_msg);
+                    let te = fields[4].parse::<u32>().expect(&err_msg);
+                    let q_name = fields[5];
+                    let qs = fields[6].parse::<u32>().expect(&err_msg);
+                    let qe = fields[7].parse::<u32>().expect(&err_msg);
+                    let orientation = fields[8].parse::<u32>().expect(&err_msg);
+                    let e = aln_blocks.entry(aln_block_id).or_default();
+                    e.push((
+                        t_name.to_string(),
+                        ts,
+                        te,
+                        q_name.to_string(),
+                        qs,
+                        qe,
+                        orientation,
+                        rec_type.to_string(),
+                    ));
+                }
+            });
+            aln_blocks
+        };
 
     let blocks_to_intervals =
         |blocks: FxHashMap<u32, Vec<ShimmerMatchBlock>>| -> FxHashMap<String, IntervalMap<u32, ShimmerMatchBlock>> {

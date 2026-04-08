@@ -10,8 +10,7 @@ build = "build.rs"
 
 [dependencies]
 rustc-hash = "1.1.0"
-#flate2 = { version = "1.0.17", features = ["zlib-ng-compat"], default-features = false }
-flate2 = "1.0.17"
+flate2 = "1.1.9"
 log = { version = "0.4.19", features = ["std", "max_level_debug", "release_max_level_warn"]}
 simple_logger = "5"
 rayon = "1.5.2"
