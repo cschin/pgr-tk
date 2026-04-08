@@ -17,6 +17,7 @@ use crate::agc_io::{self, AGCSeqDB};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
+use std::path::Path;
 
 #[cfg(feature = "with_agc")]
 use std::io::BufRead;
@@ -85,18 +86,26 @@ impl SeqIndexDB {
 
     #[cfg(feature = "with_agc")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let (shmmr_spec, frag_location_map) =
-            seq_db::read_mdb_file_to_frag_locations(prefix.to_string() + ".mdb").unwrap();
+        // Prefer split format (.mdbi + .mdbv); fall back to legacy .mdb.
+        let use_split = Path::new(&format!("{prefix}.mdbi")).exists()
+            && Path::new(&format!("{prefix}.mdbv")).exists();
 
-        let frag_location_map =
-            FxHashMap::<(u64, u64), (usize, usize)>::from_iter(frag_location_map);
+        let (shmmr_spec, frag_location_map, frag_map_file) = if use_split {
+            let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix).unwrap();
+            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
+            let f = File::open(format!("{prefix}.mdbv")).expect("mdbv open fail");
+            let mmap = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
+            (spec, loc, mmap)
+        } else {
+            let (spec, loc) =
+                seq_db::read_mdb_file_to_frag_locations(format!("{prefix}.mdb")).unwrap();
+            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
+            let f = File::open(format!("{prefix}.mdb")).expect("mdb open fail");
+            let mmap = unsafe { Mmap::map(&f).expect("mdb mmap fail") };
+            (spec, loc, mmap)
+        };
 
         let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agcrs")?;
-
-        let fmap_file = File::open(prefix.clone() + ".mdb").expect("frag map file open fail");
-        let frag_map_file =
-            unsafe { Mmap::map(&fmap_file).expect("frag map file memory map creation fail") };
-
         self.agc_db = Some(agc_io::AGCSeqDB {
             agc_file,
             frag_location_map,

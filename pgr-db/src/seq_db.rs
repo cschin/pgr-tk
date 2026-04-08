@@ -821,8 +821,11 @@ impl GetSeq for CompactSeqDB {
 
 impl CompactSeqDB {
     pub fn write_shmmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
-        let data_fp = fp_prefix.clone() + ".mdb";
-        write_shmmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp)?;
+        // Write new split format (.mdbi key-index + .mdbv values).
+        write_shmmr_map_split(&self.shmmr_spec, &self.frag_map, &fp_prefix)?;
+        // Write legacy .mdb for backward compatibility during transition.
+        write_shmmr_map_file(&self.shmmr_spec, &self.frag_map, fp_prefix.clone() + ".mdb")?;
+        // Write SQLite sequence index (.midx).
         write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix)?;
         Ok(())
     }
@@ -1683,4 +1686,185 @@ pub fn read_mdb_file_parallel(filepath: String) -> Result<(ShmmrSpec, ShmmrToFra
         })
         .collect::<FxHashMap<ShmmrPair, Vec<FragmentSignature>>>();
     Ok((shmmr_spec, shmmr_map))
+}
+
+// ---------------------------------------------------------------------------
+// Split format: .mdbi (sorted key index) + .mdbv (fragment values)
+// ---------------------------------------------------------------------------
+
+/// Magic bytes for the key-index and value files.
+const MDBI_MAGIC: &[u8; 4] = b"mdbi";
+const MDBV_MAGIC: &[u8; 4] = b"mdbv";
+/// Version byte appended to the magic.
+const MDBV1: u8 = 1;
+
+/// Size of one key-index entry: k1(8) + k2(8) + data_offset(8) + vec_len(4) = 28 bytes.
+const MDBI_ENTRY_BYTES: usize = 28;
+/// Header size of .mdbi: magic(4) + version(1) + shmmr_spec(5×4=20) + n_keys(8) = 33 bytes.
+const MDBI_HEADER_BYTES: usize = 33;
+/// Header size of .mdbv: magic(4) + version(1) = 5 bytes.
+const MDBV_HEADER_BYTES: usize = 5;
+/// Size of one fragment record (same as legacy .mdb): 4×u32 + 1×u8 = 17 bytes.
+const FRAG_RECORD_BYTES: usize = 17;
+
+/// Write the shimmer map to `{prefix}.mdbi` (sorted key index) and
+/// `{prefix}.mdbv` (fragment values).
+///
+/// Keys are written in ascending `(k1, k2)` order, making the key table
+/// deterministic and enabling future binary-search lookups on the mmapped file.
+///
+/// Layout of `.mdbi`:
+/// ```text
+/// [4 bytes]  magic        b"mdbi"
+/// [1 byte]   version      0x01
+/// [4×5 bytes] shmmr_spec  w, k, r, min_span, sketch  (u32 LE each)
+/// [8 bytes]  n_keys       u64 LE
+/// repeated n_keys times (28 bytes each, sorted by (k1,k2)):
+///   [8]  k1           u64 LE
+///   [8]  k2           u64 LE
+///   [8]  data_offset  u64 LE  — byte offset from start of .mdbv file
+///   [4]  vec_len      u32 LE  — number of 17-byte fragment records
+/// ```
+///
+/// Layout of `.mdbv`:
+/// ```text
+/// [4 bytes]  magic    b"mdbv"
+/// [1 byte]   version  0x01
+/// repeated (17 bytes each, in key-index order):
+///   [4]  frag_id  u32 LE
+///   [4]  seq_id   u32 LE
+///   [4]  bgn      u32 LE
+///   [4]  end      u32 LE
+///   [1]  orient   u8
+/// ```
+pub fn write_shmmr_map_split(
+    shmmr_spec: &ShmmrSpec,
+    shmmr_map: &ShmmrToFrags,
+    prefix: &str,
+) -> Result<(), io::Error> {
+    // Sort keys for deterministic output and future binary-search capability.
+    let mut keys: Vec<(u64, u64)> = shmmr_map.keys().copied().collect();
+    keys.par_sort_unstable();
+
+    // --- Write .mdbv (values file) ------------------------------------------
+    let mdbv_path = format!("{prefix}.mdbv");
+    let mut val_file = BufWriter::new(File::create(&mdbv_path)?);
+    val_file.write_all(MDBV_MAGIC)?;
+    val_file.write_u8(MDBV1)?;
+
+    // Build the key-index entries while streaming fragment records.
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::with_capacity(keys.len());
+    let mut data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    for &(k1, k2) in &keys {
+        let frags = &shmmr_map[&(k1, k2)];
+        idx_entries.push((k1, k2, data_offset, frags.len() as u32));
+        for f in frags {
+            val_file.write_u32::<LittleEndian>(f.0)?;
+            val_file.write_u32::<LittleEndian>(f.1)?;
+            val_file.write_u32::<LittleEndian>(f.2)?;
+            val_file.write_u32::<LittleEndian>(f.3)?;
+            val_file.write_u8(f.4)?;
+        }
+        data_offset += frags.len() as u64 * FRAG_RECORD_BYTES as u64;
+    }
+    val_file.flush()?;
+
+    // --- Write .mdbi (key-index file) ---------------------------------------
+    let mdbi_path = format!("{prefix}.mdbi");
+    let mut idx_file = BufWriter::new(File::create(&mdbi_path)?);
+    idx_file.write_all(MDBI_MAGIC)?;
+    idx_file.write_u8(MDBV1)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_file.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_file.write_u64::<LittleEndian>(*k1)?;
+        idx_file.write_u64::<LittleEndian>(*k2)?;
+        idx_file.write_u64::<LittleEndian>(*offset)?;
+        idx_file.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_file.flush()?;
+
+    Ok(())
+}
+
+/// Parse the `.mdbi` header and return `(ShmmrSpec, n_keys)`.
+/// Validates the magic bytes and version.
+fn read_mdbi_header(f: &mut impl Read) -> Result<(ShmmrSpec, u64), io::Error> {
+    let mut magic = [0u8; 4];
+    let mut ver = [0u8; 1];
+    let mut u32b = [0u8; 4];
+    let mut u64b = [0u8; 8];
+
+    f.read_exact(&mut magic)?;
+    f.read_exact(&mut ver)?;
+    if &magic != MDBI_MAGIC || ver[0] != MDBV1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid .mdbi magic/version: {:?} v{}",
+                magic, ver[0]
+            ),
+        ));
+    }
+
+    f.read_exact(&mut u32b)?;
+    let w = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let k = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let r = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let min_span = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let sketch = (LittleEndian::read_u32(&u32b) & 1) == 1;
+    f.read_exact(&mut u64b)?;
+    let n_keys = u64::from_le_bytes(u64b);
+
+    Ok((ShmmrSpec { w, k, r, min_span, sketch }, n_keys))
+}
+
+/// Read `{prefix}.mdbi` and return the location table for mmap-based lookups.
+///
+/// Returns `(ShmmrSpec, Vec<((k1,k2), (data_offset, vec_len))>)`.
+/// The `data_offset` is a byte offset into the mmapped `.mdbv` file.
+pub fn read_mdbi_file_to_frag_locations(
+    prefix: &str,
+) -> Result<(ShmmrSpec, ShmmrIndexFileLocation), io::Error> {
+    let mut f = BufReader::new(File::open(format!("{prefix}.mdbi"))?);
+    let (shmmr_spec, n_keys) = read_mdbi_header(&mut f)?;
+
+    let mut u64b = [0u8; 8];
+    let mut u32b = [0u8; 4];
+    let mut rec_loc = Vec::with_capacity(n_keys as usize);
+
+    for _ in 0..n_keys {
+        f.read_exact(&mut u64b)?;
+        let k1 = u64::from_le_bytes(u64b);
+        f.read_exact(&mut u64b)?;
+        let k2 = u64::from_le_bytes(u64b);
+        f.read_exact(&mut u64b)?;
+        let data_offset = usize::from_le_bytes(u64b);
+        f.read_exact(&mut u32b)?;
+        let vec_len = LittleEndian::read_u32(&u32b) as usize;
+        rec_loc.push(((k1, k2), (data_offset, vec_len)));
+    }
+
+    Ok((shmmr_spec, rec_loc))
+}
+
+/// Read fragment records from a mmapped `.mdbv` file at `data_offset`.
+///
+/// Identical byte layout to `get_fragment_signatures_from_mmap_file` but the
+/// offset now points into the `.mdbv` mmap rather than the legacy `.mdb` mmap.
+pub fn get_fragment_signatures_from_mdbv(
+    mdbv: &Mmap,
+    data_offset: usize,
+    vec_len: usize,
+) -> Vec<FragmentSignature> {
+    get_fragment_signatures_from_mmap_file(mdbv, data_offset, vec_len)
 }
