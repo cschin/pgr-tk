@@ -238,45 +238,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "with_agc")]
-    fn test_shmmrmap_read_write() -> Result<(), std::io::Error> {
-        use crate::agc_io::AGCFile;
-        use seq_db::{raw_query_fragment, read_mdb_file, write_shmmr_map_file};
-        const PATH: &str = "test/test_data/test.agcrs";
-        if !std::path::Path::new(PATH).exists() {
-            println!("test_shmmrmap_read_write: skipped (test data {PATH} not present)");
-            return Ok(());
-        }
-        let agcfile = AGCFile::new(String::from(PATH))?;
-        let mut sdb = seq_db::CompactSeqDB::new(seq_db::SHMMRSPEC);
-        let _ = sdb.load_index_from_agcfile(agcfile);
-        write_shmmr_map_file(
-            &sdb.shmmr_spec,
-            &sdb.frag_map,
-            "test/test_data/test_shmmr.db".to_string(),
-        )?;
-        let (_shmmr_spec, new_map) =
-            read_mdb_file("test/test_data/test_shmmr.db".to_string()).unwrap();
-
-        let agcfile = AGCFile::new(String::from(PATH))?;
-        let mut agc_iter = agcfile.into_iter();
-        let seq = agc_iter.next();
-        let shmmr_spec = crate::seq_db::SHMMRSPEC;
-        let r_frags = raw_query_fragment(&new_map, &seq.unwrap().unwrap().seq, &shmmr_spec);
-        let mut out = vec![];
-        for res in r_frags {
-            for v in res.2 {
-                out.push((v, res.1, res.0))
-            }
-        }
-        out.sort();
-        for v in out {
-            println!("Q {:?}", v);
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "with_agc")]
     fn test_frag_map_to_adj_list() -> Result<(), std::io::Error> {
         use crate::agc_io::AGCFile;
         const PATH: &str = "test/test_data/test.agcrs";

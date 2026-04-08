@@ -1,5 +1,5 @@
 use crate::seq_db::{
-    self, read_mdb_file_to_frag_locations, read_mdbi_file_to_frag_locations, read_seq_index_sqlite,
+    self, read_mdbi_file_to_frag_locations, read_seq_index_sqlite,
     CompactSeq, Fragment, Fragments, GetSeq,
 };
 use crate::shmmrutils::ShmmrSpec;
@@ -10,7 +10,6 @@ use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
-use std::path::Path;
 pub type ShmmrToFragMapLocation = FxHashMap<(u64, u64), (usize, usize)>;
 
 pub struct CompactSeqFragFileStorage {
@@ -31,25 +30,12 @@ impl CompactSeqFragFileStorage {
     pub fn new(prefix: String) -> Self {
         let frag_file_prefix = prefix;
 
-        // Prefer split format (.mdbi + .mdbv); fall back to legacy .mdb.
-        let use_split = Path::new(&format!("{frag_file_prefix}.mdbi")).exists()
-            && Path::new(&format!("{frag_file_prefix}.mdbv")).exists();
-
-        let (shmmr_spec, frag_location_map, frag_map_file) = if use_split {
-            let (spec, loc) =
-                read_mdbi_file_to_frag_locations(&frag_file_prefix).unwrap();
-            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-            let f = File::open(format!("{frag_file_prefix}.mdbv")).expect("mdbv open fail");
-            let mmap = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
-            (spec, loc, mmap)
-        } else {
-            let (spec, loc) =
-                read_mdb_file_to_frag_locations(frag_file_prefix.clone() + ".mdb").unwrap();
-            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-            let f = File::open(frag_file_prefix.clone() + ".mdb").expect("mdb open fail");
-            let mmap = unsafe { Mmap::map(&f).expect("mdb mmap fail") };
-            (spec, loc, mmap)
-        };
+        let (spec, loc) =
+            read_mdbi_file_to_frag_locations(&frag_file_prefix).unwrap();
+        let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
+        let f = File::open(format!("{frag_file_prefix}.mdbv")).expect("mdbv open fail");
+        let frag_map_file = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
+        let shmmr_spec = spec;
 
         let mut sdx_file = BufReader::new(
             File::open(frag_file_prefix.clone() + ".sdx").expect("sdx file open error"),

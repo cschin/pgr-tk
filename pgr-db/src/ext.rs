@@ -17,10 +17,7 @@ use crate::agc_io::{self, AGCSeqDB};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
-use std::path::Path;
 
-#[cfg(feature = "with_agc")]
-use std::io::BufRead;
 
 use std::io::{BufReader, BufWriter, Read, Write};
 
@@ -86,24 +83,11 @@ impl SeqIndexDB {
 
     #[cfg(feature = "with_agc")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        // Prefer split format (.mdbi + .mdbv); fall back to legacy .mdb.
-        let use_split = Path::new(&format!("{prefix}.mdbi")).exists()
-            && Path::new(&format!("{prefix}.mdbv")).exists();
-
-        let (shmmr_spec, frag_location_map, frag_map_file) = if use_split {
-            let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix).unwrap();
-            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-            let f = File::open(format!("{prefix}.mdbv")).expect("mdbv open fail");
-            let mmap = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
-            (spec, loc, mmap)
-        } else {
-            let (spec, loc) =
-                seq_db::read_mdb_file_to_frag_locations(format!("{prefix}.mdb")).unwrap();
-            let loc = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-            let f = File::open(format!("{prefix}.mdb")).expect("mdb open fail");
-            let mmap = unsafe { Mmap::map(&f).expect("mdb mmap fail") };
-            (spec, loc, mmap)
-        };
+        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix).unwrap();
+        let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
+        let f = File::open(format!("{prefix}.mdbv")).expect("mdbv open fail");
+        let frag_map_file = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
+        let shmmr_spec = spec;
 
         let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agcrs")?;
         self.agc_db = Some(agc_io::AGCSeqDB {

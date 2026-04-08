@@ -19,7 +19,7 @@ use rusqlite::{params, Connection};
 use std::fmt;
 use std::fs;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 
 pub const KMERSIZE: u32 = 56;
 pub const SHMMRSPEC: ShmmrSpec = ShmmrSpec {
@@ -821,10 +821,8 @@ impl GetSeq for CompactSeqDB {
 
 impl CompactSeqDB {
     pub fn write_shmmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
-        // Write new split format (.mdbi key-index + .mdbv values).
+        // Write split format (.mdbi key-index + .mdbv values).
         write_shmmr_map_split(&self.shmmr_spec, &self.frag_map, &fp_prefix)?;
-        // Write legacy .mdb for backward compatibility during transition.
-        write_shmmr_map_file(&self.shmmr_spec, &self.frag_map, fp_prefix.clone() + ".mdb")?;
         // Write SQLite sequence index (.midx).
         write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix)?;
         Ok(())
@@ -1454,188 +1452,6 @@ pub fn read_seq_index_sqlite(
     Ok((seq_index, seq_info))
 }
 
-pub fn write_shmmr_map_file(
-    shmmr_spec: &ShmmrSpec,
-    shmmr_map: &ShmmrToFrags,
-    filepath: String,
-) -> Result<(), std::io::Error> {
-    let mut out_file =
-        File::create(filepath).expect("open fail while writing the SHIMMER map (.mdb) file\n");
-    let mut buf = Vec::<u8>::new();
-
-    buf.extend("mdb".to_string().into_bytes());
-
-    buf.write_u32::<LittleEndian>(shmmr_spec.w)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.k)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.r)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
-
-    buf.write_u64::<LittleEndian>(shmmr_map.len() as u64)?;
-    shmmr_map
-        .iter()
-        .try_for_each(|(k, v)| -> Result<(), std::io::Error> {
-            buf.write_u64::<LittleEndian>(k.0)?;
-            buf.write_u64::<LittleEndian>(k.1)?;
-            buf.write_u64::<LittleEndian>(v.len() as u64)?;
-            v.iter().try_for_each(|r| -> Result<(), std::io::Error> {
-                buf.write_u32::<LittleEndian>(r.0)?;
-                buf.write_u32::<LittleEndian>(r.1)?;
-                buf.write_u32::<LittleEndian>(r.2)?;
-                buf.write_u32::<LittleEndian>(r.3)?;
-                buf.write_u8(r.4)?;
-                Ok(())
-            })
-        })?;
-    let _ = out_file.write_all(&buf);
-    Ok(())
-}
-
-pub fn read_mdb_file(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let mut in_file =
-        File::open(filepath).expect("Error while opening the SHIMMER map file (.mdb) file");
-    let mut buf = Vec::<u8>::new();
-
-    let mut u64bytes = [0_u8; 8];
-    let mut u32bytes = [0_u8; 4];
-    in_file.read_to_end(&mut buf)?;
-    let mut cursor = 0_usize;
-    assert!(buf[0..3] == "mdb".to_string().into_bytes());
-    cursor += 3; // skip "mdb"
-
-    let w = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let k = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let r = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let min_span = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let flag = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let sketch = (flag & 0b01) == 0b01;
-
-    let shmmr_spec = ShmmrSpec {
-        w,
-        k,
-        r,
-        min_span,
-        sketch,
-    };
-    u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-    let shmmr_key_len = usize::from_le_bytes(u64bytes);
-    cursor += 8;
-    let mut shmmr_map = ShmmrToFrags::default();
-    (0..shmmr_key_len).for_each(|_| {
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let k1 = u64::from_le_bytes(u64bytes);
-        cursor += 8;
-
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let k2 = u64::from_le_bytes(u64bytes);
-        cursor += 8;
-
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let vec_len = usize::from_le_bytes(u64bytes);
-        cursor += 8;
-
-        let value = (0..vec_len)
-            .map(|_| {
-                let mut v = (0_u32, 0_u32, 0_u32, 0_u32, 0_u8);
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.0 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.1 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.2 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.3 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                v.4 = buf[cursor..cursor + 1][0];
-                cursor += 1;
-
-                v
-            })
-            .collect::<Vec<FragmentSignature>>();
-
-        shmmr_map.insert((k1, k2), value);
-    });
-
-    Ok((shmmr_spec, shmmr_map))
-}
-
-pub fn read_mdb_file_to_frag_locations(
-    filepath: String,
-) -> Result<(ShmmrSpec, ShmmrIndexFileLocation), io::Error> {
-    let mut in_file =
-        File::open(filepath).expect("open fail while reading the SHIMMER map (.mdb) file");
-    let mut tag_buf = [0_u8; 3];
-
-    let mut u32bytes = [0_u8; 4];
-    let mut u64bytes = [0_u8; 8];
-
-    in_file.read_exact(&mut tag_buf)?;
-    let mut cursor = 0_usize;
-    assert!(tag_buf[0..3] == "mdb".to_string().into_bytes());
-    cursor += 3; // skip "mdb"
-
-    in_file.read_exact(&mut u32bytes)?;
-    let w = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let k = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let r = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let min_span = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let flag = LittleEndian::read_u32(&u32bytes);
-    let sketch = (flag & 0b01) == 0b01;
-
-    cursor += 4 * 5;
-
-    let shmmr_spec = ShmmrSpec {
-        w,
-        k,
-        r,
-        min_span,
-        sketch,
-    };
-
-    in_file.read_exact(&mut u64bytes)?;
-    let shmmr_key_len = usize::from_le_bytes(u64bytes);
-    cursor += 8;
-    let mut rec_loc = Vec::<((u64, u64), (usize, usize))>::new();
-    for _ in 0..shmmr_key_len {
-        in_file.read_exact(&mut u64bytes)?;
-        let k1 = u64::from_le_bytes(u64bytes);
-
-        in_file.read_exact(&mut u64bytes)?;
-        let k2 = u64::from_le_bytes(u64bytes);
-
-        in_file.read_exact(&mut u64bytes)?;
-        let vec_len = usize::from_le_bytes(u64bytes);
-        cursor += 8 * 3;
-        let start = cursor;
-        let advance = 17 * vec_len;
-        cursor += advance;
-        in_file.seek(SeekFrom::Current(advance as i64))?;
-        rec_loc.push(((k1, k2), (start, vec_len)));
-    }
-    Ok((shmmr_spec, rec_loc))
-}
-
 pub fn get_fragment_signatures_from_mmap_file(
     frag_map_file: &Mmap,
     start: usize,
@@ -1669,25 +1485,6 @@ pub fn get_fragment_signatures_from_mmap_file(
         .collect::<Vec<FragmentSignature>>()
 }
 
-pub fn read_mdb_file_parallel(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let in_file =
-        File::open(filepath.clone()).expect("open fail while reading the SHIMMER map (.mdb) file");
-    let frag_map_file = unsafe {
-        Mmap::map(&in_file).expect("open fail while reading the SHIMMER map (.mdb) file")
-    };
-
-    let (shmmr_spec, rec_loc) = read_mdb_file_to_frag_locations(filepath)?;
-
-    let shmmr_map = rec_loc
-        .par_iter()
-        .map(|&((k1, k2), (start, vec_len))| {
-            let value = get_fragment_signatures_from_mmap_file(&frag_map_file, start, vec_len);
-            ((k1, k2), value)
-        })
-        .collect::<FxHashMap<ShmmrPair, Vec<FragmentSignature>>>();
-    Ok((shmmr_spec, shmmr_map))
-}
-
 // ---------------------------------------------------------------------------
 // Split format: .mdbi (sorted key index) + .mdbv (fragment values)
 // ---------------------------------------------------------------------------
@@ -1698,10 +1495,6 @@ const MDBV_MAGIC: &[u8; 4] = b"mdbv";
 /// Version byte appended to the magic.
 const MDBV1: u8 = 1;
 
-/// Size of one key-index entry: k1(8) + k2(8) + data_offset(8) + vec_len(4) = 28 bytes.
-const MDBI_ENTRY_BYTES: usize = 28;
-/// Header size of .mdbi: magic(4) + version(1) + shmmr_spec(5×4=20) + n_keys(8) = 33 bytes.
-const MDBI_HEADER_BYTES: usize = 33;
 /// Header size of .mdbv: magic(4) + version(1) = 5 bytes.
 const MDBV_HEADER_BYTES: usize = 5;
 /// Size of one fragment record (same as legacy .mdb): 4×u32 + 1×u8 = 17 bytes.

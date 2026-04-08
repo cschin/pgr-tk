@@ -41,10 +41,14 @@ type Bundles = Vec<Vec<(u64, u64, u8)>>; // each bundle is a Vec<node>, each nod
 ///
 ///     $ pgr-mdb filelist HPRC-y1-rebuild-04252022
 ///
-///     # two index files will be created by the pgr-mdb command
-///     # one with a suffix .mdb and another one with a suffix .midx
-///     # when we use the load_from_agc_index() method, all three files, e.g., genomes.agc, genomes.mdb and
-///     # genomes.midx should have the same prefix as the parameter used to call  load_from_agc_index() method
+///     # pgr-mdb creates index files with suffixes .mdbi, .mdbv, and .midx (SQLite).
+///     # When calling load_from_agc_index(), all files (.agcrs, .mdbi, .mdbv, .midx)
+///     # must share the same prefix passed to this method.
+///
+///     # NOTE: Python bindings for load_from_agc_index() are currently broken because
+///     # the underlying index format has been migrated from the legacy .mdb format to
+///     # the split .mdbi + .mdbv format. A plan to restore full Python binding support
+///     # will be addressed in a future update.
 ///
 /// One can also create index and load the sequences from a fasta file using ```load_from_fastx()``` methods.
 /// Currently, this might be a good option for mid-size dataset (up to a couple of hundred megabases).
@@ -93,12 +97,17 @@ impl SeqIndexDB {
     /// ----------
     ///
     /// prefix: string
-    ///     the prefix to the `.agc`, `.mdb` and `.midx` files
+    ///     the prefix to the `.agcrs`, `.mdbi`, `.mdbv`, and `.midx` files
     ///
     /// Returns
     /// -------
     ///
     /// None or I/O Error
+    ///
+    /// .. warning::
+    ///     Python bindings for this method are currently broken following migration
+    ///     from the legacy ``.mdb`` format to the split ``.mdbi`` + ``.mdbv`` format.
+    ///     A fix will be addressed in a future update.
     ///
     #[cfg(feature = "with_agc")]
     #[pyo3(text_signature = "($self, prefix)")]
