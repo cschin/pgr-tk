@@ -60,7 +60,8 @@ echo "[2] Running pgr-query ..."
     --merge-range-tol 100000 \
     --max-count 128 \
     --max-query-count 128 \
-    --max-target-count 128
+    --max-target-count 128 \
+    --min-anchor-count 10
 
 echo ""
 echo "Output files:"
