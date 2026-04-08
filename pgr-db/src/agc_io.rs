@@ -2,6 +2,7 @@ use crate::fasta_io::SeqRec;
 use crate::frag_file_io::ShmmrToFragMapLocation;
 use agc_rs::decompressor::AgcFile as InnerAgcFile;
 use memmap2::Mmap;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::io;
 use std::path::Path;
@@ -131,6 +132,36 @@ impl AGCFile {
             .expect("agc_io mutex poisoned")
             .full_contig(&sample_name, &ctg_name)
             .unwrap_or_else(|e| panic!("get_seq({sample_name}/{ctg_name}): {e}"))
+    }
+
+    /// Fetch all contigs in parallel using one read-only SQLite connection per
+    /// rayon task.
+    ///
+    /// SQLite WAL mode supports unlimited concurrent readers, so opening
+    /// multiple `open_readonly` connections to the same file is safe and
+    /// avoids the single-Mutex serialization of `AGCFileIter`.  For a human
+    /// genome (50 chromosomes) this turns ~50 sequential decompression calls
+    /// into a single parallel batch.
+    pub fn par_fetch_seqs(&self) -> Vec<SeqRec> {
+        let filepath = self.filepath.clone();
+        self.sample_ctg
+            .par_iter()
+            .map(|(sample_name, ctg_name)| {
+                // Each rayon task opens its own read-only connection.
+                let conn = InnerAgcFile::open_readonly(Path::new(&filepath))
+                    .unwrap_or_else(|e| panic!("par_fetch_seqs open {filepath}: {e}"));
+                let seq = conn
+                    .full_contig(sample_name, ctg_name)
+                    .unwrap_or_else(|e| {
+                        panic!("par_fetch_seqs {sample_name}/{ctg_name}: {e}")
+                    });
+                SeqRec {
+                    source: Some(sample_name.clone()),
+                    id: ctg_name.as_bytes().to_vec(),
+                    seq,
+                }
+            })
+            .collect()
     }
 }
 

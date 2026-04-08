@@ -383,8 +383,12 @@ impl CompactSeqDB {
             .zip(shmmrs[1..shmmrs.len()].iter())
             .collect::<Vec<_>>();
 
+        // Serial iter: this function is already called from a rayon par_iter
+        // context in load_index_from_seq_vec, so a nested par_iter here would
+        // add overhead without helping throughput (all cores already busy).
+        // The per-pair computation is also trivial (two comparisons + two adds).
         let internal_frags: Vec<((u64, u64), u32, u32, u8)> = shmmr_pairs
-            .par_iter()
+            .iter()
             .map(|(shmmr0, shmmr1)| {
                 let s0 = shmmr0.hash();
                 let s1 = shmmr1.hash();
@@ -686,9 +690,24 @@ impl CompactSeqDB {
     }
     #[cfg(feature = "with_agc")]
     pub fn load_index_from_agcfile(&mut self, agcfile: AGCFile) -> Result<(), std::io::Error> {
-        //let agcfile = AGCFile::new(filepath);
-
-        self.load_index_from_reader(&mut agcfile.into_iter());
+        // Fetch all contigs in parallel (one SQLite connection per rayon task).
+        // This replaces the serial AGCFileIter that held a single Mutex-locked
+        // connection, making decompression of all chromosomes concurrent.
+        let all_recs = agcfile.par_fetch_seqs();
+        let sid_base = self.seqs.len() as u32;
+        let seqs: Vec<(u32, Option<String>, String, Vec<u8>)> = all_recs
+            .into_iter()
+            .enumerate()
+            .map(|(i, rec)| {
+                (
+                    sid_base + i as u32,
+                    rec.source,
+                    String::from_utf8_lossy(&rec.id).into_owned(),
+                    rec.seq,
+                )
+            })
+            .collect();
+        self.load_index_from_seq_vec(&seqs);
         Ok(())
     }
 }
