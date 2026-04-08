@@ -26,6 +26,7 @@ bincode = { version = "2.0.0-rc.1", features = ["alloc"] }
 memmap2 = "0.5.10"
 wavefront-aln = {git = "https://github.com/cschin/wavefront-aln.git"}
 agc-rs = { path = "../agc-rs", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [features]
 default = ["with_agc"]

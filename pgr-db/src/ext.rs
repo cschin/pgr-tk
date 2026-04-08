@@ -105,24 +105,7 @@ impl SeqIndexDB {
         self.backend = Backend::AGC;
         self.shmmr_spec = Some(shmmr_spec);
 
-        let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
-
-        let midx_file = BufReader::new(File::open(prefix + ".midx")?);
-        midx_file
-            .lines()
-            .try_for_each(|line| -> Result<(), std::io::Error> {
-                let line = line.unwrap();
-                let mut line = line.as_str().split('\t');
-                let sid = line.next().unwrap().parse::<u32>().unwrap();
-                let len = line.next().unwrap().parse::<u32>().unwrap();
-                let ctg_name = line.next().unwrap().to_string();
-                let source = line.next().unwrap().to_string();
-                seq_index.insert((ctg_name.clone(), Some(source.clone())), (sid, len));
-                seq_info.insert(sid, (ctg_name, Some(source), len));
-                Ok(())
-            })?;
-
+        let (seq_index, seq_info) = seq_db::read_seq_index_sqlite(&prefix)?;
         self.seq_index = Some(seq_index);
         self.seq_info = Some(seq_info);
         Ok(())

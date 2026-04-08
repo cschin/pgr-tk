@@ -1,4 +1,4 @@
-# pgr-tk `.mdb` Format Improvement Proposal
+# pgr-tk `.mdb` / `.midx` Format Improvement Proposal
 
 ## Background
 
@@ -9,12 +9,66 @@ by `CompactSeqDB::write_shmmr_map_index` and read back by `SeqIndexDB::load_from
 | File | Encoding | Compression | Purpose |
 |------|----------|-------------|---------|
 | `.mdb`  | Custom `byteorder` LE binary | None | Shimmer pair → fragment locations |
-| `.midx` | Tab-delimited text | None | Contig metadata (sid, len, name, source) |
+| `.midx` | Tab-delimited text → **SQLite** (implemented) | None | Contig metadata (sid, len, name, source) |
 | `.sdx`  | `bincode` v2 | None | Chunk offsets + `Vec<CompactSeq>` |
 | `.frg`  | `bincode` v2 | Deflate per 256-chunk | Raw fragment sequences |
 
-This document focuses on the `.mdb` file, which is the bottleneck for both
-build time and runtime memory usage.
+This document covers improvements to the `.mdb` (proposed) and `.midx` (already
+implemented) files.
+
+---
+
+## `.midx` — Implemented: SQLite Database
+
+### Previous format (tab-delimited text)
+
+```
+{sid}\t{len}\t{ctg_name}\t{source}\n
+```
+
+No types, no schema version, no indices, not queryable from external tools.
+
+### New format (SQLite, `PRAGMA user_version = 1`)
+
+Written by `write_seq_index_sqlite` / read by `read_seq_index_sqlite` in
+`seq_db.rs`.  The file keeps the `.midx` extension so no call-site renames
+are needed.
+
+```sql
+PRAGMA user_version = 1;
+
+CREATE TABLE shmmr_spec (
+    w        INTEGER NOT NULL,
+    k        INTEGER NOT NULL,
+    r        INTEGER NOT NULL,
+    min_span INTEGER NOT NULL,
+    sketch   INTEGER NOT NULL
+);
+
+CREATE TABLE seq_index (
+    sid      INTEGER PRIMARY KEY,
+    len      INTEGER NOT NULL,
+    ctg_name TEXT    NOT NULL,
+    source   TEXT
+);
+
+CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);
+```
+
+Benefits over the old text file:
+
+| Property | Old tab-delimited | New SQLite |
+|----------|-------------------|------------|
+| Types | All strings, parsed at runtime | INTEGER / TEXT, enforced by schema |
+| Schema version | None | `PRAGMA user_version = 1` |
+| External tooling | `awk`, `cut` only | `sqlite3`, DuckDB, Python `sqlite3`, R |
+| Name lookup | Full file scan | O(log n) via `idx_ctg_source` index |
+| `shmmr_spec` stored | No (only in `.mdb`) | Yes (deduplicated source of truth) |
+| Corruption detection | Silent | SQLite integrity checks |
+
+The `shmmr_spec` table provides a second copy of the compression parameters
+alongside the `.mdb` header, which will become the primary copy once the
+`.mdb` → `.mdbi`+`.mdbv` split below is implemented.
 
 ---
 

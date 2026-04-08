@@ -15,7 +15,9 @@ use petgraph::EdgeDirection::{Incoming, Outgoing};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use rusqlite::{params, Connection};
 use std::fmt;
+use std::fs;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
@@ -819,24 +821,9 @@ impl GetSeq for CompactSeqDB {
 
 impl CompactSeqDB {
     pub fn write_shmmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
-        let seq_idx_fp = fp_prefix.clone() + ".midx";
-        let data_fp = fp_prefix + ".mdb";
+        let data_fp = fp_prefix.clone() + ".mdb";
         write_shmmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp)?;
-        let mut idx_file = BufWriter::new(File::create(seq_idx_fp).expect("file create error"));
-        self.seqs
-            .iter()
-            .try_for_each(|s| -> Result<(), std::io::Error> {
-                writeln!(
-                    idx_file,
-                    "{}\t{}\t{}\t{}",
-                    s.id,
-                    s.len,
-                    s.name,
-                    s.source.clone().unwrap_or_else(|| "-".to_string())
-                )?;
-                Ok(())
-            })?;
-
+        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix)?;
         Ok(())
     }
 }
@@ -1315,6 +1302,153 @@ pub fn get_match_positions_with_fragment(
         });
     res.iter_mut().for_each(|(_k, v)| v.sort());
     res
+}
+
+// ---------------------------------------------------------------------------
+// SQLite-backed sequence index (.midx)
+// ---------------------------------------------------------------------------
+
+/// Schema version stored as SQLite PRAGMA user_version.
+const MIDX_SCHEMA_VERSION: u32 = 1;
+
+/// Write sequence metadata and shimmer parameters to `{prefix}.midx` as a
+/// SQLite database.
+///
+/// The SQLite `.midx` replaces the former tab-delimited text format with a
+/// typed, versioned, and queryable store.  External tools (sqlite3, DuckDB,
+/// Python sqlite3) can inspect it directly.
+///
+/// Schema:
+/// ```sql
+/// PRAGMA user_version = 1;
+/// CREATE TABLE shmmr_spec (w, k, r, min_span, sketch);
+/// CREATE TABLE seq_index  (sid PRIMARY KEY, len, ctg_name, source);
+/// CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);
+/// ```
+pub fn write_seq_index_sqlite(
+    seqs: &[CompactSeq],
+    shmmr_spec: &ShmmrSpec,
+    prefix: &str,
+) -> Result<(), io::Error> {
+    let path = format!("{prefix}.midx");
+    // Remove any stale file so we start with a clean database.
+    let _ = fs::remove_file(&path);
+    let conn = Connection::open(&path)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA user_version = {MIDX_SCHEMA_VERSION};
+         CREATE TABLE shmmr_spec (
+             w        INTEGER NOT NULL,
+             k        INTEGER NOT NULL,
+             r        INTEGER NOT NULL,
+             min_span INTEGER NOT NULL,
+             sketch   INTEGER NOT NULL
+         );
+         CREATE TABLE seq_index (
+             sid      INTEGER PRIMARY KEY,
+             len      INTEGER NOT NULL,
+             ctg_name TEXT    NOT NULL,
+             source   TEXT
+         );
+         CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);"
+    ))
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    conn.execute(
+        "INSERT INTO shmmr_spec (w, k, r, min_span, sketch) VALUES (?1,?2,?3,?4,?5)",
+        params![
+            shmmr_spec.w,
+            shmmr_spec.k,
+            shmmr_spec.r,
+            shmmr_spec.min_span,
+            shmmr_spec.sketch as u32,
+        ],
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        for s in seqs {
+            tx.execute(
+                "INSERT INTO seq_index (sid, len, ctg_name, source) VALUES (?1,?2,?3,?4)",
+                params![
+                    s.id as i64,
+                    s.len as i64,
+                    &s.name,
+                    s.source.as_deref(),
+                ],
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+/// Read sequence metadata from `{prefix}.midx` (SQLite format).
+///
+/// Returns `(seq_index, seq_info)`:
+/// - `seq_index`: `(ctg_name, source) → (sid, len)`
+/// - `seq_info`:  `sid → (ctg_name, source, len)`
+pub fn read_seq_index_sqlite(
+    prefix: &str,
+) -> Result<
+    (
+        FxHashMap<(String, Option<String>), (u32, u32)>,
+        FxHashMap<u32, (String, Option<String>, u32)>,
+    ),
+    io::Error,
+> {
+    let path = format!("{prefix}.midx");
+    let conn = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    if version != MIDX_SCHEMA_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "unsupported .midx schema version {version} (expected {MIDX_SCHEMA_VERSION})"
+            ),
+        ));
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT sid, len, ctg_name, source FROM seq_index")
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let rows: Vec<(u32, u32, String, Option<String>)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u32,
+                r.get::<_, i64>(1)? as u32,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let mut seq_index = FxHashMap::default();
+    let mut seq_info = FxHashMap::default();
+    for (sid, len, ctg_name, source) in rows {
+        seq_index.insert((ctg_name.clone(), source.clone()), (sid, len));
+        seq_info.insert(sid, (ctg_name, source, len));
+    }
+
+    Ok((seq_index, seq_info))
 }
 
 pub fn write_shmmr_map_file(

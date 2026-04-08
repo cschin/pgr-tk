@@ -1,5 +1,6 @@
 use crate::seq_db::{
-    self, read_mdb_file_to_frag_locations, CompactSeq, Fragment, Fragments, GetSeq,
+    self, read_mdb_file_to_frag_locations, read_seq_index_sqlite, CompactSeq, Fragment, Fragments,
+    GetSeq,
 };
 use crate::shmmrutils::ShmmrSpec;
 use bincode::config;
@@ -8,7 +9,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 pub type ShmmrToFragMapLocation = FxHashMap<(u64, u64), (usize, usize)>;
 
 pub struct CompactSeqFragFileStorage {
@@ -55,26 +56,8 @@ impl CompactSeqFragFileStorage {
         let f_file = File::open(frag_file_prefix.clone() + ".frg").expect("frag file open fail");
         let frag_file = unsafe { Mmap::map(&f_file).expect("frag file memory map creation fail") };
 
-        let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
-
-        let midx_file = BufReader::new(
-            File::open(frag_file_prefix.clone() + ".midx").expect("open midx file fail"),
-        );
-        midx_file
-            .lines()
-            .try_for_each(|line| -> Result<(), std::io::Error> {
-                let line = line.unwrap();
-                let mut line = line.as_str().split('\t');
-                let sid = line.next().unwrap().parse::<u32>().unwrap();
-                let len = line.next().unwrap().parse::<u32>().unwrap();
-                let ctg_name = line.next().unwrap().to_string();
-                let source = line.next().unwrap().to_string();
-                seq_index.insert((ctg_name.clone(), Some(source.clone())), (sid, len));
-                seq_info.insert(sid, (ctg_name, Some(source), len));
-                Ok(())
-            })
-            .expect("read midx file fail");
+        let (seq_index, seq_info) = read_seq_index_sqlite(&frag_file_prefix)
+            .expect("read .midx (SQLite) fail");
 
         Self {
             shmmr_spec,
