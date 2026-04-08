@@ -30,45 +30,65 @@ const MAX_KMER_BUCKET: usize = 20;
 // AGC-faithful splitter determination
 // ---------------------------------------------------------------------------
 
-/// Phase 1+2: collect every canonical k-mer from the reference sequences,
-/// count occurrences, and return the set of singletons (appear exactly once).
-/// Mirrors AGC's `start_kmer_collecting_threads` + `remove_non_singletons`.
-fn collect_singleton_kmers(records: &[FastaRecord], k: usize) -> HashSet<u64> {
-    // Count per-record in parallel, then merge counts across threads.
-    let counts: HashMap<u64, u32> = records
-        .par_iter()
-        .fold(
-            || HashMap::<u64, u32>::new(),
-            |mut acc, rec| {
-                let mut km = Kmer::new(k as u8);
-                for &b in &rec.seq {
-                    if km.push_bits(b) && km.full() {
-                        let c = acc.entry(km.canonical()).or_insert(0);
-                        *c = c.saturating_add(1);
-                    }
-                }
-                acc
-            },
-        )
-        .reduce(
-            || HashMap::new(),
-            |mut a, b| {
-                for (kmer, cnt) in b {
-                    let e = a.entry(kmer).or_insert(0);
-                    *e = e.saturating_add(cnt);
-                }
-                a
-            },
-        );
-    counts
-        .into_iter()
-        .filter(|(_, cnt)| *cnt == 1)
-        .map(|(kmer, _)| kmer)
-        .collect()
+/// Collect every canonical k-mer from `records` and return a **sorted** Vec
+/// containing only those that appear exactly once (singletons).
+///
+/// Mirrors AGC's `start_kmer_collecting_threads` + `remove_non_singletons`
+/// but uses a flat Vec + sort instead of a HashMap.  For a 3 Gbp genome at
+/// k=31 this costs ~24 GB (8 bytes × 3 B k-mers) versus the ~48–72 GB that
+/// a parallel fold+HashMap approach requires from hash-table load-factor
+/// overhead and per-thread accumulator copies.
+fn collect_sorted_singletons(records: &[FastaRecord], k: usize) -> Vec<u64> {
+    // Pre-allocate: at most (seq_len - k + 1) k-mers per record.
+    let total_kmers: usize = records
+        .iter()
+        .map(|r| r.seq.len().saturating_sub(k - 1))
+        .sum();
+
+    // Serial collection avoids the peak-memory doubling that occurs when
+    // parallel per-record Vecs are later flattened into a single allocation.
+    let mut all_kmers: Vec<u64> = Vec::with_capacity(total_kmers);
+    for rec in records {
+        let mut km = Kmer::new(k as u8);
+        for &b in &rec.seq {
+            if km.push_bits(b) && km.full() {
+                all_kmers.push(km.canonical());
+            }
+        }
+    }
+
+    // Parallel in-place sort (rayon).  Mirrors AGC's RadixSort step.
+    all_kmers.par_sort_unstable();
+
+    // Compact in-place: keep only k-mers that appear exactly once.
+    // Mirrors AGC's `remove_non_singletons`.
+    let n = all_kmers.len();
+    let mut write = 0usize;
+    let mut i = 0usize;
+    while i < n {
+        let v = all_kmers[i];
+        let mut j = i + 1;
+        while j < n && all_kmers[j] == v {
+            j += 1;
+        }
+        if j - i == 1 {
+            all_kmers[write] = v;
+            write += 1;
+        }
+        i = j;
+    }
+    all_kmers.truncate(write);
+    all_kmers.shrink_to_fit();
+
+    all_kmers
 }
 
 /// Scan a single 2-bit sequence for `candidates` k-mers at least
 /// `segment_size` bases apart and return those chosen as splitters.
+///
+/// `candidates` must be a **sorted** slice so membership tests use
+/// binary search (O(log n)) instead of a hash lookup.  The sorted-slice
+/// contract matches the output of [`collect_sorted_singletons`].
 ///
 /// This is the core of AGC's `find_splitters_in_contig`:
 /// - `current_len` starts at `segment_size` so the first eligible k-mer is
@@ -79,7 +99,7 @@ fn collect_singleton_kmers(records: &[FastaRecord], k: usize) -> HashSet<u64> {
 ///   added so the final segment gets a back boundary.
 fn find_splitters_in_seq(
     seq: &[u8],
-    candidates: &HashSet<u64>,
+    candidates: &[u64],
     k: usize,
     segment_size: usize,
 ) -> HashSet<u64> {
@@ -99,7 +119,7 @@ fn find_splitters_in_seq(
             let can = km.canonical();
             recent_kmers.push(can);
 
-            if current_len >= segment_size && candidates.contains(&can) {
+            if current_len >= segment_size && candidates.binary_search(&can).is_ok() {
                 splitters.insert(can);
                 current_len = 0;
                 km.reset();
@@ -109,7 +129,7 @@ fn find_splitters_in_seq(
     }
 
     for &kmer in recent_kmers.iter().rev() {
-        if candidates.contains(&kmer) {
+        if candidates.binary_search(&kmer).is_ok() {
             splitters.insert(kmer);
             break;
         }
@@ -120,9 +140,11 @@ fn find_splitters_in_seq(
 
 /// Phase 3: scan each reference contig for singletons, delegating to
 /// `find_splitters_in_seq` per contig.
+///
+/// `singletons` must be a sorted slice (output of [`collect_sorted_singletons`]).
 fn find_splitters_in_contigs(
     records: &[FastaRecord],
-    singletons: &HashSet<u64>,
+    singletons: &[u64],
     k: usize,
     segment_size: usize,
 ) -> HashSet<u64> {
@@ -141,7 +163,7 @@ pub fn determine_splitters(
     k: usize,
     segment_size: usize,
 ) -> HashSet<u64> {
-    let singletons = collect_singleton_kmers(records, k);
+    let singletons = collect_sorted_singletons(records, k);
     find_splitters_in_contigs(records, &singletons, k, segment_size)
 }
 
@@ -179,17 +201,20 @@ fn find_local_splitters(
             *c = c.saturating_add(1);
         }
     }
-    let local_candidates: HashSet<u64> = counts
+    // Step 3: keep singletons that are absent from the global splitter set.
+    // Collect into a sorted Vec so find_splitters_in_seq can use binary_search.
+    let mut local_candidates: Vec<u64> = counts
         .into_iter()
         .filter(|(_, cnt)| *cnt == 1)
         .map(|(kmer, _)| kmer)
-        // Step 3: exclude k-mers already used as global splitters.
         .filter(|kmer| !known_kmers.contains(kmer))
         .collect();
 
     if local_candidates.is_empty() {
         return HashSet::new();
     }
+
+    local_candidates.sort_unstable();
 
     // Step 4: apply the standard splitter-finding scan.
     find_splitters_in_seq(seq, &local_candidates, k, segment_size)
@@ -1116,11 +1141,7 @@ mod tests {
     fn make_records_from_2bit(seqs: Vec<Vec<u8>>) -> Vec<FastaRecord> {
         seqs.into_iter()
             .enumerate()
-            .map(|(i, seq)| FastaRecord {
-                name: format!("ctg{}", i),
-                seq,
-                seq_ascii: Vec::new(),
-            })
+            .map(|(i, seq)| FastaRecord { name: format!("ctg{}", i), seq })
             .collect()
     }
 

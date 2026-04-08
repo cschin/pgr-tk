@@ -1,5 +1,5 @@
 use agc_rs::compressor::Compressor;
-use agc_rs::decompressor::AgcFile;
+use agc_rs::decompressor::{bits_to_ascii, AgcFile};
 use agc_rs::fasta_io::read_fasta_gz;
 use agc_rs::segment::Params;
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ fn load_fasta_as_map(path: &str) -> HashMap<String, Vec<u8>> {
     let records = read_fasta_gz(Path::new(path)).expect("read_fasta_gz");
     records
         .into_iter()
-        .map(|r| (r.name, r.seq_ascii))
+        .map(|r| (r.name, bits_to_ascii(&r.seq)))
         .collect()
 }
 
