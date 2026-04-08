@@ -57,10 +57,10 @@ echo "[2] Running pgr-query ..."
     "$DB_PREFIX" \
     "$MHC_FA" \
     "$OUT_PREFIX" \
-    --merge_range_tol 100000 \
-    --max_count 128 \
-    --max_query_count 128 \
-    --max_target_count 128
+    --merge-range-tol 100000 \
+    --max-count 128 \
+    --max-query-count 128 \
+    --max-target-count 128
 
 echo ""
 echo "Output files:"
