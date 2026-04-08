@@ -73,6 +73,10 @@ struct CmdOptions {
     #[clap(long, default_value_t = false)]
     bed_summary: bool,
 
+    /// minimum number of alignment anchors required to report a hit (default 2)
+    #[clap(long, default_value_t = 2)]
+    min_anchor_count: usize,
+
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
     number_of_thread: usize,
@@ -177,7 +181,7 @@ fn main() -> Result<(), std::io::Error> {
                     let mut f_count = 0_usize;
                     let mut r_count = 0_usize;
                     alns.into_iter().for_each(|(_score, aln)| {
-                        if aln.len() > 2 {
+                        if aln.len() > args.min_anchor_count {
                             aln_lens.push(aln.len());
                             for hp in &aln {
                                 if hp.0 .2 == hp.1 .2 {
