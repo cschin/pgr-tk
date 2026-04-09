@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
@@ -616,6 +618,8 @@ impl Compressor {
 
     /// Compress a FASTA file and store it under `sample_name`.
     pub fn add_fasta(&mut self, path: &Path, sample_name: &str) -> Result<()> {
+        let t0 = Instant::now();
+
         let already: i64 = self.db.conn().query_row(
             "SELECT COUNT(*) FROM sample WHERE name = ?1",
             params![sample_name],
@@ -628,10 +632,18 @@ impl Compressor {
             )));
         }
 
+        eprintln!("[{:7.2}s] reading FASTA: {}", t0.elapsed().as_secs_f64(), path.display());
         let records = fasta_io::read_fasta_gz(path)?;
         if records.is_empty() {
             return Ok(());
         }
+        let total_bp: usize = records.iter().map(|r| r.seq.len() * 4).sum(); // 2-bit → bases
+        eprintln!(
+            "[{:7.2}s] read {} contigs, {:.2} Mbp",
+            t0.elapsed().as_secs_f64(),
+            records.len(),
+            total_bp as f64 / 1e6,
+        );
 
         let existing: i64 = self
             .db
@@ -639,9 +651,9 @@ impl Compressor {
             .query_row("SELECT COUNT(*) FROM sample", [], |r| r.get(0))?;
 
         if existing == 0 {
-            self.add_as_reference(records, sample_name)
+            self.add_as_reference(records, sample_name, t0)
         } else {
-            self.add_as_delta(records, sample_name)
+            self.add_as_delta(records, sample_name, t0)
         }
     }
 
@@ -654,20 +666,34 @@ impl Compressor {
     // Reference path (first sample)
     // -----------------------------------------------------------------------
 
-    fn add_as_reference(&mut self, records: Vec<FastaRecord>, sample_name: &str) -> Result<()> {
+    fn add_as_reference(&mut self, records: Vec<FastaRecord>, sample_name: &str, t0: Instant) -> Result<()> {
         let segment_size = self.params.segment_size as usize;
         let splitter_k = self.params.splitter_k as usize;
         let params_json = params_json(&self.params);
+        let n_contigs = records.len();
+
+        eprintln!("[{:7.2}s] reference path: {} contigs", t0.elapsed().as_secs_f64(), n_contigs);
 
         // Determine AGC-style splitters from the reference sequences.
+        eprintln!("[{:7.2}s]   collecting singleton k-mers ...", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
         let splitters = determine_splitters(&records, splitter_k, segment_size);
+        eprintln!(
+            "[{:7.2}s]   splitters: {} found ({:.2}s)",
+            t0.elapsed().as_secs_f64(),
+            splitters.len(),
+            t1.elapsed().as_secs_f64(),
+        );
 
         // Parallel: split each contig and ZSTD-compress each segment.
+        eprintln!("[{:7.2}s]   compressing segments (parallel) ...", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
+        let done = AtomicUsize::new(0);
         let compressed_per_record: Vec<Vec<(Vec<u8>, usize, Option<i64>, Option<i64>, bool)>> =
             records
                 .par_iter()
                 .map(|rec| {
-                    split_contig(&rec.seq, &splitters, splitter_k)
+                    let result = split_contig(&rec.seq, &splitters, splitter_k)
                         .into_iter()
                         .map(|seg| {
                             let blob = segment::compress_reference(&seg.seq)
@@ -684,9 +710,24 @@ impl Compressor {
                             };
                             (blob, seg.raw_len, kf, kb, seg.is_rc)
                         })
-                        .collect()
+                        .collect();
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n % 50 == 0 || n == n_contigs {
+                        eprintln!(
+                            "[{:7.2}s]   {:4}/{} contigs compressed",
+                            t0.elapsed().as_secs_f64(), n, n_contigs,
+                        );
+                    }
+                    result
                 })
                 .collect();
+
+        eprintln!(
+            "[{:7.2}s]   compression done ({:.2}s); writing to DB ...",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+        );
+        let t1 = Instant::now();
 
         let conn = self.db.conn();
         let tx = conn.unchecked_transaction()?;
@@ -733,6 +774,11 @@ impl Compressor {
         }
 
         tx.commit()?;
+        eprintln!(
+            "[{:7.2}s]   DB write done ({:.2}s)",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+        );
         Ok(())
     }
 
@@ -740,14 +786,19 @@ impl Compressor {
     // Delta path (subsequent samples)
     // -----------------------------------------------------------------------
 
-    fn add_as_delta(&mut self, records: Vec<FastaRecord>, sample_name: &str) -> Result<()> {
+    fn add_as_delta(&mut self, records: Vec<FastaRecord>, sample_name: &str, t0: Instant) -> Result<()> {
         let segment_size = self.params.segment_size as usize;
         let splitter_k = self.params.splitter_k as usize;
         let params_json_str = params_json(&self.params);
         let params_ref = &self.params;
         let kmer_len = self.params.min_match_len as usize;
+        let n_contigs = records.len();
+
+        eprintln!("[{:7.2}s] delta path: {} contigs", t0.elapsed().as_secs_f64(), n_contigs);
 
         // --- Phase 1: load splitters and build lookup maps -------------------
+        eprintln!("[{:7.2}s]   loading index maps ...", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
 
         // Load persisted splitters from the archive.
         let splitters: HashSet<u64> = {
@@ -775,6 +826,14 @@ impl Compressor {
         let (kmer_index, ref_data_map, ref_len_map) =
             build_fallback_index(self.db.conn(), kmer_len, sample_rate, MAX_KMER_BUCKET)?;
 
+        eprintln!(
+            "[{:7.2}s]   index ready ({:.2}s): {} exact groups, {} fallback groups",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+            ref_data_map.len(),
+            kmer_index.len(),
+        );
+
         // --- Phase 2: parallel compression with adaptive splitting -----------
         //
         // For each contig, split with global splitters.  If no global splitter
@@ -789,6 +848,9 @@ impl Compressor {
         // build the index once.  Memory is bounded to (groups in one contig) ×
         // (LzDiff size) per thread, rather than all groups simultaneously.
 
+        eprintln!("[{:7.2}s]   compressing with LzDiff (parallel) ...", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
+        let done = AtomicUsize::new(0);
         let compressed_per_record: Vec<(Vec<ChunkResult>, Vec<u64>)> = records
             .par_iter()
             .map(|rec| {
@@ -904,9 +966,23 @@ impl Compressor {
                     chunks.push(chunk);
                 }
 
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 50 == 0 || n == n_contigs {
+                    eprintln!(
+                        "[{:7.2}s]   {:4}/{} contigs compressed",
+                        t0.elapsed().as_secs_f64(), n, n_contigs,
+                    );
+                }
                 (chunks, local_splitters)
             })
             .collect();
+
+        eprintln!(
+            "[{:7.2}s]   LzDiff compression done ({:.2}s); writing segments to DB ...",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+        );
+        let t1 = Instant::now();
 
         // --- Phase 3: insert in a single transaction -------------------------
         //
@@ -1028,6 +1104,14 @@ impl Compressor {
             }
         }
 
+        eprintln!(
+            "[{:7.2}s]   segment inserts done ({:.2}s); batch-compressing {} modified groups ...",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+            new_deltas_per_group.len(),
+        );
+        let t1 = Instant::now();
+
         // Finalize: batch-compress raw deltas per group.
         //
         // Step A — load existing delta_blobs from DB in a single batch query
@@ -1091,6 +1175,11 @@ impl Compressor {
         }
 
         tx.commit()?;
+        eprintln!(
+            "[{:7.2}s]   done ({:.2}s total)",
+            t0.elapsed().as_secs_f64(),
+            t0.elapsed().as_secs_f64(),
+        );
         Ok(())
     }
 }
