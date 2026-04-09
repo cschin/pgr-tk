@@ -1030,23 +1030,36 @@ impl Compressor {
 
         // Finalize: batch-compress raw deltas per group.
         //
-        // Step A — load existing delta_blobs from DB before the transaction
-        // (read-only, no lock held).
-        let existing_blobs: HashMap<i64, Option<Vec<u8>>> = new_deltas_per_group
-            .keys()
-            .map(|gid| {
-                let blob: Option<Vec<u8>> = self
-                    .db
-                    .conn()
-                    .query_row(
-                        "SELECT delta_blob FROM segment_group WHERE id = ?1",
-                        params![gid],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(None);
-                (*gid, blob)
-            })
-            .collect();
+        // Step A — load existing delta_blobs from DB in a single batch query
+        // before the transaction (read-only, no lock held).
+        let existing_blobs: HashMap<i64, Option<Vec<u8>>> = {
+            let ids: Vec<i64> = new_deltas_per_group.keys().copied().collect();
+            // Build "WHERE id IN (?,?,…)" dynamically.
+            let placeholders = ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, delta_blob FROM segment_group WHERE id IN ({placeholders})"
+            );
+            let conn = self.db.conn();
+            let mut stmt = conn.prepare(&sql)?;
+            let rows: Vec<(i64, Option<Vec<u8>>)> = stmt
+                .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            // Any id not returned had no row (shouldn't happen, but default to None).
+            let mut map: HashMap<i64, Option<Vec<u8>>> =
+                ids.iter().map(|&id| (id, None)).collect();
+            for (id, blob) in rows {
+                map.insert(id, blob);
+            }
+            map
+        };
 
         // Step B — parallel ZSTD recompression, one task per group.
         let combined_blobs: HashMap<i64, Vec<u8>> = new_deltas_per_group

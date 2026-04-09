@@ -98,8 +98,18 @@ impl AgcDb {
         }
         let conn = Connection::open(path)?;
 
-        // Enable WAL before touching anything else.
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Enable WAL and performance pragmas.
+        // synchronous=NORMAL: skip fsync on every WAL commit; only sync at
+        // checkpoints — safe for non-power-fail scenarios and dramatically
+        // reduces system-call overhead on large ingests.
+        // cache_size=-131072: 128 MB page cache so recently written blobs are
+        // not immediately evicted before the read-back during delta merge.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -131072;
+             PRAGMA temp_store = MEMORY;",
+        )?;
 
         // Apply schema.
         conn.execute_batch(DDL)?;
