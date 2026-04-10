@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
+use voracious_radix_sort::RadixSort;
 
 use crate::db::AgcDb;
 use crate::error::{AgcError, Result};
@@ -59,8 +60,9 @@ fn collect_sorted_singletons(records: &[FastaRecord], k: usize) -> Vec<u64> {
         }
     }
 
-    // Parallel in-place sort (rayon).  Mirrors AGC's RadixSort step.
-    all_kmers.par_sort_unstable();
+    // Parallel radix sort — O(8n) vs O(n log n) for pdqsort.
+    // Mirrors AGC's raduls::RadixSortMSD step.
+    all_kmers.voracious_mt_sort(rayon::current_num_threads());
 
     // Compact in-place: keep only k-mers that appear exactly once.
     // Mirrors AGC's `remove_non_singletons`.

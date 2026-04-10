@@ -12,6 +12,7 @@ rusqlite   = { version = "0.31", features = ["bundled"] }
 zstd       = "0.13"
 flate2     = "1.1.9" 
 rayon      = "1"
+voracious_radix_sort = { version = "1.2.0", features = ["voracious_multithread"] }
 rustc-hash = "1"
 thiserror  = "1"
 clap       = { version = "4", features = ["derive"] }
