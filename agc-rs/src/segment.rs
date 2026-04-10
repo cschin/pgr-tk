@@ -109,6 +109,31 @@ pub fn decompress_delta(lz: &LzDiff, raw: &[u8]) -> Result<Vec<u8>> {
     lz.decode(raw)
 }
 
+/// ZSTD-compress a single raw LZ-diff delta for storage in `segment.delta_data`.
+///
+/// Uses the thread-local compressor so that parallel calls within the append
+/// path do not each allocate a new ZSTD_CCtx.
+pub fn compress_delta_data(raw: &[u8]) -> Result<Vec<u8>> {
+    ZSTD_CTX.with(|ctx| {
+        ctx.borrow_mut()
+            .compress(raw)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
+}
+
+/// Decompress a `segment.delta_data` BLOB back to the raw LZ-diff bytes.
+pub fn decompress_delta_data(blob: &[u8]) -> Result<Vec<u8>> {
+    let capacity = zstd::zstd_safe::get_frame_content_size(blob)
+        .ok()
+        .flatten()
+        .unwrap_or(blob.len() as u64 * 20) as usize;
+    ZSTD_DCTX.with(|ctx| {
+        ctx.borrow_mut()
+            .decompress(blob, capacity)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Per-group batch delta compression
 // ---------------------------------------------------------------------------

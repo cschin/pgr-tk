@@ -140,7 +140,7 @@ impl AgcFile {
         }
 
         let mut stmt = self.db.conn().prepare(
-            "SELECT group_id, in_group_id, is_rev_comp, raw_length \
+            "SELECT group_id, in_group_id, is_rev_comp, raw_length, delta_data \
              FROM segment \
              WHERE contig_id = ?1 \
              ORDER BY seg_order",
@@ -153,7 +153,7 @@ impl AgcFile {
                     in_group_id: r.get(1)?,
                     is_rev_comp: r.get::<_, bool>(2)?,
                     raw_length: r.get::<_, i64>(3)? as u64,
-                    delta_data: None,
+                    delta_data: r.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -252,15 +252,17 @@ impl AgcFile {
 
     /// Decompress one segment.
     ///
-    /// If `in_group_id == 0` the segment *is* the reference (stored in
-    /// `segment_group.ref_data`).  For `in_group_id > 0` we load the group's
-    /// `ref_data` and `delta_blob`, extract the raw LZ-diff bytes for this
-    /// segment (at index `in_group_id - 1`), and decode against the reference.
+    /// - `in_group_id == 0`: segment IS the reference (read `ref_data`).
+    /// - `in_group_id > 0` AND `delta_data IS NOT NULL`: per-segment delta
+    ///   stored directly in `segment.delta_data` (ZSTD-compressed raw LZ-diff).
+    ///   Introduced to avoid O(n²) recompression of `delta_blob` on every append.
+    /// - `in_group_id > 0` AND `delta_data IS NULL`: legacy batch delta; read
+    ///   from `segment_group.delta_blob` at index `in_group_id - 1`.
     fn decompress_segment(
         &self,
         group_id: i64,
         in_group_id: i64,
-        _delta_data: &Option<Vec<u8>>,
+        delta_data: &Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         if in_group_id == 0 {
             // This segment IS the reference sequence.
@@ -270,8 +272,21 @@ impl AgcFile {
                 |r| r.get(0),
             )?;
             segment::decompress_reference(&ref_blob)
+        } else if let Some(blob) = delta_data {
+            // Per-segment delta stored in segment.delta_data (new format).
+            // Decompress the ZSTD blob to get the raw LZ-diff bytes, then
+            // decode against the reference.
+            let ref_blob: Vec<u8> = self.db.conn().query_row(
+                "SELECT ref_data FROM segment_group WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )?;
+            let raw = segment::decompress_delta_data(blob)?;
+            let params = segment::Params::default();
+            let lz = segment::lz_from_ref_blob(&ref_blob, &params)?;
+            segment::decompress_delta(&lz, &raw)
         } else {
-            // Delta-encoded against the reference.
+            // Legacy: delta batch stored in segment_group.delta_blob.
             let (ref_blob, delta_blob): (Vec<u8>, Option<Vec<u8>>) =
                 self.db.conn().query_row(
                     "SELECT ref_data, delta_blob FROM segment_group WHERE id = ?1",

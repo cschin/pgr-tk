@@ -1036,27 +1036,6 @@ impl Compressor {
         //    delta_blob, extract all previous raw entries, append the new ones,
         //    and re-compress the combined list.
 
-        // Pre-query existing in_group_id counts so appends get correct ids.
-        let existing_counts: HashMap<i64, i64> = {
-            let mut stmt = self.db.conn().prepare(
-                "SELECT group_id, MAX(in_group_id) \
-                 FROM segment WHERE in_group_id > 0 \
-                 GROUP BY group_id",
-            )?;
-            let collected: Vec<(i64, i64)> = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .filter_map(|r| r.ok())
-                .collect();
-            collected.into_iter().collect()
-        };
-
-        // Per-group raw delta accumulator: group_id → list of raw LZ-diff bytes
-        // in in_group_id order (1-based, relative to this batch; caller adds
-        // existing_count offset).
-        let mut new_deltas_per_group: HashMap<i64, Vec<Vec<u8>>> = HashMap::new();
-        // in_group_id counter per group for this batch.
-        let mut next_in_group_id: HashMap<i64, i64> = HashMap::new();
-
         let conn = self.db.conn();
         let tx = conn.unchecked_transaction()?;
 
@@ -1086,30 +1065,26 @@ impl Compressor {
                         raw_delta,
                         is_rc,
                     } => {
-                        // Compute the 1-based in_group_id for this delta.
-                        let existing_base = existing_counts.get(group_id).copied().unwrap_or(0);
-                        let batch_pos = next_in_group_id.entry(*group_id).or_insert(0);
-                        *batch_pos += 1;
-                        let in_group_id = existing_base + *batch_pos;
-
-                        // Accumulate raw bytes for later batch compression.
-                        new_deltas_per_group
-                            .entry(*group_id)
-                            .or_default()
-                            .push(raw_delta.clone());
-
+                        // Compress the raw LZ-diff delta and store it directly
+                        // in segment.delta_data.  This is O(1) per segment
+                        // regardless of archive size, avoiding the O(n²)
+                        // recompression that the old delta_blob accumulation
+                        // required (decompress all N-1 existing deltas, append
+                        // new one, recompress N together).
+                        let compressed = segment::compress_delta_data(raw_delta)
+                            .expect("compress_delta_data");
                         tx.execute(
                             "INSERT INTO segment \
                              (contig_id, seg_order, group_id, in_group_id, \
                               is_rev_comp, raw_length, delta_data) \
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
                             params![
                                 contig_id,
                                 seg_order as i64,
                                 group_id,
-                                in_group_id,
                                 *is_rc,
-                                *raw_length as i64
+                                *raw_length as i64,
+                                compressed,
                             ],
                         )?;
                     }
@@ -1146,77 +1121,10 @@ impl Compressor {
         }
 
         eprintln!(
-            "[{:7.2}s]   segment inserts done ({:.2}s); batch-compressing {} modified groups ...",
+            "[{:7.2}s]   segment inserts done ({:.2}s)",
             t0.elapsed().as_secs_f64(),
             t1.elapsed().as_secs_f64(),
-            new_deltas_per_group.len(),
         );
-        let t1 = Instant::now();
-
-        // Finalize: batch-compress raw deltas per group.
-        //
-        // Step A — load existing delta_blobs from DB in a single batch query
-        // before the transaction (read-only, no lock held).
-        let existing_blobs: HashMap<i64, Option<Vec<u8>>> = {
-            let ids: Vec<i64> = new_deltas_per_group.keys().copied().collect();
-            // SQLite limits bound parameters to 32766 per statement.
-            // Chunk the id list and merge results.
-            const CHUNK: usize = 32000;
-            let conn = self.db.conn();
-            let mut map: HashMap<i64, Option<Vec<u8>>> =
-                ids.iter().map(|&id| (id, None)).collect();
-            for chunk in ids.chunks(CHUNK) {
-                let placeholders = chunk
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("?{}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT id, delta_blob FROM segment_group WHERE id IN ({placeholders})"
-                );
-                let mut stmt = conn.prepare(&sql)?;
-                let rows: Vec<(i64, Option<Vec<u8>>)> = stmt
-                    .query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
-                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
-                    })?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                for (id, blob) in rows {
-                    map.insert(id, blob);
-                }
-            }
-            map
-        };
-
-        // Step B — parallel ZSTD recompression, one task per group.
-        let combined_blobs: HashMap<i64, Vec<u8>> = new_deltas_per_group
-            .par_iter()
-            .map(|(group_id, new_raws)| {
-                let mut all_raws: Vec<Vec<u8>> = Vec::new();
-                if let Some(Some(blob)) = existing_blobs.get(group_id) {
-                    let existing_count =
-                        existing_counts.get(group_id).copied().unwrap_or(0) as usize;
-                    for idx in 0..existing_count {
-                        let raw = segment::extract_delta_from_batch(blob, idx)
-                            .expect("extract_delta_from_batch");
-                        all_raws.push(raw);
-                    }
-                }
-                all_raws.extend_from_slice(new_raws);
-                let blob = segment::batch_compress_deltas(&all_raws)
-                    .expect("batch_compress_deltas");
-                (*group_id, blob)
-            })
-            .collect();
-
-        // Step C — inside the transaction: fast UPDATE only (no ZSTD here).
-        for (group_id, combined_blob) in &combined_blobs {
-            tx.execute(
-                "UPDATE segment_group SET delta_blob = ?1 WHERE id = ?2",
-                params![combined_blob, group_id],
-            )?;
-        }
 
         tx.commit()?;
         eprintln!(
