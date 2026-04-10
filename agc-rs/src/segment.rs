@@ -1,5 +1,27 @@
+use std::cell::RefCell;
+
 use crate::error::{AgcError, Result};
 use crate::lz_diff::{LzDiff, LzVersion};
+
+// ---------------------------------------------------------------------------
+// Thread-local ZSTD compressor — one context per rayon worker thread.
+//
+// Allocating a fresh ZSTD_CCtx (~1–8 MB) per `encode_all` call at level 19
+// was triggering hundreds of millions of minor page faults when 50 000+
+// segments were compressed concurrently (reference path).  Re-using a single
+// context per thread cuts allocator pressure to O(n_threads) instead of
+// O(n_segments).
+//
+// Compression level 9 gives a good size/speed tradeoff and matches the level
+// commonly used in C++ AGC.  Level 19 has diminishing size returns but is
+// orders of magnitude slower.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static ZSTD_CTX: RefCell<zstd::bulk::Compressor<'static>> = RefCell::new(
+        zstd::bulk::Compressor::new(9).expect("zstd compressor init"),
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Compression parameters
@@ -35,9 +57,16 @@ impl Default for Params {
 /// ZSTD-compress a 2-bit encoded reference sequence for storage in the
 /// `segment_group.ref_data` column.
 ///
-/// Compression level 13 is used for a good size/speed tradeoff.
+/// Uses a thread-local compressor context (level 9) so that each rayon
+/// worker thread reuses one ZSTD_CCtx across all segments it processes,
+/// avoiding the per-call context allocation overhead that causes page-fault
+/// pressure when tens of thousands of segments are compressed in parallel.
 pub fn compress_reference(reference: &[u8]) -> Result<Vec<u8>> {
-    zstd::encode_all(reference, 19).map_err(|e| AgcError::Zstd(e.to_string()))
+    ZSTD_CTX.with(|ctx| {
+        ctx.borrow_mut()
+            .compress(reference)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 /// Decompress a `ref_data` BLOB back to its 2-bit encoded sequence.
@@ -90,7 +119,11 @@ pub fn batch_compress_deltas(raw_deltas: &[Vec<u8>]) -> Result<Vec<u8>> {
         buf.extend_from_slice(&(d.len() as u32).to_le_bytes());
         buf.extend_from_slice(d);
     }
-    zstd::encode_all(buf.as_slice(), 19).map_err(|e| AgcError::Zstd(e.to_string()))
+    ZSTD_CTX.with(|ctx| {
+        ctx.borrow_mut()
+            .compress(buf.as_slice())
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 /// ZSTD-decompress a `delta_blob` and return the raw LZ-diff bytes at
