@@ -10,7 +10,10 @@
 #   5. Deletes the local .fa.gz immediately after a successful add
 #
 # Usage:
-#   bash scripts/build_hprc_r2_agcrs.sh <archive.agcrs> [agc-rs-bin] [work-dir]
+#   bash scripts/build_hprc_r2_agcrs.sh [--test] <archive.agcrs> [agc-rs-bin] [work-dir]
+#
+# Options:
+#   --test         Process only the first 10 haplotypes (quick smoke test)
 #
 # Arguments:
 #   archive.agcrs  — output archive path (created on first run, appended thereafter)
@@ -22,7 +25,13 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Arguments
 # ---------------------------------------------------------------------------
-ARCHIVE="${1:?usage: $0 <archive.agcrs> [agc-rs-binary] [work-dir]}"
+TEST_MODE=0
+if [[ "${1:-}" == "--test" ]]; then
+    TEST_MODE=1
+    shift
+fi
+
+ARCHIVE="${1:?usage: $0 [--test] <archive.agcrs> [agc-rs-binary] [work-dir]}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGC_RS="${2:-${SCRIPT_DIR}/../target/release/agc-rs}"
@@ -32,6 +41,10 @@ if [[ ! -x "$AGC_RS" ]]; then
     echo "ERROR: agc-rs binary not found at $AGC_RS" >&2
     echo "       Build with: cargo build -p agc-rs --release" >&2
     exit 1
+fi
+
+if (( TEST_MODE )); then
+    echo "[TEST MODE] limiting to first 10 haplotypes"
 fi
 
 # S3 → HTTPS base for the public human-pangenomics bucket
@@ -56,7 +69,8 @@ fi
 # Sort by sample_id so pat/mat pairs are adjacent (better delta compression).
 # ---------------------------------------------------------------------------
 WORK_LIST="${WORK_DIR}/work_list.tsv"
-python3 - "$CSV_FILE" "$WORK_LIST" "$S3_HTTP_BASE" <<'PYEOF'
+HAP_LIMIT=$(( TEST_MODE ? 10 : 0 ))
+python3 - "$CSV_FILE" "$WORK_LIST" "$S3_HTTP_BASE" "$HAP_LIMIT" <<'PYEOF'
 import csv, sys
 
 csv_path, out_path, http_base = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -97,6 +111,11 @@ with open(csv_path, newline="") as f:
 
 # Sort by sample_id then hap so pat/mat pairs are adjacent
 rows.sort(key=lambda r: (r[0], r[1]))
+
+import sys as _sys
+limit = int(_sys.argv[4]) if len(_sys.argv) > 4 else 0
+if limit:
+    rows = rows[:limit]
 
 with open(out_path, "w") as out:
     for _, _, sample_name, http_url in rows:
