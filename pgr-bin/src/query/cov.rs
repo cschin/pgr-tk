@@ -1,7 +1,6 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
 
 //use std::path::PathBuf;
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 
 use pgr_db::ext::{pair_shmmrs, sequence_to_shmmrs, SeqIndexDB, ShmmrSpec};
 use rayon::prelude::*;
@@ -14,35 +13,33 @@ use std::{
 
 /// Compare SHIMMER pair count in two input sequence files
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-compare-cov")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// option to process data from pre-build AGC backed index
     #[clap(long, short)]
-    agc_idx_prefix: Option<String>,
+    pub agc_idx_prefix: Option<String>,
     /// the path to the file contains the paths to the first set of sequence
-    filepath0: String,
+    pub filepath0: String,
     /// the path to the file contains the paths to the seconde set of sequence
-    filepath1: String,
+    pub filepath1: String,
     /// output prefix
     #[clap(long, short)]
-    prefix: String,
+    pub prefix: String,
     /// minimizer window size
     #[clap(long, short, default_value_t = 80)]
-    w: u32,
+    pub w: u32,
     /// minimizer k-mer size
     #[clap(long, short, default_value_t = 56)]
-    k: u32,
+    pub k: u32,
     /// sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 4)]
-    r: u32,
+    pub r: u32,
     /// min span for neighboring minimiers
     #[clap(long, short, default_value_t = 64)]
-    min_span: u32,
+    pub min_span: u32,
     /// coverage threshold
     #[clap(long, short, default_value_t = 2.0)]
-    threshold: f32,
+    pub threshold: f32,
 }
 
 fn filter_and_group_regions(
@@ -131,7 +128,7 @@ fn output_cov_bed(
     });
 }
 
-fn generate_bed_graph_from_fastx_files(args: &CmdOptions) {
+fn generate_bed_graph_from_fastx_files(args: &Args) {
     let shmmr_spec = ShmmrSpec {
         w: args.w,
         k: args.k,
@@ -300,7 +297,7 @@ fn generate_bed_graph_from_fastx_files(args: &CmdOptions) {
     });
 }
 
-fn generate_bed_graph_from_sdb(args: &CmdOptions) {
+fn generate_bed_graph_from_sdb(args: &Args) {
     let mut seq_index_db = SeqIndexDB::new();
     seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
         .expect("failed to load AGC index");
@@ -481,9 +478,7 @@ fn generate_bed_graph_from_sdb(args: &CmdOptions) {
     });
 }
 
-fn main() {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) {
     if let Some(_agc_idx_prefix) = args.agc_idx_prefix.clone() {
         generate_bed_graph_from_sdb(&args);
     } else {

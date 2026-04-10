@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use kodama::{linkage, Method};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -8,16 +7,14 @@ use std::{fs::File, path};
 
 /// Generate alignment scores between sequences using bundle decomposition from a principal bundle bed file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-pbundle-bed2dist")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the path to the principal bundle bed file
     #[clap(long, short)]
-    idx_file_path: String,
+    pub idx_file_path: String,
     /// the prefix of the output file
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
 }
 
 type Smps = Vec<(String, u32, u32, u8)>; // shmmr_string, bgn, end, orientation
@@ -131,9 +128,7 @@ type Contigs = FxHashMap<u32, (String, String, u32)>; // contig_id -> contig_nam
 type FragMap = FxHashMap<String, (u32, u32, u32, u8)>; // shmmr string -> seq_id, bgn, end, orientation
 type CtgToFrags = FxHashMap<String, Smps>; // contig_id -> shmmr_string, bgn, end, orientation
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
     let shmmr_idx_filename = path::Path::new(&args.idx_file_path);
     let shmmr_idx_file =
         BufReader::new(File::open(shmmr_idx_filename).expect("can't open the bed file"));

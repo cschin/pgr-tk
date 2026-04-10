@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use pgr_db::ext::{get_fastx_reader, GZFastaReader, SeqIndexDB};
 use pgr_db::fasta_io::SeqRec;
 use rayon::prelude::*;
@@ -11,79 +10,75 @@ use std::path::Path;
 /// Query a PGR-TK pangenome sequence database,
 /// output the hit summary and generate fasta files from the target sequences
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-query")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the prefix to a PGR-TK sequence database
     #[clap(long, short)]
-    pgr_db_prefix: String,
+    pub pgr_db_prefix: String,
     /// the path to the query fasta file
     #[clap(long, short)]
-    query_fastx_path: String,
+    pub query_fastx_path: String,
     /// the prefix of the output file
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
 
     #[clap(long, default_value_t = false)]
-    fastx_file: bool,
+    pub fastx_file: bool,
 
     #[clap(long, short, default_value_t = 80)]
-    w: u32,
+    pub w: u32,
     /// minimizer k-mer size
     #[clap(long, short, default_value_t = 56)]
-    k: u32,
+    pub k: u32,
     /// sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 4)]
-    r: u32,
+    pub r: u32,
     /// min span for neighboring minimizers
     #[clap(long, short, default_value_t = 64)]
-    min_span: u32,
+    pub min_span: u32,
 
     /// the gap penalty factor for sparse alignments in the SHIMMER space
     #[clap(long, short, default_value_t = 0.025)]
-    gap_penalty_factor: f32,
+    pub gap_penalty_factor: f32,
 
     /// merge hits with the specified distance
     #[clap(long, short = 'M', default_value_t = 100000)]
-    merge_range_tol: usize,
+    pub merge_range_tol: usize,
 
     /// the max count of SHIMMER used for the sparse alignment
     #[clap(long, default_value_t = 128)]
-    max_count: u32,
+    pub max_count: u32,
 
     /// the max count of SHIMMER in the query sequences used for the sparse alignment
     #[clap(long, default_value_t = 128)]
-    max_query_count: u32,
+    pub max_query_count: u32,
 
     /// the max count of SHIMMER in the targets sequences used for the sparse alignment
     #[clap(long, default_value_t = 128)]
-    max_target_count: u32,
+    pub max_target_count: u32,
 
     /// the span of the chain for building the sparse alignment directed acyclic graph
     #[clap(long, default_value_t = 8)]
-    max_aln_chain_span: u32,
+    pub max_aln_chain_span: u32,
 
     /// option only to output summaries
     #[clap(long, default_value_t = false)]
-    only_summary: bool,
+    pub only_summary: bool,
 
     /// output summaries in the bed format
     #[clap(long, default_value_t = false)]
-    bed_summary: bool,
+    pub bed_summary: bool,
 
     /// minimum number of alignment anchors required to report a hit (default 2)
     #[clap(long, default_value_t = 2)]
-    min_anchor_count: usize,
+    pub min_anchor_count: usize,
 
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)

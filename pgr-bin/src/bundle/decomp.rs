@@ -1,6 +1,5 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
 use bincode::config;
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use pgr_db::ext::{
     get_principal_bundle_decomposition, PrincipalBundlesWithId, SeqIndexDB, VertexToBundleIdMap,
 };
@@ -14,49 +13,47 @@ use std::{
 
 /// Generate the principal bundle decomposition though MAP Graph from a fasta file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-pbundle-decomp")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the path to the input fasta file for building the principal bundles
     #[clap(long, short)]
-    fastx_path: String,
+    pub fastx_path: String,
     /// the prefix of the output files
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
     /// if specified, we will use file in <PRECOMPUTED_BUNDLES> for the principal bundle data, this overrides computing bundles from <FASTX_PATH>
     #[clap(long, short, default_value = None)]
-    precomputed_bundles: Option<String>,
+    pub precomputed_bundles: Option<String>,
     /// the path to the file that contains a list of contig name in the <FASTX_PATH> to be analyzed
     #[clap(long, short, default_value = None)]
-    include: Option<String>,
+    pub include: Option<String>,
     /// the path to the fasta file for principal bundle decomposition. if not specified, using the same one from from <FASTX_PATH>
     #[clap(long, short, default_value = None)]
-    decomp_fastx_path: Option<String>,
+    pub decomp_fastx_path: Option<String>,
     /// the SHIMMER parameter w
     #[clap(short, default_value_t = 48)]
-    w: u32,
+    pub w: u32,
     /// the SHIMMER parameter k
     #[clap(short, default_value_t = 56)]
-    k: u32,
+    pub k: u32,
     /// the SHIMMER parameter r
     #[clap(short, default_value_t = 4)]
-    r: u32,
+    pub r: u32,
     /// the SHIMMER parameter minimum span length
     #[clap(long, default_value_t = 12)]
-    min_span: u32,
+    pub min_span: u32,
     /// vertex minimum coverage in MAP-graph to be included in principal bundles
     #[clap(long, default_value_t = 0)]
-    min_cov: usize,
+    pub min_cov: usize,
     /// the minimum branch length in MAP-graph to be included in the principal bundles
     #[clap(long, default_value_t = 8)]
-    min_branch_size: usize,
+    pub min_branch_size: usize,
     /// the minimum local project bundle size to includes
     #[clap(long, default_value_t = 2500)]
-    bundle_length_cutoff: usize,
+    pub bundle_length_cutoff: usize,
     /// merge two bundles with the same id with the specified length
     #[clap(long, default_value_t = 10000)]
-    bundle_merge_distance: usize,
+    pub bundle_merge_distance: usize,
 }
 
 #[allow(clippy::type_complexity)]
@@ -138,9 +135,8 @@ fn group_smps_by_principle_bundle_id(
     rtn_partitions
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let mut args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
+    let mut args = Args::parse();
     let cmd_string = std::env::args().collect::<Vec<String>>().join(" ");
     let fastx_path = args.fastx_path.clone();
     let mut seq_index_db = SeqIndexDB::new();

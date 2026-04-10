@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use pgr_db::ext::SeqIndexDB;
 use pgr_db::fasta_io;
 use std::fs::File;
@@ -8,30 +7,26 @@ use std::path::Path;
 
 /// List or fetch sequences from a PGR-TK database
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-fetch-seqs")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the prefix to a PGR-TK sequence database
     #[clap(long, short)]
-    pgr_db_prefix: String,
+    pub pgr_db_prefix: String,
 
     /// the regions file path
     #[clap(short, long, default_value=None)]
-    region_file: Option<String>,
+    pub region_file: Option<String>,
 
     /// output file name
     #[clap(short, long, default_value=None)]
-    output_file: Option<String>,
+    pub output_file: Option<String>,
 
     /// list all sequence source, contig names in the database
     #[clap(long, default_value_t = false)]
-    list: bool,
+    pub list: bool,
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     let mut seq_index_db = SeqIndexDB::new();
 

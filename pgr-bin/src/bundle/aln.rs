@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use rustc_hash::FxHashMap;
 use serde::*;
 use serde_json::json;
@@ -9,19 +8,17 @@ use std::{fs::File, path};
 
 /// Generate alignment between sequences using bundle decomposition from a principal bundle bed file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-pbundle-aln")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the path to the principal bundle bed file
     #[clap(long, short)]
-    bed_file_path: String,
+    pub bed_file_path: String,
     /// a file contain two lines of the contig ids that should be aligned to each other
     #[clap(long, short)]
-    aln_spec: String,
+    pub aln_spec: String,
     /// the prefix of the output file
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Serialize, Deserialize)]
@@ -166,9 +163,7 @@ fn align_bundles(
     )
 }
 
-fn main() -> std::result::Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> std::result::Result<(), std::io::Error> {
     let bed_file_path = path::Path::new(&args.bed_file_path);
     let bed_file = BufReader::new(File::open(bed_file_path).expect("can't open the bed file"));
     let mut ctg_data = FxHashMap::<String, Vec<_>>::default();

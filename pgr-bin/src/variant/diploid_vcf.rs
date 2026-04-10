@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use iset::set::IntervalSet;
 // use rayon::prelude::*;
 use rusqlite::Connection;
@@ -10,26 +9,24 @@ use std::path::Path;
 
 /// Generate diploid VCF field from paired alnmap file from two haplotype assembly
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-generate-diploid-vcf")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the first haplotype alnmap or alndb file
-    hap0_path: String,
+    pub hap0_path: String,
     /// path to the second haplotype alnmap or alndb file
-    hap1_path: String,
+    pub hap1_path: String,
     /// the prefix of the output files
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
     /// path to target_len.json (required when using .alnmap input; inferred from .alndb)
     #[clap(long)]
-    target_len_json: Option<String>,
+    pub target_len_json: Option<String>,
     /// the sample name in the VCF
     #[clap(long, default_value = "Sample")]
-    sample_name: String,
+    pub sample_name: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 }
 
 type TargetSeqLength = Vec<(u32, String, u32)>;
@@ -204,9 +201,7 @@ fn get_variant_recs_from_alnmap(
     (variant_records, aln_blocks, unique_aln_blocks)
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)

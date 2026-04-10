@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use kodama::{linkage, Method};
 use rustc_hash::FxHashMap;
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -8,19 +7,17 @@ use std::{fs::File, path};
 
 /// Generate alignment scores between sequences using bundle decomposition from a principal bundle bed file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-pbundle-bed2dist")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the path to the principal bundle bed file
     #[clap(long, short)]
-    bed_file_path: String,
+    pub bed_file_path: String,
     /// the prefix of the output file
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
     /// using local alignment
     #[clap(long, short, default_value_t = false)]
-    local_aln: bool,
+    pub local_aln: bool,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
@@ -165,9 +162,7 @@ fn align_bundles(
     (diff, diff_len, max_len, best_score, offset)
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
     let bed_file_path = path::Path::new(&args.bed_file_path);
     let bed_file = BufReader::new(File::open(bed_file_path).expect("can't open the bed file"));
     let mut ctg_data = FxHashMap::<String, Vec<_>>::default();

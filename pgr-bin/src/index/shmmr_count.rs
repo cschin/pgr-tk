@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::fs::File;
@@ -15,39 +14,37 @@ enum GZFastaReader {
 
 /// List or fetch sequences from a PGR-TK database
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-shmmr-count")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// the target fasta file path, for example a reference or assembled contigs
     #[clap(long, short = 't')]
-    shmmr_target_fastx: String,
+    pub shmmr_target_fastx: String,
 
     /// ref_fasta, used for the reference coordinate system
     #[clap(long, short = 'R')]
-    ref_fastx: String,
+    pub ref_fastx: String,
 
     /// read_fasta
     #[clap(long)]
-    read_fastx: String,
+    pub read_fastx: String,
 
     /// output file name, we will compute the count comparing to the count from shmmr_target_fastx
     #[clap(short, long, default_value=None)]
-    output_file: Option<String>,
+    pub output_file: Option<String>,
 
     /// minimizer window size
     #[clap(long, short, default_value_t = 80)]
-    w: u32,
+    pub w: u32,
     /// minimizer k-mer size
     #[clap(long, short, default_value_t = 56)]
-    k: u32,
+    pub k: u32,
     /// sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 1)]
-    r: u32,
+    pub r: u32,
 
     /// min span for neighboring minimiers
     #[clap(long, short, default_value_t = 8)]
-    min_span: u32,
+    pub min_span: u32,
 }
 
 fn get_fastx_reader(filepath: String) -> Result<GZFastaReader, std::io::Error> {
@@ -86,9 +83,7 @@ fn get_fastx_reader(filepath: String) -> Result<GZFastaReader, std::io::Error> {
     }
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     let mut shmmr_count = FxHashMap::<u64, (usize, usize)>::default();
 

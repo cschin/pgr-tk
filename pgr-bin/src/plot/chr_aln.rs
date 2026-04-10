@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use rusqlite::Connection;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
@@ -44,42 +43,40 @@ struct CytoBands {
 
 /// generate align block plot from ctgmap.json file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-generate-chr-aln-plot")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
 
-struct CmdOptions {
+pub struct Args {
     /// path to a ctgmap.json file
     #[clap(long, short)]
-    ctgmap_json_path: String,
+    pub ctgmap_json_path: String,
 
     /// the prefix of the output files
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
 
     /// if given, we will use this to determine the plot scale, this is useful for generate many plot in the same scale
     #[clap(long)]
-    total_target_bases: Option<f64>,
+    pub total_target_bases: Option<f64>,
 
     /// set the panel width
     #[clap(long, default_value_t = 1400.0)]
-    panel_width: f64,
+    pub panel_width: f64,
 
     /// draw the reference track with cytoband
     #[clap(long)]
-    cytoband_json: Option<String>,
+    pub cytoband_json: Option<String>,
 
     /// if given, we will only generate plot for the specified contig in the reference
     #[clap(long)]
-    ctg: Option<String>,
+    pub ctg: Option<String>,
 
     /// if given, it will highlight regions specified by the bed file in the reference(target) track
     #[clap(long)]
-    ref_annotation_bed: Option<String>,
+    pub ref_annotation_bed: Option<String>,
 
     /// generate SVG instead of HTML
     #[clap(long)]
-    svg: bool,
+    pub svg: bool,
 }
 
 static CMAP: [&str; 97] = [
@@ -166,9 +163,7 @@ fn load_ctgmap_from_db(db_path: &str) -> CtgMapSet {
     }
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     let mut ctgmap_set: CtgMapSet = if args.ctgmap_json_path.ends_with(".alndb") {
         load_ctgmap_from_db(&args.ctgmap_json_path)

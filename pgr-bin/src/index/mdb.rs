@@ -1,38 +1,35 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
 
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use pgr_db::agc_io::AGCFile;
 use pgr_db::seq_db;
 use std::path::Path;
 
 /// Create a pgr minimizer database (.mdbi/.mdbv/.midx) from a single AGC archive
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-mdb")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// output file prefix (produces <prefix>.mdbi, <prefix>.mdbv, <prefix>.midx);
     /// defaults to the stem of --agcrs-input (e.g. "foo" for "foo.agcrs")
     #[clap(long)]
-    prefix: Option<String>,
+    pub prefix: Option<String>,
     /// path to the AGC archive (.agcrs)
     #[clap(long)]
-    agcrs_input: String,
+    pub agcrs_input: String,
     /// minimizer window size
     #[clap(long, short, default_value_t = 80)]
-    w: u32,
+    pub w: u32,
     /// minimizer k-mer size
     #[clap(long, short, default_value_t = 56)]
-    k: u32,
+    pub k: u32,
     /// sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 4)]
-    r: u32,
+    pub r: u32,
     /// min span for neighboring minimizers
     #[clap(long, short, default_value_t = 64)]
-    min_span: u32,
+    pub min_span: u32,
     /// use sketch k-mer instead of minimizer
     #[clap(short, long)]
-    sketch: bool,
+    pub sketch: bool,
     /// number of whole samples (haplotypes) to process per batch.
     ///
     /// Reduces peak memory by decompressing and indexing one group of haplotypes
@@ -41,12 +38,10 @@ struct CmdOptions {
     /// (vs. >300 GB).  Use 0 to process the entire archive at once (legacy
     /// behaviour, no sharding).
     #[clap(long, default_value_t = 16)]
-    batch_size: usize,
+    pub batch_size: usize,
 }
 
-fn main() {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) {
 
     let shmmr_spec = pgr_db::shmmrutils::ShmmrSpec {
         w: args.w,

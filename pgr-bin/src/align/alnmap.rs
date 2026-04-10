@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use iset::set::IntervalSet;
 use pgr_db::aln;
 use pgr_db::ext::{get_fastx_reader, GZFastaReader, SeqIndexDB};
@@ -23,65 +22,63 @@ enum OptPreset {
 
 /// Align long contigs and identify potential SV regions with respect to the reference fasta file
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-alnmap")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the reference fasta file
     #[clap(long, short = 'R')]
-    reference_fasta_path: String,
+    pub reference_fasta_path: String,
 
     /// the path to the query assembly contig file
     #[clap(long, short)]
-    assembly_contig_path: String,
+    pub assembly_contig_path: String,
 
     /// the prefix of the output files
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
 
     /// use preset parameters ( (w,k,r,min_span,max_sw_aln_size) = (80, 55, 4, 64, 1024) for fast, (48, 55, 2, 16, 32864) for detail)
     #[clap(long, default_value_t, value_enum)]
-    preset: OptPreset,
+    pub preset: OptPreset,
 
     ///number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 
     /// overwrite the preset, minimizer window size: w 
     #[clap(long, short, default_value_t = 48)]
-    w: u32,
+    pub w: u32,
 
     /// overwrite the preset, minimizer k-mer size
     #[clap(long, short, default_value_t = 55)]
-    k: u32,
+    pub k: u32,
 
     /// overwrite the preset, sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 2)]
-    r: u32,
+    pub r: u32,
 
     /// overwrite the preset, min span for neighboring minimizers
     #[clap(long, short, default_value_t = 16)]
-    min_span: u32,
+    pub min_span: u32,
 
     /// overwrite the preset, max size to do SW for calling structure variants
     #[clap(long, short, default_value_t = 1024)]
-    max_sw_aln_size: u32,
+    pub max_sw_aln_size: u32,
 
     /// the gap penalty factor for sparse alignments in the SHIMMER space
     #[clap(long, default_value_t = 0.025)]
-    gap_penalty_factor: f32,
+    pub gap_penalty_factor: f32,
 
     /// the max gap length allowed in the alignment blocks
     #[clap(long, default_value_t = 100000)]
-    max_gap: u32,
+    pub max_gap: u32,
 
     /// the span of the chain for building the sparse alignment directed acyclic graph
     #[clap(long, default_value_t = 8)]
-    max_aln_chain_span: u32,
+    pub max_aln_chain_span: u32,
 
     /// if specified, generate fasta files for the sequence covering the SV candidates
     #[clap(long, short, default_value_t = false)]
-    skip_uncalled_sv_seq_file: bool,
+    pub skip_uncalled_sv_seq_file: bool,
 }
 
 struct Parameters {
@@ -323,9 +320,7 @@ fn filter_aln_rev(aln_segs: &AlignSegments) -> Vec<((u32, u32), (u32, u32))> {
     rtn
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)

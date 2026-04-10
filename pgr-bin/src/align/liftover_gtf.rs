@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use flate2::bufread::MultiGzDecoder;
 use iset::IntervalMap;
 use rusqlite::Connection;
@@ -19,37 +18,35 @@ use pgr_db::fasta_io::reverse_complement;
 ///
 /// Output: one TSV line per successfully lifted transcript (BED12-like with extra columns).
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-liftover-gtf")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the alndb file (reference → haplotype contig alignment)
     #[clap(long, short)]
-    alndb_path: String,
+    pub alndb_path: String,
 
     /// path to the GTF annotation file (plain or gzip-compressed)
     #[clap(long, short)]
-    gtf_path: String,
+    pub gtf_path: String,
 
     /// path for the output SQLite database
     #[clap(long, short)]
-    output_db: String,
+    pub output_db: String,
 
     /// minimum fraction [0.0–1.0] of exon bases that must be covered by M-blocks on
     /// a single contig for the transcript to be reported
     #[clap(long, default_value_t = 0.5)]
-    min_coverage: f64,
+    pub min_coverage: f64,
 
     /// strip this prefix string from target chromosome names in the alndb before
     /// matching against GTF chromosome names (e.g. "GRCh38#0#" to convert PanSN
     /// names to plain chromosome names).  Leave unset to use names as-is.
     #[clap(long)]
-    target_chr_prefix: Option<String>,
+    pub target_chr_prefix: Option<String>,
 
     /// coverage threshold [0.0–1.0] above which a single hit is classified as
     /// "full" rather than "partial" in the anomaly summary (default 0.9)
     #[clap(long, default_value_t = 0.9)]
-    full_coverage: f64,
+    pub full_coverage: f64,
 
     /// path to the reference FASTA file (plain or .gz) containing the sequences
     /// used as the alignment target (e.g. GRCh38).  When provided together with
@@ -57,12 +54,12 @@ struct CmdOptions {
     /// <output>.ref_tx.fa / <output>.contig_tx.fa / <output>.hq_contig_tx.fa
     /// and stored in the ref_sequences / contig_sequences tables.
     #[clap(long)]
-    ref_fa: Option<String>,
+    pub ref_fa: Option<String>,
 
     /// path to the haplotype FASTA file (plain or .gz) containing the query
     /// contig sequences (e.g. hg002_hap0).
     #[clap(long)]
-    query_fa: Option<String>,
+    pub query_fa: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -764,9 +761,7 @@ fn write_gtf_records(
 // Main
 // ---------------------------------------------------------------------------
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     // Load alignment blocks from alndb
     let target_intervals =

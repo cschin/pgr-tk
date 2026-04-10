@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 // use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::fs::File;
@@ -9,25 +8,21 @@ use std::path::Path;
 /// Merge svcnd from multiple *.svcnd.bed files into one and compute the merged regions
 /// It is useful to identify unique bed regions to one specific haplotype
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-merge-svcnd-bed")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the file contain the input bed files, each line should be "label<tab>input file path"
     #[clap(long, short)]
-    input_files: String,
+    pub input_files: String,
     /// the path of the output files
     #[clap(long, short)]
-    output_path: String,
+    pub output_path: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 }
 
 type Interval = ((u32, u32), (String, String));
-fn main() {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)

@@ -1,7 +1,6 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
 
 //use std::path::PathBuf;
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 
 use pgr_db::ext::{pair_shmmrs, sequence_to_shmmrs, SeqIndexDB};
 use pgr_db::seq_db::{get_shmmr_matches_from_mmap_file, ShmmrPair};
@@ -15,19 +14,17 @@ use std::{
 
 /// Compare SHIMMER pair count in two input sequence files
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-compare-cov2")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// option to process data from pre-build AGC backed index
     #[clap(long, short)]
-    agc_idx_prefix: Option<String>,
+    pub agc_idx_prefix: Option<String>,
     /// the path to the file contains the paths to the first set of sequence
     #[clap(long, short)]
-    input: String,
+    pub input: String,
     /// coverage threshold
     #[clap(long, short, default_value_t = 2.0)]
-    threshold: f32,
+    pub threshold: f32,
 }
 
 fn filter_and_group_regions(
@@ -117,7 +114,7 @@ fn output_cov_bed(
     });
 }
 
-fn generate_bed_graph_from_sdb(args: &CmdOptions) {
+fn generate_bed_graph_from_sdb(args: &Args) {
     let mut seq_index_db = SeqIndexDB::new();
 
     seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
@@ -305,9 +302,7 @@ fn generate_bed_graph_from_sdb(args: &CmdOptions) {
         });
 }
 
-fn main() {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) {
     if let Some(_agc_idx_prefix) = args.agc_idx_prefix.clone() {
         generate_bed_graph_from_sdb(&args);
     } else {

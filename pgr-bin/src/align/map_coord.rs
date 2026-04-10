@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 use iset::IntervalMap;
 use pgr_db::aln::{wfa_align_bases, aln_pair_map};
 // use rayon::prelude::*;
@@ -79,35 +78,31 @@ fn get_aln_blocks_from_db(db_path: &str) -> FxHashMap<u32, Vec<ShimmerMatchBlock
 /// given an alnmap or alndb file, two sequence files and a list of coordinates in the query sequence,
 /// map those coordinates in the target sequence according to the alnmap
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-map-coordinate")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the alnmap or alndb file
     #[clap(long, short)]
-    alnmap_path: String,
+    pub alnmap_path: String,
     /// path to the target fasta file
     #[clap(long, short)]
-    target_fasta_path: String,
+    pub target_fasta_path: String,
     /// the path to the query fasta file
     #[clap(long, short)]
-    query_fasta_path: String,
+    pub query_fasta_path: String,
     /// path to query coordinate file
     #[clap(long, short)]
-    coorindate_file_path: String,
+    pub coorindate_file_path: String,
     /// the prefix of the output files
     #[clap(long, short)]
-    output_path: String,
+    pub output_path: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 }
 
 type ShimmerMatchBlock = (String, u32, u32, String, u32, u32, u32, String);
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)

@@ -1,5 +1,4 @@
-const VERSION_STRING: &str = env!("VERSION_STRING");
-use clap::{self, CommandFactory, Parser};
+use clap::{self, Parser};
 // use rayon::prelude::*;
 use pgr_db::aln;
 use pgr_db::ext::{get_principal_bundle_decomposition, SeqIndexDB};
@@ -11,25 +10,23 @@ use std::path::Path;
 
 /// perform structural variation principle bundle decomposition
 #[derive(Parser, Debug)]
-#[clap(name = "pgr-generate-sv-analysis")]
-#[clap(author, version)]
 #[clap(about, long_about = None)]
-struct CmdOptions {
+pub struct Args {
     /// path to the data file containing the reference and query sequence of SV candidates
     #[clap(long, short)]
-    sv_candidate_seq_path: String,
+    pub sv_candidate_seq_path: String,
     /// the prefix of the output files
     #[clap(long, short)]
-    output_prefix: String,
+    pub output_prefix: String,
     /// the prefix of the output files
     #[clap(long, default_value = "Sample")]
-    sample_name: String,
+    pub sample_name: String,
     /// set the flag to generate long indel calls, but it might break some VCF file parsing
     #[clap(long, default_value_t = false)]
-    large_indel_call: bool,
+    pub large_indel_call: bool,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
-    number_of_thread: usize,
+    pub number_of_thread: usize,
 }
 
 #[derive(Debug)]
@@ -450,7 +447,7 @@ fn aln_segments(
     rec: &CandidateRecord,
     target_bundle_path: &str,
     query_bundle_path: &str,
-    _args: &CmdOptions,
+    _args: &Args,
 ) -> Vec<Record> {
     let target_name = &rec.target_name;
     let query_name = &rec.query_name;
@@ -491,7 +488,7 @@ fn aln_segments(
     )
 }
 
-fn get_aln_block_records(rec: &CandidateRecord, args: &CmdOptions) -> Vec<Vec<Record>> {
+fn get_aln_block_records(rec: &CandidateRecord, args: &Args) -> Vec<Vec<Record>> {
     // use the quick block aligner if the lengths of both sequences < 16384
     // The alignment quality is not good for some repetitive cases (e.g. chr1:22,577,893-22,579,681)
     // disable it for now
@@ -738,9 +735,7 @@ fn get_aln_block_records(rec: &CandidateRecord, args: &CmdOptions) -> Vec<Vec<Re
     aln_block_records
 }
 
-fn main() -> Result<(), std::io::Error> {
-    CmdOptions::command().version(VERSION_STRING).get_matches();
-    let args = CmdOptions::parse();
+pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
