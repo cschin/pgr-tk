@@ -142,7 +142,7 @@ impl SeqIndexDB {
             self.backend == Backend::FASTX,
             "Only DB created with load_from_fastx() can add data from another fastx file"
         );
-        let sdb = self.seq_db.as_mut().unwrap();
+        let sdb = self.seq_db.as_mut().expect("invariant: seq_db set after assert!(backend == FASTX)");
         sdb.load_seqs_from_fastx(filepath, to_upper_case)?;
         let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
         let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
@@ -157,7 +157,7 @@ impl SeqIndexDB {
 
     pub fn write_frag_and_index_files(&self, file_prefix: String) {
         if self.seq_db.is_some() {
-            let internal = self.seq_db.as_ref().unwrap();
+            let internal = self.seq_db.as_ref().expect("invariant: just checked is_some()");
 
             internal
                 .write_shmmr_map_index(file_prefix, None)
@@ -256,10 +256,8 @@ impl SeqIndexDB {
         let shmmr_spec = self.shmmr_spec.as_ref()?;
 
         let (frag_location_map, frag_map_file) = if self.backend == Backend::AGC {
-            (
-                &self.agc_db.as_ref().unwrap().frag_location_map,
-                &self.agc_db.as_ref().unwrap().frag_map_file,
-            )
+            let db = self.agc_db.as_ref().expect("invariant: agc_db set when backend is AGC");
+            (&db.frag_location_map, &db.frag_map_file)
         } else {
             panic!("needs AGC backend");
         };
@@ -296,16 +294,17 @@ impl SeqIndexDB {
                 end,
             )),
             Backend::MEMORY | Backend::FASTX => {
+                let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
                 let &(sid, _) = self
                     .seq_index
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_index set when backend is MEMORY or FASTX")
                     .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, not_found))?;
                 Ok(self
                     .seq_db
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_db set when backend is MEMORY or FASTX")
                     .get_sub_seq_by_id(sid, bgn as u32, end as u32))
             }
             Backend::UNKNOWN => Err(std::io::Error::new(
@@ -324,17 +323,18 @@ impl SeqIndexDB {
             Backend::AGC => Ok(self
                 .agc_db
                 .as_ref()
-                .unwrap()
+                .expect("invariant: agc_db set when backend is AGC")
                 .agc_file
                 .get_seq(sample_name, ctg_name)),
             Backend::MEMORY | Backend::FASTX => {
+                let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
                 let &(sid, _) = self
                     .seq_index
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_index set when backend is MEMORY or FASTX")
                     .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, not_found))?;
+                Ok(self.seq_db.as_ref().expect("invariant: seq_db set when backend is MEMORY or FASTX").get_seq_by_id(sid))
             }
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -346,18 +346,23 @@ impl SeqIndexDB {
     pub fn get_seq_by_id(&self, sid: u32) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
             Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                let (ctg_name, sample_name, _) = self
+                    .seq_info
+                    .as_ref()
+                    .expect("invariant: seq_info set when backend is AGC")
+                    .get(&sid)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("sequence id {sid} not found")))?;
                 let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
+                let sample_name = sample_name.as_ref().expect("invariant: sample_name set in seq_info").clone();
                 Ok(self
                     .agc_db
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: agc_db set when backend is AGC")
                     .agc_file
                     .get_seq(sample_name, ctg_name))
             }
             Backend::MEMORY | Backend::FASTX => {
-                Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
+                Ok(self.seq_db.as_ref().expect("invariant: seq_db set when backend is MEMORY or FASTX").get_seq_by_id(sid))
             }
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -374,10 +379,15 @@ impl SeqIndexDB {
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
             Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                let (ctg_name, sample_name, _) = self
+                    .seq_info
+                    .as_ref()
+                    .expect("invariant: seq_info set when backend is AGC")
+                    .get(&sid)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("sequence id {sid} not found")))?;
                 let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
-                Ok(self.agc_db.as_ref().unwrap().agc_file.get_sub_seq(
+                let sample_name = sample_name.as_ref().expect("invariant: sample_name set in seq_info").clone();
+                Ok(self.agc_db.as_ref().expect("invariant: agc_db set when backend is AGC").agc_file.get_sub_seq(
                     sample_name,
                     ctg_name,
                     bgn,
@@ -387,7 +397,7 @@ impl SeqIndexDB {
             Backend::MEMORY | Backend::FASTX => Ok(self
                 .seq_db
                 .as_ref()
-                .unwrap()
+                .expect("invariant: seq_db set when backend is MEMORY or FASTX")
                 .get_sub_seq_by_id(sid, bgn as u32, end as u32)),
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -476,8 +486,8 @@ impl SeqIndexDB {
             .iter()
             .map(|(sid, data)| {
                 let (ctg_name, source, _) = data;
-                let source = source.clone().unwrap();
-                let seq = self.get_seq(source, ctg_name.clone()).unwrap();
+                let source = source.clone().expect("invariant: source set in seq_info");
+                let seq = self.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
                 (*sid, self.get_smps(seq, self.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")))
             })
             .collect();
@@ -514,7 +524,7 @@ impl SeqIndexDB {
                     let sum: f32 = orders.iter().sum();
                     let mean_ord = sum / (orders.len() as f32);
                     let mean_ord = mean_ord as usize;
-                    let directions = bundle_id_to_directions.get(&bid).unwrap();
+                    let directions = bundle_id_to_directions.get(&bid).expect("invariant: bid in bundle_id_to_directions when also in bundle_id_to_orders");
                     let dir_sum = directions.iter().sum::<u32>() as usize;
                     let direction = if dir_sum < (directions.len() >> 1) {
                         0_u8
@@ -567,18 +577,22 @@ impl SeqIndexDB {
         let get_seq_by_id = |sid| -> Vec<u8> {
             match self.backend {
                 Backend::AGC => {
-                    let (ctg_name, sample_name, _) =
-                        self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                    let (ctg_name, sample_name, _) = self
+                        .seq_info
+                        .as_ref()
+                        .expect("invariant: seq_info set when backend is AGC")
+                        .get(&sid)
+                        .expect("invariant: sid in seq_info");
                     let ctg_name = ctg_name.clone();
-                    let sample_name = sample_name.as_ref().unwrap().clone();
+                    let sample_name = sample_name.as_ref().expect("invariant: sample_name set in seq_info").clone();
                     self.agc_db
                         .as_ref()
-                        .unwrap()
+                        .expect("invariant: agc_db set when backend is AGC")
                         .agc_file
                         .get_seq(sample_name, ctg_name)
                 }
-                Backend::MEMORY => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
-                Backend::FASTX => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
+                Backend::MEMORY => self.seq_db.as_ref().expect("invariant: seq_db set when backend is MEMORY").get_seq_by_id(sid),
+                Backend::FASTX => self.seq_db.as_ref().expect("invariant: seq_db set when backend is FASTX").get_seq_by_id(sid),
                 Backend::UNKNOWN => vec![],
             }
         };
@@ -595,7 +609,7 @@ impl SeqIndexDB {
         let mut frag_id = FxHashMap::<(u64, u64), usize>::default();
         let mut id = 0_usize;
 
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
 
         let adj_list = if method == "from_fragmap" {
             seq_db::frag_map_to_adj_list(frag_map, min_count, keeps)
@@ -604,7 +618,7 @@ impl SeqIndexDB {
 
             self.seq_info
                 .as_ref()
-                .unwrap()
+                .expect("invariant: seq_info set when frag_map is available")
                 .keys()
                 .copied()
                 .collect::<Vec<u32>>()
@@ -714,7 +728,7 @@ impl SeqIndexDB {
             )?;
         }
 
-        self.seq_info.as_ref().unwrap().iter().try_for_each(
+        self.seq_info.as_ref().expect("invariant: seq_info set when backend is loaded").iter().try_for_each(
             |(k, v)| -> Result<(), std::io::Error> {
                 let line = format!(
                     "C\t{}\t{}\t{}\t{}\n",
@@ -735,7 +749,7 @@ impl SeqIndexDB {
                 "fail to load index",
             ));
         };
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
         frag_map
             .iter()
             .try_for_each(|v| -> Result<(), std::io::Error> {
@@ -769,7 +783,7 @@ impl SeqIndexDB {
                 "can't load index",
             ));
         };
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
         let adj_list = seq_db::frag_map_to_adj_list(frag_map, min_count, keeps);
 
         // println!("DBG: adj_list len {:?}", adj_list.len());
@@ -876,8 +890,8 @@ impl SeqIndexDB {
     pub fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {
             Backend::AGC => None,
-            Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
-            Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),
+            Backend::FASTX => Some(&self.seq_db.as_ref().expect("invariant: seq_db set when backend is FASTX").frag_map),
+            Backend::MEMORY => Some(&self.seq_db.as_ref().expect("invariant: seq_db set when backend is MEMORY").frag_map),
             Backend::UNKNOWN => None,
         }
     }
@@ -894,8 +908,8 @@ pub fn get_principal_bundle_decomposition(
         .iter()
         .map(|(sid, data)| {
             let (ctg_name, source, _) = data;
-            let source = source.clone().unwrap();
-            let seq = seq_db.get_seq(source, ctg_name.clone()).unwrap();
+            let source = source.clone().expect("invariant: source set in seq_info");
+            let seq = seq_db.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
             (
                 *sid,
                 seq_db.get_smps(seq, seq_db.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")),
@@ -953,12 +967,12 @@ pub fn get_fastx_reader(
     if is_gzfile {
         drop(std_buf);
         Ok(GZFastaReader::GZFile(
-            FastaReader::new(gz_buf, &filepath, 256, false, to_upper_case).unwrap(),
+            FastaReader::new(gz_buf, &filepath, 256, false, to_upper_case)?,
         ))
     } else {
         drop(gz_buf);
         Ok(GZFastaReader::RegularFile(
-            FastaReader::new(std_buf, &filepath, 256, false, to_upper_case).unwrap(),
+            FastaReader::new(std_buf, &filepath, 256, false, to_upper_case)?,
         ))
     }
 }
