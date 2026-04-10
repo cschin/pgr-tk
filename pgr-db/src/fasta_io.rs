@@ -338,7 +338,7 @@ pub fn build(seq_list_file: &String, out_prefix: &String) -> Result<usize, io::E
     let seq_list_buf = BufReader::new(f);
 
     for fastx_file in seq_list_buf.lines() {
-        let input_fn = fastx_file.unwrap();
+        let input_fn = fastx_file?;
         log::info!("input file: {}", input_fn);
         let metadata = std::fs::metadata(&input_fn)?;
         if !metadata.is_file() || metadata.len() < (1 << 16) {
@@ -367,7 +367,7 @@ pub fn build(seq_list_file: &String, out_prefix: &String) -> Result<usize, io::E
             let fastx_buf = BufReader::new(MultiGzDecoder::new(&mut reader));
             let mut fastx_reader = FastaReader::new(fastx_buf, &input_fn, 1 << 14, true, true)?;
             while let Some(r) = fastx_reader.next_rec() {
-                let r = r.unwrap();
+                let r = r?;
                 if r.seq.len() < 500 {
                     //ignore very short reads
                     continue;
@@ -390,7 +390,7 @@ pub fn build(seq_list_file: &String, out_prefix: &String) -> Result<usize, io::E
         } else {
             let mut fastx_reader = FastaReader::new(reader, &input_fn, 1 << 14, true, true)?;
             while let Some(r) = fastx_reader.next_rec() {
-                let r = r.unwrap();
+                let r = r?;
                 if r.seq.len() < 500 {
                     //ignore very short reads
                     continue;

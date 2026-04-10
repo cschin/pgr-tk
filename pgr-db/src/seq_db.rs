@@ -450,12 +450,12 @@ impl CompactSeqDB {
         if is_gzfile {
             drop(std_buf);
             Ok(GZFastaReader::GZFile(
-                FastaReader::new(gz_buf, &filepath, 1 << 14, true, to_upper_case).unwrap(),
+                FastaReader::new(gz_buf, &filepath, 1 << 14, true, to_upper_case)?,
             ))
         } else {
             drop(gz_buf);
             Ok(GZFastaReader::RegularFile(
-                FastaReader::new(std_buf, &filepath, 1 << 14, true, to_upper_case).unwrap(),
+                FastaReader::new(std_buf, &filepath, 1 << 14, true, to_upper_case)?,
             ))
         }
     }
@@ -475,7 +475,10 @@ impl CompactSeqDB {
         all_shmmrs
     }
 
-    fn load_seq_from_reader(&mut self, reader: &mut dyn Iterator<Item = io::Result<SeqRec>>) {
+    fn load_seq_from_reader(
+        &mut self,
+        reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = self.seqs.len() as u32;
         if self.frags.is_none() {
@@ -489,7 +492,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source.clone();
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -509,6 +512,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_seqs_from_seq_vec(&mut self, seqs: &Vec<(u32, Option<String>, String, Vec<u8>)>) {
@@ -538,18 +542,23 @@ impl CompactSeqDB {
     ) -> Result<(), std::io::Error> {
         match self.get_fastx_reader(filepath, to_upper_case)? {
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
-            GZFastaReader::GZFile(reader) => self.load_seq_from_reader(&mut reader.into_iter()),
+            GZFastaReader::GZFile(reader) => {
+                self.load_seq_from_reader(&mut reader.into_iter())?
+            }
 
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
             GZFastaReader::RegularFile(reader) => {
-                self.load_seq_from_reader(&mut reader.into_iter())
+                self.load_seq_from_reader(&mut reader.into_iter())?
             }
         };
 
         Ok(())
     }
 
-    fn load_index_from_reader(&mut self, reader: &mut dyn Iterator<Item = io::Result<SeqRec>>) {
+    fn load_index_from_reader(
+        &mut self,
+        reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = 0;
         loop {
@@ -559,7 +568,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source;
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -579,6 +588,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_index_from_seq_vec(&mut self, seqs: &Vec<(u32, Option<String>, String, Vec<u8>)>) {
@@ -629,7 +639,7 @@ impl CompactSeqDB {
         &mut self,
         reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
         writer: &mut Vec<u8>,
-    ) {
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = 0;
         loop {
@@ -639,7 +649,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source;
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -668,6 +678,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_index_from_fastx(
@@ -677,11 +688,13 @@ impl CompactSeqDB {
     ) -> Result<(), std::io::Error> {
         match self.get_fastx_reader(filepath, to_upper_case)? {
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
-            GZFastaReader::GZFile(reader) => self.load_index_from_reader(&mut reader.into_iter()),
+            GZFastaReader::GZFile(reader) => {
+                self.load_index_from_reader(&mut reader.into_iter())?
+            }
 
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
             GZFastaReader::RegularFile(reader) => {
-                self.load_index_from_reader(&mut reader.into_iter())
+                self.load_index_from_reader(&mut reader.into_iter())?
             }
         };
 

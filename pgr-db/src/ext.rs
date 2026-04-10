@@ -73,10 +73,10 @@ impl SeqIndexDB {
     }
 
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix).unwrap();
+        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix)?;
         let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-        let f = File::open(format!("{prefix}.mdbv")).expect("mdbv open fail");
-        let frag_map_file = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
+        let f = File::open(format!("{prefix}.mdbv"))?;
+        let frag_map_file = unsafe { Mmap::map(&f)? };
         let shmmr_spec = spec;
 
         // Use the AGC archive path recorded in the index; fall back to the
@@ -647,7 +647,7 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath).unwrap());
+        let mut out_file = BufWriter::new(File::create(filepath)?);
 
         let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
         out_file
@@ -655,7 +655,7 @@ impl SeqIndexDB {
         frag_id
             .iter()
             .try_for_each(|(smp, id)| -> Result<(), std::io::Error> {
-                let hits = frag_map.get(smp).unwrap();
+                let hits = frag_map.get(smp).expect("invariant: smp in frag_map");
                 let ave_len =
                     hits.iter().fold(0_u32, |len_sum, &s| len_sum + s.3 - s.2) / hits.len() as u32;
                 let seg_line = format!(
@@ -674,8 +674,8 @@ impl SeqIndexDB {
             .try_for_each(|(op, vs)| -> Result<(), std::io::Error> {
                 let o1 = if op.0 .2 == 0 { "+" } else { "-" };
                 let o2 = if op.1 .2 == 0 { "+" } else { "-" };
-                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).unwrap();
-                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).unwrap();
+                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).expect("invariant: overlap node in frag_id");
+                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).expect("invariant: overlap node in frag_id");
                 let overlap_line = format!(
                     "L\t{}\t{}\t{}\t{}\t{}M\tSC:i:{}\n",
                     id0,
@@ -804,7 +804,7 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath).unwrap());
+        let mut out_file = BufWriter::new(File::create(filepath)?);
 
         let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
         out_file
@@ -812,7 +812,7 @@ impl SeqIndexDB {
         frag_id
             .iter()
             .try_for_each(|(smp, id)| -> Result<(), std::io::Error> {
-                let hits = frag_map.get(smp).unwrap();
+                let hits = frag_map.get(smp).expect("invariant: smp in frag_map");
                 let ave_len =
                     hits.iter().fold(0_u32, |len_sum, &s| len_sum + s.3 - s.2) / hits.len() as u32;
                 let seg_line;
@@ -844,8 +844,8 @@ impl SeqIndexDB {
             .try_for_each(|(op, vs)| -> Result<(), std::io::Error> {
                 let o1 = if op.0 .2 == 0 { "+" } else { "-" };
                 let o2 = if op.1 .2 == 0 { "+" } else { "-" };
-                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).unwrap();
-                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).unwrap();
+                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).expect("invariant: overlap node in frag_id");
+                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).expect("invariant: overlap node in frag_id");
                 let overlap_line = format!(
                     "L\t{}\t{}\t{}\t{}\t{}M\tSC:i:{}\n",
                     id0,
