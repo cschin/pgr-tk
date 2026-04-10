@@ -334,13 +334,15 @@ pub fn build(seq_list_file: &String, out_prefix: &String) -> Result<usize, io::E
     let mut seq_id = 0_u32;
 
     log::info!("get input files from: {}", seq_list_file);
-    let f = File::open(seq_list_file)?;
+    let f = File::open(seq_list_file)
+        .map_err(|e| io::Error::new(e.kind(), format!("{seq_list_file}: {e}")))?;
     let seq_list_buf = BufReader::new(f);
 
     for fastx_file in seq_list_buf.lines() {
         let input_fn = fastx_file?;
         log::info!("input file: {}", input_fn);
-        let metadata = std::fs::metadata(&input_fn)?;
+        let metadata = std::fs::metadata(&input_fn)
+            .map_err(|e| io::Error::new(e.kind(), format!("{input_fn}: {e}")))?;
         if !metadata.is_file() || metadata.len() < (1 << 16) {
             log::info!(
                 "input file: {} may not be proper input file (filesize = {}), ignore",
@@ -349,7 +351,8 @@ pub fn build(seq_list_file: &String, out_prefix: &String) -> Result<usize, io::E
             );
             continue;
         }
-        let input_file = File::open(&input_fn)?;
+        let input_file = File::open(&input_fn)
+            .map_err(|e| io::Error::new(e.kind(), format!("{input_fn}: {e}")))?;
         let mut reader = BufReader::new(input_file);
         let mut is_gzfile = false;
         {

@@ -425,7 +425,8 @@ impl CompactSeqDB {
         filepath: String,
         to_upper_case: bool,
     ) -> Result<GZFastaReader, std::io::Error> {
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let mut reader = BufReader::new(file);
         let mut is_gzfile = false;
         {
@@ -439,11 +440,13 @@ impl CompactSeqDB {
         }
         drop(reader);
 
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let reader = BufReader::new(file);
         let gz_buf = BufReader::new(MultiGzDecoder::new(reader));
 
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let reader = BufReader::new(file);
         let std_buf = BufReader::new(reader);
 
@@ -1614,7 +1617,11 @@ fn read_mdbi_header(f: &mut impl Read) -> Result<(ShmmrSpec, u64), io::Error> {
 pub fn read_mdbi_file_to_frag_locations(
     prefix: &str,
 ) -> Result<(ShmmrSpec, ShmmrIndexFileLocation), io::Error> {
-    let mut f = BufReader::new(File::open(format!("{prefix}.mdbi"))?);
+    let mdbi_path = format!("{prefix}.mdbi");
+    let mut f = BufReader::new(
+        File::open(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+    );
     let (shmmr_spec, n_keys) = read_mdbi_header(&mut f)?;
 
     let mut u64b = [0u8; 8];

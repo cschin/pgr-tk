@@ -14,8 +14,7 @@ use crate::agc_io::{self, AGCSeqDB};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
-
-
+use std::io;
 use std::io::{BufReader, BufWriter, Read, Write};
 
 pub type PrincipalBundles = Vec<Vec<(u64, u64, u8)>>; //shimmer pair vector
@@ -73,9 +72,12 @@ impl SeqIndexDB {
     }
 
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix)?;
+        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix)
+            .map_err(|e| io::Error::new(e.kind(), format!("{prefix}.mdbi: {e}")))?;
         let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
-        let f = File::open(format!("{prefix}.mdbv"))?;
+        let mdbv_path = format!("{prefix}.mdbv");
+        let f = File::open(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
         let frag_map_file = unsafe { Mmap::map(&f)? };
         let shmmr_spec = spec;
 
@@ -647,7 +649,10 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath)?);
+        let mut out_file = BufWriter::new(
+            File::create(filepath)
+                .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?,
+        );
 
         let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
         out_file
@@ -804,7 +809,10 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath)?);
+        let mut out_file = BufWriter::new(
+            File::create(filepath)
+                .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?,
+        );
 
         let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
         out_file
