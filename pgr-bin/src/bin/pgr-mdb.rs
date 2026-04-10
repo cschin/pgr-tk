@@ -35,11 +35,13 @@ struct CmdOptions {
     sketch: bool,
     /// number of haplotypes to process per batch (0 = all at once, the legacy behaviour).
     ///
-    /// Setting this to a small value (e.g. 5–10) dramatically reduces peak memory usage
-    /// by decompressing and indexing only a subset of the archive at a time, then merging
-    /// the resulting sorted shard files.  A value of 10 typically cuts peak RAM from
-    /// >300 GB to ~32 GB for a 100-haplotype human pangenome.
-    #[clap(long, default_value_t = 0)]
+    /// number of haplotypes to process per batch (0 = all at once, the legacy behaviour).
+    ///
+    /// Reduces peak memory by decompressing and indexing only a subset of the archive at
+    /// a time, writing sorted shard files that are merged at the end.  The default of 16
+    /// limits peak RAM to ~60 GB for a 100-haplotype human pangenome (vs. >300 GB).
+    /// Use 0 to restore the original all-at-once behaviour.
+    #[clap(long, default_value_t = 16)]
     batch_size: usize,
 }
 
