@@ -116,7 +116,7 @@ impl SeqIndexDB {
             min_span,
             sketch: false,
         };
-        let mut sdb = seq_db::CompactSeqDB::new(spec.clone());
+        let mut sdb = seq_db::CompactSeqDB::new(spec);
 
         sdb.load_seqs_from_fastx(filepath, to_upper_case)?;
         self.shmmr_spec = Some(spec);
@@ -187,7 +187,7 @@ impl SeqIndexDB {
         } else {
             Some("Memory".to_string())
         };
-        let mut sdb = seq_db::CompactSeqDB::new(spec.clone());
+        let mut sdb = seq_db::CompactSeqDB::new(spec);
         let seq_vec = seq_list
             .into_iter()
             .enumerate()
@@ -427,7 +427,7 @@ impl SeqIndexDB {
         }
     }
 
-    fn get_vertex_map_from_principal_bundles(&self, pb: PrincipalBundles) -> VertexToBundleIdMap {
+    fn get_vertex_map_from_principal_bundles(&self, pb: &PrincipalBundles) -> VertexToBundleIdMap {
         // count segment for filtering, some unidirectional seg may have both forward and reverse in the principle bundles
         // let mut seg_count = FxHashMap::<(u64, u64), usize>::default();
         // pb.iter().for_each(|bundle| {
@@ -477,20 +477,22 @@ impl SeqIndexDB {
         //println!("DBG: # bundles {}", pb.len());
 
         let mut vertex_to_bundle_id_direction_pos =
-            self.get_vertex_map_from_principal_bundles(pb.clone()); //not efficient but it is PyO3 limit now
+            self.get_vertex_map_from_principal_bundles(&pb);
 
         let seqid_smps: Vec<(u32, Vec<(u64, u64, u32, u32, u8)>)> = self
             .seq_info
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|(sid, data)| {
-                let (ctg_name, source, _) = data;
-                let source = source.clone().expect("invariant: source set in seq_info");
-                let seq = self.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
-                (*sid, self.get_smps(seq, self.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")))
+            .as_ref()
+            .map(|info| {
+                info.iter()
+                    .map(|(sid, data)| {
+                        let (ctg_name, source, _) = data;
+                        let source = source.as_ref().expect("invariant: source set in seq_info").clone();
+                        let seq = self.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
+                        (*sid, self.get_smps(seq, self.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")))
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
         // data for reordering the bundles and for re-ordering them along the sequences
         let mut bundle_id_to_directions = FxHashMap::<usize, Vec<u32>>::default();
         let mut bundle_id_to_orders = FxHashMap::<usize, Vec<f32>>::default();
@@ -714,7 +716,7 @@ impl SeqIndexDB {
     pub fn write_mapg_idx(&self, filepath: &str) -> Result<(), std::io::Error> {
         let mut writer = BufWriter::new(File::create(filepath)?);
 
-        if let Some(shmmr_spec) = self.shmmr_spec.clone() {
+        if let Some(shmmr_spec) = self.shmmr_spec {
             writer.write_all(
                 format!(
                     "K\t{}\t{}\t{}\t{}\t{}\n",
@@ -803,7 +805,7 @@ impl SeqIndexDB {
             .map(|p| p.into_iter().map(|v| (v.0, v.1, v.2)).collect())
             .collect::<Vec<Vec<(u64, u64, u8)>>>();
 
-        let vertex_to_bundle_id_direction_pos = self.get_vertex_map_from_principal_bundles(pb);
+        let vertex_to_bundle_id_direction_pos = self.get_vertex_map_from_principal_bundles(&pb);
 
         filtered_adj_list.iter().for_each(|(k, v, w)| {
             if v.0 <= w.0 {
@@ -903,19 +905,21 @@ pub fn get_principal_bundle_decomposition(
 ) -> Vec<(u32, ShmmrPairAndBundleVertices)> {
     let seqid_smps: Vec<(u32, Vec<(u64, u64, u32, u32, u8)>)> = seq_db
         .seq_info
-        .clone()
-        .unwrap_or_default()
-        .iter()
-        .map(|(sid, data)| {
-            let (ctg_name, source, _) = data;
-            let source = source.clone().expect("invariant: source set in seq_info");
-            let seq = seq_db.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
-            (
-                *sid,
-                seq_db.get_smps(seq, seq_db.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")),
-            )
+        .as_ref()
+        .map(|info| {
+            info.iter()
+                .map(|(sid, data)| {
+                    let (ctg_name, source, _) = data;
+                    let source = source.as_ref().expect("invariant: source set in seq_info").clone();
+                    let seq = seq_db.get_seq(source, ctg_name.clone()).expect("invariant: contig in seq_info must be retrievable");
+                    (
+                        *sid,
+                        seq_db.get_smps(seq, seq_db.shmmr_spec.as_ref().expect("invariant: shmmr_spec set when seq_info is non-empty")),
+                    )
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     // loop through each sequence and generate the decomposition for the sequence
     let seqid_smps_with_bundle_id_seg_direction = seqid_smps

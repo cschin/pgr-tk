@@ -165,7 +165,7 @@ pub fn shmmr_dbg_consensus(
     });
     assert!(shmmr_spec.k % 2 == 1); // the k needs to odd to break symmetry
     assert!(shmmr_spec.min_span == 0); // if min_span != 0, we don't get consistent path
-    let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
+    let mut sdb = seq_db::CompactSeqDB::new(*shmmr_spec);
     let seqs = (0..seqs.len())
         .map(|sid| {
             (
@@ -284,7 +284,7 @@ pub fn guided_shmmr_dbg_consensus(
     });
     assert!(shmmr_spec.k % 2 == 1); // the k needs to odd to break symmetry
     assert!(shmmr_spec.min_span == 0); // if min_span != 0, we don't get consistent path
-    let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
+    let mut sdb = seq_db::CompactSeqDB::new(*shmmr_spec);
     let seqs = (0..seqs.len())
         .map(|sid| {
             (
@@ -489,7 +489,7 @@ pub fn shmmr_sparse_aln_consensus(
     });
     assert!(shmmr_spec.k % 2 == 1); // the k needs to odd to break symmetry
     assert!(shmmr_spec.min_span == 0); // if min_span != 0, we don't get consistent path
-    let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
+    let mut sdb = seq_db::CompactSeqDB::new(*shmmr_spec);
     let seqs = (0..seqs.len())
         .map(|sid| {
             (
