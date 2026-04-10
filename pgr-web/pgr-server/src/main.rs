@@ -68,7 +68,7 @@ async fn main() {
 
     let mut seq_db = SeqIndexDB::new();
 
-    let _ = seq_db.load_from_agc_index(opt.data_path_prefix);
+    seq_db.load_from_agc_index(opt.data_path_prefix).expect("failed to load AGC index");
 
     let seq_db = Arc::new(seq_db);
     // build our application with a route

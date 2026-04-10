@@ -119,9 +119,10 @@ fn output_cov_bed(
 fn generate_bed_graph_from_sdb(args: &CmdOptions) {
     let mut seq_index_db = SeqIndexDB::new();
 
-    let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
+    seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
+        .expect("failed to load AGC index");
 
-    let shmmr_spec = seq_index_db.shmmr_spec.clone().unwrap();
+    let shmmr_spec = seq_index_db.shmmr_spec.clone().expect("shmmr_spec set after successful load");
 
     let input_files = BufReader::new(
         File::open(Path::new(&args.input))

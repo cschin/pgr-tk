@@ -34,7 +34,7 @@ fn main() -> Result<(), std::io::Error> {
 
     let mut seq_index_db = SeqIndexDB::new();
 
-    let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
+    seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
 
     if args.list {
         let mut out = if args.output_file.is_some() {

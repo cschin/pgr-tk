@@ -301,9 +301,10 @@ fn generate_bed_graph_from_fastx_files(args: &CmdOptions) {
 
 fn generate_bed_graph_from_sdb(args: &CmdOptions) {
     let mut seq_index_db = SeqIndexDB::new();
-    let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
+    seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
+        .expect("failed to load AGC index");
 
-    let shmmr_spec = seq_index_db.shmmr_spec.clone().unwrap();
+    let shmmr_spec = seq_index_db.shmmr_spec.clone().expect("shmmr_spec set after successful load");
 
     let mut sample_set0 = FxHashSet::<String>::default();
     let input_files = BufReader::new(
