@@ -21,6 +21,9 @@ thread_local! {
     static ZSTD_CTX: RefCell<zstd::bulk::Compressor<'static>> = RefCell::new(
         zstd::bulk::Compressor::new(9).expect("zstd compressor init"),
     );
+    static ZSTD_DCTX: RefCell<zstd::bulk::Decompressor<'static>> = RefCell::new(
+        zstd::bulk::Decompressor::new().expect("zstd decompressor init"),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -70,8 +73,21 @@ pub fn compress_reference(reference: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decompress a `ref_data` BLOB back to its 2-bit encoded sequence.
+///
+/// Uses a thread-local decompressor context so that parallel calls in
+/// `build_fallback_index` (one per segment group) do not each allocate a
+/// new ZSTD_DCtx.  `bulk::Compressor` stores the content size in the frame
+/// header, so we read the exact capacity from the frame rather than guessing.
 pub fn decompress_reference(blob: &[u8]) -> Result<Vec<u8>> {
-    zstd::decode_all(blob).map_err(|e| AgcError::Zstd(e.to_string()))
+    let capacity = zstd::zstd_safe::get_frame_content_size(blob)
+        .ok()
+        .flatten()
+        .unwrap_or(blob.len() as u64 * 20) as usize;
+    ZSTD_DCTX.with(|ctx| {
+        ctx.borrow_mut()
+            .decompress(blob, capacity)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 // ---------------------------------------------------------------------------
