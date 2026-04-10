@@ -89,7 +89,11 @@ impl SeqIndexDB {
         let frag_map_file = unsafe { Mmap::map(&f).expect("mdbv mmap fail") };
         let shmmr_spec = spec;
 
-        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agcrs")?;
+        // Use the AGC archive path recorded in the index; fall back to the
+        // conventional `<prefix>.agcrs` for indexes built before this was added.
+        let agc_path = seq_db::read_agc_path_from_midx(&prefix)
+            .unwrap_or_else(|| format!("{prefix}.agcrs"));
+        let agc_file = agc_io::AGCFile::new(agc_path)?;
         self.agc_db = Some(agc_io::AGCSeqDB {
             agc_file,
             frag_location_map,
@@ -186,7 +190,7 @@ impl SeqIndexDB {
 
             internal.write_to_frag_files(file_prefix.clone(), None);
             internal
-                .write_shmmr_map_index(file_prefix)
+                .write_shmmr_map_index(file_prefix, None)
                 .expect("write mdb file fail");
         };
     }

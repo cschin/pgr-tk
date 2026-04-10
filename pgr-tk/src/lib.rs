@@ -1387,7 +1387,7 @@ impl SeqIndexDB {
 
             internal.write_to_frag_files(file_prefix.clone(), None);
             internal
-                .write_shmmr_map_index(file_prefix.clone())
+                .write_shmmr_map_index(file_prefix.clone(), None)
                 .expect("write mdb file fail");
         };
     }

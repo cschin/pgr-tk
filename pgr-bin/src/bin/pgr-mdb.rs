@@ -52,16 +52,24 @@ fn load_write_index_from_agcfile(
     let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
     let filelist = File::open(path)?;
 
-    BufReader::new(filelist)
+    // Collect file paths so we can detect the single-archive case and record it
+    // in the index for use by load_from_agc_index.
+    let fps: Vec<String> = BufReader::new(filelist)
         .lines()
-        .try_for_each(|fp| -> Result<(), std::io::Error> {
-            let fp = fp.unwrap();
-            let agcfile: AGCFile = AGCFile::new(fp)?;
-            let _ = sdb.load_index_from_agcfile(agcfile);
-            Ok(())
-        })?;
+        .map(|l| l.expect("file list read error"))
+        .collect();
 
-    sdb.write_shmmr_map_index(prefix)?;
+    for fp in &fps {
+        let agcfile: AGCFile = AGCFile::new(fp.clone())?;
+        let _ = sdb.load_index_from_agcfile(agcfile);
+    }
+
+    // Record the archive path only when there is exactly one source file —
+    // load_from_agc_index opens a single AGCFile so multi-archive builds are
+    // a different workflow.
+    let agc_path: Option<&str> = if fps.len() == 1 { Some(&fps[0]) } else { None };
+
+    sdb.write_shmmr_map_index(prefix, agc_path)?;
     Ok(())
 }
 

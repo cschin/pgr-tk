@@ -820,11 +820,15 @@ impl GetSeq for CompactSeqDB {
 }
 
 impl CompactSeqDB {
-    pub fn write_shmmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
+    pub fn write_shmmr_map_index(
+        &self,
+        fp_prefix: String,
+        agc_path: Option<&str>,
+    ) -> Result<(), std::io::Error> {
         // Write split format (.mdbi key-index + .mdbv values).
         write_shmmr_map_split(&self.shmmr_spec, &self.frag_map, &fp_prefix)?;
-        // Write SQLite sequence index (.midx).
-        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix)?;
+        // Write SQLite sequence index (.midx), storing the AGC archive path when known.
+        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix, agc_path)?;
         Ok(())
     }
 }
@@ -1330,12 +1334,19 @@ pub fn write_seq_index_sqlite(
     seqs: &[CompactSeq],
     shmmr_spec: &ShmmrSpec,
     prefix: &str,
+    agc_path: Option<&str>,
 ) -> Result<(), io::Error> {
     let path = format!("{prefix}.midx");
     // Remove any stale file so we start with a clean database.
     let _ = fs::remove_file(&path);
     let conn = Connection::open(&path)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    let meta_ddl = if agc_path.is_some() {
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    } else {
+        ""
+    };
 
     conn.execute_batch(&format!(
         "PRAGMA journal_mode = WAL;
@@ -1353,7 +1364,8 @@ pub fn write_seq_index_sqlite(
              ctg_name TEXT    NOT NULL,
              source   TEXT
          );
-         CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);"
+         CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);
+         {meta_ddl}"
     ))
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
@@ -1368,6 +1380,14 @@ pub fn write_seq_index_sqlite(
         ],
     )
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    if let Some(p) = agc_path {
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('agc_path', ?1)",
+            params![p],
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    }
 
     {
         let tx = conn
@@ -1450,6 +1470,26 @@ pub fn read_seq_index_sqlite(
     }
 
     Ok((seq_index, seq_info))
+}
+
+/// Read the AGC archive path stored in `{prefix}.midx` by `pgr-mdb`.
+///
+/// Returns `Some(path)` if the `meta` table exists and contains `agc_path`,
+/// or `None` if the index was built without recording the path (older indexes
+/// or multi-archive builds).
+pub fn read_agc_path_from_midx(prefix: &str) -> Option<String> {
+    let path = format!("{prefix}.midx");
+    let conn = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'agc_path'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
 }
 
 pub fn get_fragment_signatures_from_mmap_file(
