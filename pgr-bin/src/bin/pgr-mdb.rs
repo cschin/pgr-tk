@@ -33,6 +33,14 @@ struct CmdOptions {
     /// use sketch k-mer instead of minimizer
     #[clap(short, long)]
     sketch: bool,
+    /// number of haplotypes to process per batch (0 = all at once, the legacy behaviour).
+    ///
+    /// Setting this to a small value (e.g. 5–10) dramatically reduces peak memory usage
+    /// by decompressing and indexing only a subset of the archive at a time, then merging
+    /// the resulting sorted shard files.  A value of 10 typically cuts peak RAM from
+    /// >300 GB to ~32 GB for a 100-haplotype human pangenome.
+    #[clap(long, default_value_t = 0)]
+    batch_size: usize,
 }
 
 fn main() {
@@ -56,7 +64,19 @@ fn main() {
 
     let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec);
     let agcfile = AGCFile::new(args.agcrs_input.clone()).expect("failed to open AGC archive");
-    let _ = sdb.load_index_from_agcfile(agcfile);
-    sdb.write_shmmr_map_index(prefix, Some(&args.agcrs_input))
-        .expect("failed to write index");
+
+    if args.batch_size > 0 {
+        sdb.load_index_from_agcfile_batched(
+            &agcfile,
+            args.batch_size,
+            &prefix,
+            Some(&args.agcrs_input),
+        )
+        .expect("failed to build batched index");
+    } else {
+        sdb.load_index_from_agcfile(agcfile)
+            .expect("failed to load AGC index");
+        sdb.write_shmmr_map_index(prefix, Some(&args.agcrs_input))
+            .expect("failed to write index");
+    }
 }

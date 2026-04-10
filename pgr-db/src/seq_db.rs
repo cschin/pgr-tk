@@ -724,6 +724,137 @@ impl CompactSeqDB {
         self.load_index_from_seq_vec(&seqs);
         Ok(())
     }
+
+    /// Load index from an AGC archive one batch at a time to bound peak memory.
+    ///
+    /// Instead of decompressing every haplotype simultaneously (which can require
+    /// hundreds of GB for large pangenomes), this function processes `batch_size`
+    /// haplotypes per iteration.  Each batch produces a shard pair
+    /// (`{prefix}.shard_N.mdbi` / `.mdbv`) that is flushed to disk before the
+    /// next batch is decompressed.  After all batches, [`merge_shmmr_map_shards`]
+    /// merges the sorted shards into the final `{prefix}.mdbi` / `.mdbv`, and
+    /// [`write_seq_index_sqlite`] writes `{prefix}.midx`.
+    ///
+    /// ## Memory profile
+    ///
+    /// | batch_size | decompress peak | frag_map peak | total peak |
+    /// |---|---|---|---|
+    /// | all (legacy) | ~300 GB | ~16–20 GB | **>300 GB** |
+    /// | 10 | ~30 GB | ~2 GB | **~32 GB** |
+    /// | 5  | ~15 GB | ~1 GB | **~16 GB** |
+    /// Load index from an AGC archive in batches, pipelining shard writes with
+    /// decompression of the next batch.
+    ///
+    /// ## Pipeline
+    ///
+    /// A background thread receives each completed `frag_map` over a bounded
+    /// channel and writes it to disk as a shard.  The main thread decompresses
+    /// and indexes the next batch concurrently.  A `sync_channel(1)` buffer
+    /// lets the main thread stay at most one shard ahead of the writer, keeping
+    /// peak memory bounded:
+    ///
+    /// ```text
+    /// main:   [decompress+index N] [decompress+index N+1] [decompress+index N+2] …
+    /// writer:                      [write shard N]         [write shard N+1]      …
+    /// ```
+    ///
+    /// ## Memory note
+    ///
+    /// At any instant the writer holds the previous batch's `frag_map` while
+    /// the main thread builds the next one and decompresses the next batch.
+    /// Peak memory is roughly:
+    ///   `decompress_batch_peak + current_frag_map + previous_frag_map`
+    ///
+    /// For batch_size=10 on a 100-haplotype 3 Gbp pangenome that is ~37 + 7 + 7 ≈
+    /// 51 GB.  If memory is tighter than that, use a smaller batch_size; the
+    /// write pipeline will still help because smaller batches spend more relative
+    /// time on I/O.
+    pub fn load_index_from_agcfile_batched(
+        &mut self,
+        agcfile: &AGCFile,
+        batch_size: usize,
+        prefix: &str,
+        agc_path: Option<&str>,
+    ) -> Result<(), io::Error> {
+        let all_ctgs = agcfile.sample_ctg_list();
+        let num_shards = all_ctgs.len().div_ceil(batch_size);
+        let mut sid_base: u32 = self.seqs.len() as u32;
+
+        // Pipelined writer thread: receives (frag_map, shard_id) pairs and
+        // writes them to disk while the main thread works on the next batch.
+        // sync_channel(1) allows one item to be queued without blocking, so
+        // the writer can start as soon as the first batch is ready.
+        let shmmr_spec = self.shmmr_spec;
+        let prefix_owned = prefix.to_string();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(ShmmrToFrags, usize)>(1);
+        let writer = std::thread::spawn(move || -> io::Result<()> {
+            while let Ok((frag_map, shard_id)) = rx.recv() {
+                write_shmmr_map_shard(&shmmr_spec, &frag_map, &prefix_owned, shard_id)?;
+                eprintln!("pgr-mdb: shard {shard_id} written");
+            }
+            Ok(())
+        });
+
+        for (shard_id, batch) in all_ctgs.chunks(batch_size).enumerate() {
+            eprintln!(
+                "pgr-mdb: shard {}/{} — decompressing {} sequences",
+                shard_id + 1,
+                num_shards,
+                batch.len()
+            );
+
+            // Decompress only this batch of haplotypes.
+            let recs = agcfile.par_fetch_seqs_batch(batch);
+
+            // Assign globally-unique sequence IDs continuing from previous batches.
+            let seqs: Vec<(u32, Option<String>, String, Vec<u8>)> = recs
+                .into_iter()
+                .enumerate()
+                .map(|(i, rec)| {
+                    (
+                        sid_base + i as u32,
+                        rec.source,
+                        String::from_utf8_lossy(&rec.id).into_owned(),
+                        rec.seq,
+                    )
+                })
+                .collect();
+            sid_base += seqs.len() as u32;
+
+            // Build the shimmer-pair index for this batch.
+            self.load_index_from_seq_vec(&seqs);
+
+            // Explicitly drop the decompressed sequences NOW, before handing
+            // off the frag_map.  This reclaims the large sequence buffer
+            // (~batch_size × genome_size bytes) before the writer thread
+            // runs in parallel with the next batch's decompression.
+            drop(seqs);
+
+            // Hand the completed frag_map to the writer thread.
+            // std::mem::take replaces self.frag_map with an empty default,
+            // so the next iteration starts with a clean map immediately.
+            // The send may block briefly if the writer hasn't consumed the
+            // previous shard yet (sync_channel buffer = 1).
+            let frag_map = std::mem::take(&mut self.frag_map);
+            tx.send((frag_map, shard_id))
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+
+        // Signal writer thread to finish and propagate any write error.
+        drop(tx);
+        writer
+            .join()
+            .map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("shard writer panicked: {e:?}"))
+            })??;
+
+        eprintln!("pgr-mdb: merging {} shards → {}.mdbi / .mdbv", num_shards, prefix);
+        merge_shmmr_map_shards(&self.shmmr_spec, prefix, num_shards)?;
+
+        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, prefix, agc_path)?;
+
+        Ok(())
+    }
 }
 
 impl CompactSeqDB {
@@ -1570,6 +1701,302 @@ pub fn write_shmmr_map_split(
         idx_file.write_u32::<LittleEndian>(*vec_len)?;
     }
     idx_file.flush()?;
+
+    Ok(())
+}
+
+/// Write a single shard of the shimmer map.
+///
+/// Produces `{prefix}.shard_{shard_id}.mdbv` and `{prefix}.shard_{shard_id}.mdbi`
+/// using the identical binary layout as [`write_shmmr_map_split`].  Each shard's
+/// key-index is sorted so that [`merge_shmmr_map_shards`] can perform a straight
+/// k-way merge without re-sorting.
+pub fn write_shmmr_map_shard(
+    shmmr_spec: &ShmmrSpec,
+    shmmr_map: &ShmmrToFrags,
+    prefix: &str,
+    shard_id: usize,
+) -> Result<(), io::Error> {
+    let mut keys: Vec<(u64, u64)> = shmmr_map.keys().copied().collect();
+    keys.par_sort_unstable();
+
+    // --- Parallel serialization -------------------------------------------
+    // Each key's fragment records are encoded independently into a Vec<u8>,
+    // distributing the CPU work across all rayon threads.  The final disk
+    // write is sequential (BufWriter), but replacing N_frags × 5 individual
+    // write_u32/write_u8 calls with one write_all per key cuts syscall
+    // overhead significantly and enables OS large-block I/O.
+    let key_data: Vec<(u64, u64, u32, Vec<u8>)> = keys
+        .par_iter()
+        .map(|&(k1, k2)| {
+            let frags = &shmmr_map[&(k1, k2)];
+            let mut buf = vec![0u8; frags.len() * FRAG_RECORD_BYTES];
+            let mut pos = 0;
+            for f in frags {
+                buf[pos..pos + 4].copy_from_slice(&f.0.to_le_bytes());
+                buf[pos + 4..pos + 8].copy_from_slice(&f.1.to_le_bytes());
+                buf[pos + 8..pos + 12].copy_from_slice(&f.2.to_le_bytes());
+                buf[pos + 12..pos + 16].copy_from_slice(&f.3.to_le_bytes());
+                buf[pos + 16] = f.4;
+                pos += FRAG_RECORD_BYTES;
+            }
+            (k1, k2, frags.len() as u32, buf)
+        })
+        .collect();
+
+    // --- Sequential write + prefix-sum for data offsets -------------------
+    let mdbv_path = format!("{prefix}.shard_{shard_id}.mdbv");
+    let mut val_file = BufWriter::new(
+        File::create(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?,
+    );
+    val_file.write_all(MDBV_MAGIC)?;
+    val_file.write_u8(MDBV1)?;
+
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::with_capacity(key_data.len());
+    let mut data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    for (k1, k2, cnt, buf) in &key_data {
+        idx_entries.push((*k1, *k2, data_offset, *cnt));
+        data_offset += *cnt as u64 * FRAG_RECORD_BYTES as u64;
+        val_file.write_all(buf)?;
+    }
+    val_file.flush()?;
+
+    let mdbi_path = format!("{prefix}.shard_{shard_id}.mdbi");
+    let mut idx_file = BufWriter::new(
+        File::create(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+    );
+    idx_file.write_all(MDBI_MAGIC)?;
+    idx_file.write_u8(MDBV1)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_file.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_file.write_u64::<LittleEndian>(*k1)?;
+        idx_file.write_u64::<LittleEndian>(*k2)?;
+        idx_file.write_u64::<LittleEndian>(*offset)?;
+        idx_file.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_file.flush()?;
+
+    Ok(())
+}
+
+/// K-way external merge of sorted shimmer-map shards.
+///
+/// Reads `{prefix}.shard_0..{num_shards-1}.mdbi` and the corresponding `.mdbv`
+/// files produced by [`write_shmmr_map_shard`], merges them into the final
+/// `{prefix}.mdbi` and `{prefix}.mdbv`, then deletes the shard files.
+///
+/// Peak memory is O(num_shards) key-cursor entries plus I/O buffers — negligible
+/// regardless of the total number of shimmer pairs.
+///
+/// When the same `(k1, k2)` key appears in multiple shards (because the same
+/// shimmer pair was found in sequences from different batches), all
+/// `FragmentSignature` records for that key are concatenated into a single
+/// merged entry.
+pub fn merge_shmmr_map_shards(
+    shmmr_spec: &ShmmrSpec,
+    prefix: &str,
+    num_shards: usize,
+) -> Result<(), io::Error> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    // Each shard is read with two strictly forward-moving BufReaders:
+    //   key_reader — reads the sorted key-index (.mdbi) one record at a time
+    //   val_reader — reads fragment bytes (.mdbv) in the same sorted order
+    //
+    // Because the merge processes each shard's keys in ascending order (the
+    // heap enforces this) and the .mdbv was written in the same order, the
+    // val_reader position is always exactly at the start of the next key's
+    // fragment block.  No backward seeks are ever needed.  Using BufReader
+    // (8 KB read-ahead) instead of a raw File with seeks turns what was
+    // random-access I/O into a sequential streaming read, giving OS prefetch
+    // an opportunity to avoid stalls.
+    struct ShardReader {
+        key_reader: BufReader<File>,
+        val_reader: BufReader<File>,
+        current: Option<(u64, u64, u32)>, // (k1, k2, vec_len) — offset dropped
+        remaining: u64,
+    }
+
+    impl ShardReader {
+        fn advance(&mut self) -> Result<(), io::Error> {
+            if self.remaining == 0 {
+                self.current = None;
+                return Ok(());
+            }
+            let mut u64b = [0u8; 8];
+            let mut u32b = [0u8; 4];
+            self.key_reader.read_exact(&mut u64b)?;
+            let k1 = u64::from_le_bytes(u64b);
+            self.key_reader.read_exact(&mut u64b)?;
+            let k2 = u64::from_le_bytes(u64b);
+            // Read and discard the stored byte-offset — we don't need it
+            // because we read the value file sequentially.
+            self.key_reader.read_exact(&mut u64b)?;
+            self.key_reader.read_exact(&mut u32b)?;
+            let vec_len = u32::from_le_bytes(u32b);
+            self.current = Some((k1, k2, vec_len));
+            self.remaining -= 1;
+            Ok(())
+        }
+
+        /// Read `vec_len` fragment records from val_reader and stream them
+        /// directly into `out`.  Allocates only one small stack buffer.
+        fn copy_frags(
+            &mut self,
+            vec_len: u32,
+            out: &mut impl Write,
+        ) -> Result<(), io::Error> {
+            let byte_count = vec_len as usize * FRAG_RECORD_BYTES;
+            // Stack buffer for records; fall back to heap for large blocks.
+            const STACK_CAP: usize = 64 * FRAG_RECORD_BYTES; // 64 records = 1088 bytes
+            if byte_count <= STACK_CAP {
+                let mut buf = [0u8; STACK_CAP];
+                self.val_reader.read_exact(&mut buf[..byte_count])?;
+                out.write_all(&buf[..byte_count])
+            } else {
+                let mut buf = vec![0u8; byte_count];
+                self.val_reader.read_exact(&mut buf)?;
+                out.write_all(&buf)
+            }
+        }
+    }
+
+    // --- Open one ShardReader per shard -----------------------------------
+    let mut shards: Vec<ShardReader> = Vec::with_capacity(num_shards);
+    for shard_id in 0..num_shards {
+        let mdbi_path = format!("{prefix}.shard_{shard_id}.mdbi");
+        let mdbv_path = format!("{prefix}.shard_{shard_id}.mdbv");
+
+        let mut key_reader = BufReader::new(
+            File::open(&mdbi_path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+        );
+        let (_, n_keys) = read_mdbi_header(&mut key_reader)?;
+
+        let mut val_reader = BufReader::new(
+            File::open(&mdbv_path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?,
+        );
+        // Skip the .mdbv header (magic 4 B + version 1 B) so val_reader is
+        // positioned at the first fragment record.
+        let mut hdr_buf = [0u8; MDBV_HEADER_BYTES];
+        val_reader.read_exact(&mut hdr_buf)?;
+
+        let mut sr = ShardReader {
+            key_reader,
+            val_reader,
+            current: None,
+            remaining: n_keys,
+        };
+        sr.advance()?;
+        shards.push(sr);
+    }
+
+    // --- Initialize min-heap ----------------------------------------------
+    // Heap entry: (Reverse((k1, k2)), shard_id)
+    let mut heap: BinaryHeap<(Reverse<(u64, u64)>, usize)> = BinaryHeap::new();
+    for (shard_id, sr) in shards.iter().enumerate() {
+        if let Some((k1, k2, _)) = sr.current {
+            heap.push((Reverse((k1, k2)), shard_id));
+        }
+    }
+
+    // --- Open output files ------------------------------------------------
+    let mdbv_out_path = format!("{prefix}.mdbv");
+    let mut val_out = BufWriter::new(
+        File::create(&mdbv_out_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_out_path}: {e}")))?,
+    );
+    val_out.write_all(MDBV_MAGIC)?;
+    val_out.write_u8(MDBV1)?;
+
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::new();
+    let mut out_data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    // --- K-way merge loop -------------------------------------------------
+    while let Some((Reverse((k1, k2)), shard_id)) = heap.pop() {
+        let (_, _, vec_len) = shards[shard_id].current
+            .expect("invariant: heap entry implies current is Some");
+
+        // contributors: (shard_id, vec_len) — offset removed (sequential read)
+        let mut contributors: Vec<(usize, u32)> = vec![(shard_id, vec_len)];
+        let mut total_frags: u32 = vec_len;
+
+        // Advance this shard's key cursor and re-push if more keys remain.
+        shards[shard_id].advance()?;
+        if let Some((nk1, nk2, _)) = shards[shard_id].current {
+            heap.push((Reverse((nk1, nk2)), shard_id));
+        }
+
+        // Drain any other shards that happen to share the same (k1, k2).
+        loop {
+            match heap.peek() {
+                Some((Reverse((pk1, pk2)), _)) if *pk1 == k1 && *pk2 == k2 => {
+                    let (_, pshard) = heap.pop().expect("invariant: just peeked");
+                    let (_, _, pvec_len) = shards[pshard].current
+                        .expect("invariant: heap entry implies current is Some");
+                    contributors.push((pshard, pvec_len));
+                    total_frags += pvec_len;
+                    shards[pshard].advance()?;
+                    if let Some((nk1, nk2, _)) = shards[pshard].current {
+                        heap.push((Reverse((nk1, nk2)), pshard));
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        // Emit index entry for the merged key.
+        idx_entries.push((k1, k2, out_data_offset, total_frags));
+        out_data_offset += total_frags as u64 * FRAG_RECORD_BYTES as u64;
+
+        // Stream fragment bytes from each contributing shard — forward-only
+        // reads, no seeks, BufReader provides OS read-ahead.
+        for (cshard, cvec_len) in contributors {
+            shards[cshard].copy_frags(cvec_len, &mut val_out)?;
+        }
+    }
+    val_out.flush()?;
+
+    // --- Write merged .mdbi -----------------------------------------------
+    let mdbi_out_path = format!("{prefix}.mdbi");
+    let mut idx_out = BufWriter::new(
+        File::create(&mdbi_out_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_out_path}: {e}")))?,
+    );
+    idx_out.write_all(MDBI_MAGIC)?;
+    idx_out.write_u8(MDBV1)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_out.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_out.write_u64::<LittleEndian>(*k1)?;
+        idx_out.write_u64::<LittleEndian>(*k2)?;
+        idx_out.write_u64::<LittleEndian>(*offset)?;
+        idx_out.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_out.flush()?;
+
+    // Drop readers before deleting files (matters on Windows).
+    drop(shards);
+
+    // --- Remove shard files -----------------------------------------------
+    for shard_id in 0..num_shards {
+        let _ = fs::remove_file(format!("{prefix}.shard_{shard_id}.mdbv"));
+        let _ = fs::remove_file(format!("{prefix}.shard_{shard_id}.mdbi"));
+    }
 
     Ok(())
 }

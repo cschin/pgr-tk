@@ -135,6 +135,14 @@ impl AGCFile {
             .unwrap_or_else(|e| panic!("get_seq({sample_name}/{ctg_name}): {e}"))
     }
 
+    /// Return the full list of `(sample_name, contig_name)` pairs in archive order.
+    ///
+    /// Used by batch processing to slice the list into chunks without loading
+    /// any sequence data.
+    pub fn sample_ctg_list(&self) -> &[(String, String)] {
+        &self.sample_ctg
+    }
+
     /// Fetch all contigs in parallel using one read-only SQLite connection per
     /// rayon task.
     ///
@@ -144,8 +152,18 @@ impl AGCFile {
     /// genome (50 chromosomes) this turns ~50 sequential decompression calls
     /// into a single parallel batch.
     pub fn par_fetch_seqs(&self) -> Vec<SeqRec> {
+        self.par_fetch_seqs_batch(&self.sample_ctg)
+    }
+
+    /// Decompress only the given `(sample_name, contig_name)` pairs in parallel.
+    ///
+    /// This is the core primitive for batched memory-bounded indexing: callers
+    /// slice `sample_ctg_list()` into chunks and call this function once per
+    /// chunk, keeping peak decompression memory proportional to the chunk size
+    /// rather than the total archive size.
+    pub fn par_fetch_seqs_batch(&self, batch: &[(String, String)]) -> Vec<SeqRec> {
         let filepath = self.filepath.clone();
-        self.sample_ctg
+        batch
             .par_iter()
             .map(|(sample_name, ctg_name)| {
                 // Each rayon task opens its own read-only connection.
