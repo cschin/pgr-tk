@@ -135,7 +135,7 @@ while IFS=$'\t' read -r SAMPLE_NAME HTTP_URL; do
         "$AGC_RS" create "$LOCAL_FA" --output "$ARCHIVE" --sample "$SAMPLE_NAME"
     else
         echo "[${IDX}/${TOTAL}] APPEND  $SAMPLE_NAME → $ARCHIVE"
-        "$AGC_RS" append "$ARCHIVE" --sample "$SAMPLE_NAME" --input "$LOCAL_FA"
+        "$AGC_RS" append "$ARCHIVE" --sample "$SAMPLE_NAME" "$LOCAL_FA"
     fi
 
     # ---- Cleanup ------------------------------------------------------------
