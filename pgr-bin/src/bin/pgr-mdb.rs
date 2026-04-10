@@ -1,22 +1,20 @@
 const VERSION_STRING: &str = env!("VERSION_STRING");
 
-//use std::path::PathBuf;
 use clap::{self, CommandFactory, Parser};
-
 use pgr_db::agc_io::AGCFile;
-use pgr_db::shmmrutils::ShmmrSpec;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use pgr_db::seq_db;
 
-/// Create pgr minimizer database with AGC backend
+/// Create a pgr minimizer database (.mdbi/.mdbv/.midx) from a single AGC archive
 #[derive(Parser, Debug)]
 #[clap(name = "pgr-mdb")]
 #[clap(author, version)]
 #[clap(about, long_about = None)]
 struct CmdOptions {
-    filepath: String,
+    /// output file prefix (produces <prefix>.mdbi, <prefix>.mdbv, <prefix>.midx)
     prefix: String,
+    /// path to the AGC archive (.agcrs)
+    #[clap(long)]
+    agcrs_input: String,
     /// minimizer window size
     #[clap(long, short, default_value_t = 80)]
     w: u32,
@@ -26,50 +24,17 @@ struct CmdOptions {
     /// sparse minimizer (shimmer) reduction factor
     #[clap(long, short, default_value_t = 4)]
     r: u32,
-    /// min span for neighboring minimiers
+    /// min span for neighboring minimizers
     #[clap(long, short, default_value_t = 64)]
     min_span: u32,
-    /// using sketch k-mer than minimizer
+    /// use sketch k-mer instead of minimizer
     #[clap(short, long)]
     sketch: bool,
 }
 
-fn load_write_index_from_agcfile(
-    path: String,
-    prefix: String,
-    shmmr_spec: &ShmmrSpec,
-) -> Result<(), std::io::Error> {
-    let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec.clone());
-    let filelist = File::open(path)?;
-
-    // Collect file paths so we can detect the single-archive case and record it
-    // in the index for use by load_from_agc_index.
-    let fps: Vec<String> = BufReader::new(filelist)
-        .lines()
-        .map(|l| l.expect("file list read error"))
-        .collect();
-
-    for fp in &fps {
-        let agcfile: AGCFile = AGCFile::new(fp.clone())?;
-        let _ = sdb.load_index_from_agcfile(agcfile);
-    }
-
-    // Record the archive path only when there is exactly one source file —
-    // load_from_agc_index opens a single AGCFile so multi-archive builds are
-    // a different workflow.
-    let agc_path: Option<&str> = if fps.len() == 1 { Some(&fps[0]) } else { None };
-
-    sdb.write_shmmr_map_index(prefix, agc_path)?;
-    Ok(())
-}
-
 fn main() {
     CmdOptions::command().version(VERSION_STRING).get_matches();
-
     let args = CmdOptions::parse();
-    // TODO: to log file
-    //println!("read data from files in {:?}", args.filepath);
-    //println!("output prefix {:?}", args.prefix);
 
     let shmmr_spec = pgr_db::shmmrutils::ShmmrSpec {
         w: args.w,
@@ -79,5 +44,9 @@ fn main() {
         sketch: args.sketch,
     };
 
-    load_write_index_from_agcfile(args.filepath, args.prefix.clone(), &shmmr_spec).unwrap();
+    let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec);
+    let agcfile = AGCFile::new(args.agcrs_input.clone()).expect("failed to open AGC archive");
+    let _ = sdb.load_index_from_agcfile(agcfile);
+    sdb.write_shmmr_map_index(args.prefix, Some(&args.agcrs_input))
+        .expect("failed to write index");
 }
