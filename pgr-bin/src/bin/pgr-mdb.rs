@@ -3,6 +3,7 @@ const VERSION_STRING: &str = env!("VERSION_STRING");
 use clap::{self, CommandFactory, Parser};
 use pgr_db::agc_io::AGCFile;
 use pgr_db::seq_db;
+use std::path::Path;
 
 /// Create a pgr minimizer database (.mdbi/.mdbv/.midx) from a single AGC archive
 #[derive(Parser, Debug)]
@@ -10,9 +11,10 @@ use pgr_db::seq_db;
 #[clap(author, version)]
 #[clap(about, long_about = None)]
 struct CmdOptions {
-    /// output file prefix (produces <prefix>.mdbi, <prefix>.mdbv, <prefix>.midx)
+    /// output file prefix (produces <prefix>.mdbi, <prefix>.mdbv, <prefix>.midx);
+    /// defaults to the stem of --agcrs-input (e.g. "foo" for "foo.agcrs")
     #[clap(long)]
-    prefix: String,
+    prefix: Option<String>,
     /// path to the AGC archive (.agcrs)
     #[clap(long)]
     agcrs_input: String,
@@ -45,9 +47,16 @@ fn main() {
         sketch: args.sketch,
     };
 
+    let prefix = args.prefix.unwrap_or_else(|| {
+        Path::new(&args.agcrs_input)
+            .with_extension("")
+            .to_string_lossy()
+            .into_owned()
+    });
+
     let mut sdb = seq_db::CompactSeqDB::new(shmmr_spec);
     let agcfile = AGCFile::new(args.agcrs_input.clone()).expect("failed to open AGC archive");
     let _ = sdb.load_index_from_agcfile(agcfile);
-    sdb.write_shmmr_map_index(args.prefix, Some(&args.agcrs_input))
+    sdb.write_shmmr_map_index(prefix, Some(&args.agcrs_input))
         .expect("failed to write index");
 }
