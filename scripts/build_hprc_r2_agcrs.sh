@@ -73,9 +73,20 @@ with open(csv_path, newline="") as f:
             hap = "mat"
         elif "_pat_" in name:
             hap = "pat"
+        elif "_hap1_" in name:
+            hap = "hap1"
+        elif "_hap2_" in name:
+            hap = "hap2"
         else:
-            # HPRC convention: haplotype 1 = pat, 2 = mat
-            hap = "mat" if row["haplotype"].strip() == "2" else "pat"
+            # No mat/pat/hap1/hap2 in assembly name — fall back to haplotype
+            # column (HPRC: 1=pat, 2=mat) but keep the generic label if phasing
+            # is unknown (neither trio nor hic).
+            phasing = row.get("phasing", "").strip()
+            haplotype = row["haplotype"].strip()
+            if phasing in ("trio", "hic"):
+                hap = "mat" if haplotype == "2" else "pat"
+            else:
+                hap = f"hap{haplotype}"
 
         # Convert s3://bucket/key  →  https://bucket.s3.region.amazonaws.com/key
         s3_prefix = "s3://human-pangenomics/"
