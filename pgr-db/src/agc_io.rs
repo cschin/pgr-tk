@@ -135,12 +135,40 @@ impl AGCFile {
             .unwrap_or_else(|e| panic!("get_seq({sample_name}/{ctg_name}): {e}"))
     }
 
-    /// Return the full list of `(sample_name, contig_name)` pairs in archive order.
+    /// Return the full flat list of `(sample_name, contig_name)` pairs in
+    /// archive order (one entry per contig across all samples).
     ///
-    /// Used by batch processing to slice the list into chunks without loading
-    /// any sequence data.
+    /// Prefer [`sample_batches`] when batching by whole samples (haplotypes),
+    /// since that keeps all contigs of a sample together and avoids creating
+    /// many more shards than necessary.
     pub fn sample_ctg_list(&self) -> &[(String, String)] {
         &self.sample_ctg
+    }
+
+    /// Partition the archive into batches of `batch_size` whole samples.
+    ///
+    /// Returns a `Vec` of batches; each batch is a `Vec<(sample_name,
+    /// contig_name)>` covering every contig of the included samples.
+    /// Using sample-level batches ensures that:
+    ///  - `batch_size=16` means 16 haplotypes (not 16 individual contigs).
+    ///  - All contigs of a sample land in the same shard, avoiding spurious
+    ///    cross-shard duplicates in the shimmer-pair key space.
+    ///  - The number of shards stays proportional to `num_samples / batch_size`
+    ///    rather than `num_contigs / batch_size`.
+    pub fn sample_batches(&self, batch_size: usize) -> Vec<Vec<(String, String)>> {
+        self.samples
+            .chunks(batch_size)
+            .map(|sample_chunk| {
+                sample_chunk
+                    .iter()
+                    .flat_map(|s| {
+                        s.contigs
+                            .iter()
+                            .map(|(ctg, _)| (s.name.clone(), ctg.clone()))
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Fetch all contigs in parallel using one read-only SQLite connection per

@@ -742,8 +742,17 @@ impl CompactSeqDB {
     /// | all (legacy) | ~300 GB | ~16–20 GB | **>300 GB** |
     /// | 10 | ~30 GB | ~2 GB | **~32 GB** |
     /// | 5  | ~15 GB | ~1 GB | **~16 GB** |
-    /// Load index from an AGC archive in batches, pipelining shard writes with
-    /// decompression of the next batch.
+    /// Load index from an AGC archive in batches of whole samples (haplotypes),
+    /// pipelining shard writes with decompression of the next batch.
+    ///
+    /// ## Batching unit: samples, not contigs
+    ///
+    /// `batch_size` is the number of **samples** (haplotypes) per shard, not the
+    /// number of individual contigs.  All contigs that belong to a sample are
+    /// grouped into the same shard.  This keeps the number of shards at
+    /// `ceil(num_samples / batch_size)` — typically single digits to low tens —
+    /// rather than `ceil(num_contigs / batch_size)` which would be hundreds for
+    /// a typical human pangenome (100 haplotypes × 25 chromosomes = 2500 contigs).
     ///
     /// ## Pipeline
     ///
@@ -765,10 +774,8 @@ impl CompactSeqDB {
     /// Peak memory is roughly:
     ///   `decompress_batch_peak + current_frag_map + previous_frag_map`
     ///
-    /// For batch_size=10 on a 100-haplotype 3 Gbp pangenome that is ~37 + 7 + 7 ≈
-    /// 51 GB.  If memory is tighter than that, use a smaller batch_size; the
-    /// write pipeline will still help because smaller batches spend more relative
-    /// time on I/O.
+    /// For batch_size=16 on a 100-haplotype 3 Gbp pangenome that is
+    /// ~48 + 11 + 11 ≈ 70 GB.  Reduce batch_size if memory is tighter.
     pub fn load_index_from_agcfile_batched(
         &mut self,
         agcfile: &AGCFile,
@@ -776,8 +783,9 @@ impl CompactSeqDB {
         prefix: &str,
         agc_path: Option<&str>,
     ) -> Result<(), io::Error> {
-        let all_ctgs = agcfile.sample_ctg_list();
-        let num_shards = all_ctgs.len().div_ceil(batch_size);
+        // Partition by whole samples so batch_size means haplotypes, not contigs.
+        let batches = agcfile.sample_batches(batch_size);
+        let num_shards = batches.len();
         let mut sid_base: u32 = self.seqs.len() as u32;
 
         // Pipelined writer thread: receives (frag_map, shard_id) pairs and
@@ -795,7 +803,7 @@ impl CompactSeqDB {
             Ok(())
         });
 
-        for (shard_id, batch) in all_ctgs.chunks(batch_size).enumerate() {
+        for (shard_id, batch) in batches.iter().enumerate() {
             eprintln!(
                 "pgr-mdb: shard {}/{} — decompressing {} sequences",
                 shard_id + 1,
@@ -803,7 +811,7 @@ impl CompactSeqDB {
                 batch.len()
             );
 
-            // Decompress only this batch of haplotypes.
+            // Decompress only this batch of haplotypes (all their contigs).
             let recs = agcfile.par_fetch_seqs_batch(batch);
 
             // Assign globally-unique sequence IDs continuing from previous batches.

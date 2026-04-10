@@ -33,14 +33,13 @@ struct CmdOptions {
     /// use sketch k-mer instead of minimizer
     #[clap(short, long)]
     sketch: bool,
-    /// number of haplotypes to process per batch (0 = all at once, the legacy behaviour).
+    /// number of whole samples (haplotypes) to process per batch.
     ///
-    /// number of haplotypes to process per batch (0 = all at once, the legacy behaviour).
-    ///
-    /// Reduces peak memory by decompressing and indexing only a subset of the archive at
-    /// a time, writing sorted shard files that are merged at the end.  The default of 16
-    /// limits peak RAM to ~60 GB for a 100-haplotype human pangenome (vs. >300 GB).
-    /// Use 0 to restore the original all-at-once behaviour.
+    /// Reduces peak memory by decompressing and indexing one group of haplotypes
+    /// at a time, writing sorted shard files that are merged at the end.  The
+    /// default of 16 limits peak RAM to ~70 GB for a 100-haplotype human pangenome
+    /// (vs. >300 GB).  Use 0 to process the entire archive at once (legacy
+    /// behaviour, no sharding).
     #[clap(long, default_value_t = 16)]
     batch_size: usize,
 }
