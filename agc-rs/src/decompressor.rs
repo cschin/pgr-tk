@@ -4,7 +4,7 @@ use rusqlite::params;
 
 use crate::db::AgcDb;
 use crate::error::{AgcError, Result};
-use crate::segment::{self, Params};
+use crate::segment;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -15,7 +15,6 @@ use crate::segment::{self, Params};
 /// Sequences are decompressed on demand; no data is cached between calls.
 pub struct AgcFile {
     db: AgcDb,
-    params: Params,
 }
 
 impl AgcFile {
@@ -23,7 +22,6 @@ impl AgcFile {
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             db: AgcDb::open(path)?,
-            params: Params::default(),
         })
     }
 
@@ -31,7 +29,6 @@ impl AgcFile {
     pub fn open_readonly(path: &Path) -> Result<Self> {
         Ok(Self {
             db: AgcDb::open_readonly(path)?,
-            params: Params::default(),
         })
     }
 
@@ -397,7 +394,6 @@ mod tests {
             })
             .collect();
 
-        let params_s = Params::default();
         let ref_blob = segment::compress_reference(&seq_bits).expect("compress ref");
 
         // segment_group: ref_data = compressed reference; params JSON
@@ -422,7 +418,6 @@ mod tests {
     fn open_agc_file(f: &NamedTempFile) -> AgcFile {
         AgcFile {
             db: AgcDb::open(f.path()).expect("open db"),
-            params: Params::default(),
         }
     }
 
