@@ -1159,29 +1159,32 @@ impl Compressor {
         // before the transaction (read-only, no lock held).
         let existing_blobs: HashMap<i64, Option<Vec<u8>>> = {
             let ids: Vec<i64> = new_deltas_per_group.keys().copied().collect();
-            // Build "WHERE id IN (?,?,…)" dynamically.
-            let placeholders = ids
-                .iter()
-                .enumerate()
-                .map(|(i, _)| format!("?{}", i + 1))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT id, delta_blob FROM segment_group WHERE id IN ({placeholders})"
-            );
+            // SQLite limits bound parameters to 32766 per statement.
+            // Chunk the id list and merge results.
+            const CHUNK: usize = 32000;
             let conn = self.db.conn();
-            let mut stmt = conn.prepare(&sql)?;
-            let rows: Vec<(i64, Option<Vec<u8>>)> = stmt
-                .query_map(rusqlite::params_from_iter(ids.iter()), |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-            // Any id not returned had no row (shouldn't happen, but default to None).
             let mut map: HashMap<i64, Option<Vec<u8>>> =
                 ids.iter().map(|&id| (id, None)).collect();
-            for (id, blob) in rows {
-                map.insert(id, blob);
+            for chunk in ids.chunks(CHUNK) {
+                let placeholders = chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT id, delta_blob FROM segment_group WHERE id IN ({placeholders})"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let rows: Vec<(i64, Option<Vec<u8>>)> = stmt
+                    .query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+                    })?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for (id, blob) in rows {
+                    map.insert(id, blob);
+                }
             }
             map
         };
