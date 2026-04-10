@@ -4,7 +4,6 @@ pub mod agc_io;
 pub mod aln;
 pub mod ec;
 pub mod fasta_io;
-pub mod frag_file_io;
 //pub mod gff_db;
 pub mod graph_utils;
 pub mod kmer_filter;
@@ -274,63 +273,6 @@ mod tests {
         println!("out2: {} {:?}", out2.len(), out2);
         assert!(out1.len() == 2);
         assert!(out2.len() == 2);
-    }
-
-    #[test]
-    fn test_open_compact_seq_db_storage() {
-        use crate::frag_file_io::CompactSeqFragFileStorage;
-        use seq_db::GetSeq;
-        let seq_storage =
-            CompactSeqFragFileStorage::new("test/test_data/test_seqs_frag".to_string());
-        let seq = seq_storage.get_seq_by_id(0);
-        println!("{}", String::from_utf8_lossy(&seq[..]));
-        let seq = seq_storage.get_sub_seq_by_id(0, 100, 200);
-        println!("{}", String::from_utf8_lossy(&seq[..]));
-    }
-
-    #[test]
-    fn test_seq_db_storage_get_sub_read() {
-        use crate::frag_file_io::CompactSeqFragFileStorage;
-        use seq_db::GetSeq;
-        let seq_storage =
-            CompactSeqFragFileStorage::new("test/test_data/test_seqs_frag".to_string());
-        let sid = 0;
-
-        let seq = seq_storage.get_seq_by_id(sid);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 0, 105);
-        assert_eq!(seq[0..105], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 286);
-        assert_eq!(seq[105..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 104, 286);
-        assert_eq!(seq[104..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 287);
-        assert_eq!(seq[105..287], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 250, 1423);
-        assert_eq!(seq[250..1423], sub_seq[..]);
-
-        let sid = 5;
-
-        let seq = seq_storage.get_seq_by_id(sid);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 0, 105);
-        assert_eq!(seq[0..105], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 286);
-        assert_eq!(seq[105..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 104, 286);
-        assert_eq!(seq[104..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 287);
-        assert_eq!(seq[105..287], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 250, 1423);
-        assert_eq!(seq[250..1423], sub_seq[..]);
     }
 
     #[test]

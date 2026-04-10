@@ -52,9 +52,6 @@ struct Opt {
     )]
     data_path_prefix: String,
 
-    /// set the listen port
-    #[clap(short = 'f', long = "frg-file")]
-    frg_file: bool,
 }
 
 #[tokio::main]
@@ -71,11 +68,7 @@ async fn main() {
 
     let mut seq_db = SeqIndexDB::new();
 
-    if opt.frg_file {
-        let _ = seq_db.load_from_frg_index(opt.data_path_prefix);
-    } else {
-        let _ = seq_db.load_from_agc_index(opt.data_path_prefix);
-    }
+    let _ = seq_db.load_from_agc_index(opt.data_path_prefix);
 
     let seq_db = Arc::new(seq_db);
     // build our application with a route

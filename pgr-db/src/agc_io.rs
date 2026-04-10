@@ -1,9 +1,10 @@
 use crate::fasta_io::SeqRec;
-use crate::frag_file_io::ShmmrToFragMapLocation;
 use agc_rs::decompressor::AgcFile as InnerAgcFile;
 use memmap2::Mmap;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+
+pub type ShmmrToFragMapLocation = FxHashMap<(u64, u64), (usize, usize)>;
 use std::io;
 use std::path::Path;
 use std::sync::Mutex;

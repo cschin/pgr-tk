@@ -3,12 +3,11 @@ use flate2::bufread::MultiGzDecoder;
 use memmap2::Mmap;
 
 use crate::fasta_io::FastaReader;
-use crate::frag_file_io;
 use crate::graph_utils::{AdjList, ShmmrGraphNode};
 pub use crate::seq_db::pair_shmmrs;
 use crate::seq_db::{self, raw_query_fragment, raw_query_fragment_from_mmap_midx, GetSeq};
 pub use crate::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
-use crate::{aln, frag_file_io::CompactSeqFragFileStorage};
+use crate::aln;
 
 use crate::agc_io::{self, AGCSeqDB};
 
@@ -34,7 +33,6 @@ pub enum GZFastaReader {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     AGC,
-    FRG,
     FASTX,
     MEMORY,
     UNKNOWN,
@@ -47,7 +45,6 @@ pub struct SeqIndexDB {
     pub seq_db: Option<seq_db::CompactSeqDB>,
     /// Rust internal: store the agc file and the index
     pub agc_db: Option<AGCSeqDB>,
-    pub frg_db: Option<CompactSeqFragFileStorage>,
     /// a dictionary maps (ctg_name, source) -> (id, len)
     #[allow(clippy::type_complexity)]
     pub seq_index: Option<FxHashMap<(String, Option<String>), (u32, u32)>>,
@@ -67,7 +64,6 @@ impl SeqIndexDB {
     pub fn new() -> Self {
         SeqIndexDB {
             seq_db: None,
-            frg_db: None,
             agc_db: None,
             shmmr_spec: None,
             seq_index: None,
@@ -97,27 +93,6 @@ impl SeqIndexDB {
         self.shmmr_spec = Some(shmmr_spec);
 
         let (seq_index, seq_info) = seq_db::read_seq_index_sqlite(&prefix)?;
-        self.seq_index = Some(seq_index);
-        self.seq_info = Some(seq_info);
-        Ok(())
-    }
-
-    pub fn load_from_frg_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let mut frag_db = frag_file_io::CompactSeqFragFileStorage::new(prefix);
-
-        let seq_index = frag_db.seq_index.into_iter().map(|(k, v)| (k, v)).collect();
-
-        let seq_info = frag_db.seq_info.into_iter().map(|(k, v)| (k, v)).collect();
-
-        frag_db.seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        frag_db.seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
-
-        let shmmr_spec = frag_db.shmmr_spec.clone();
-
-        self.frg_db = Some(frag_db);
-        self.backend = Backend::FRG;
-        self.shmmr_spec = Some(shmmr_spec);
-
         self.seq_index = Some(seq_index);
         self.seq_info = Some(seq_info);
         Ok(())
@@ -182,7 +157,6 @@ impl SeqIndexDB {
         if self.seq_db.is_some() {
             let internal = self.seq_db.as_ref().unwrap();
 
-            internal.write_to_frag_files(file_prefix.clone(), None);
             internal
                 .write_shmmr_map_index(file_prefix, None)
                 .expect("write mdb file fail");
@@ -284,15 +258,8 @@ impl SeqIndexDB {
                 &self.agc_db.as_ref().unwrap().frag_location_map,
                 &self.agc_db.as_ref().unwrap().frag_map_file,
             )
-        } else if self.backend == Backend::FRG {
-            (
-                &self.frg_db.as_ref().unwrap().frag_location_map,
-                &self.frg_db.as_ref().unwrap().frag_map_file,
-            )
         } else {
-            panic!(
-                "the call query_fragment_to_hps_from_mmap_file() needs AGC or FRAG backend file"
-            );
+            panic!("needs AGC backend");
         };
 
         let raw_query_hits =
@@ -339,19 +306,6 @@ impl SeqIndexDB {
                     .unwrap()
                     .get_sub_seq_by_id(sid, bgn as u32, end as u32))
             }
-            Backend::FRG => {
-                let &(sid, _) = self
-                    .seq_index
-                    .as_ref()
-                    .unwrap()
-                    .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self
-                    .frg_db
-                    .as_ref()
-                    .unwrap()
-                    .get_sub_seq_by_id(sid, bgn as u32, end as u32))
-            }
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "fetching sequence fail, database type in not determined",
@@ -380,15 +334,6 @@ impl SeqIndexDB {
                     .unwrap();
                 Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
             }
-            Backend::FRG => {
-                let &(sid, _) = self
-                    .seq_index
-                    .as_ref()
-                    .unwrap()
-                    .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self.frg_db.as_ref().unwrap().get_seq_by_id(sid))
-            }
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "fetching sequence fail, database type in not determined",
@@ -412,7 +357,6 @@ impl SeqIndexDB {
             Backend::MEMORY | Backend::FASTX => {
                 Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
             }
-            Backend::FRG => Ok(self.frg_db.as_ref().unwrap().get_seq_by_id(sid)),
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "fetching sequence fail, database type in not determined",
@@ -440,11 +384,6 @@ impl SeqIndexDB {
             }
             Backend::MEMORY | Backend::FASTX => Ok(self
                 .seq_db
-                .as_ref()
-                .unwrap()
-                .get_sub_seq_by_id(sid, bgn as u32, end as u32)),
-            Backend::FRG => Ok(self
-                .frg_db
                 .as_ref()
                 .unwrap()
                 .get_sub_seq_by_id(sid, bgn as u32, end as u32)),
@@ -638,7 +577,6 @@ impl SeqIndexDB {
                 }
                 Backend::MEMORY => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
                 Backend::FASTX => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
-                Backend::FRG => self.frg_db.as_ref().unwrap().get_seq_by_id(sid),
                 Backend::UNKNOWN => vec![],
             }
         };
@@ -932,7 +870,6 @@ impl SeqIndexDB {
             Backend::AGC => None,
             Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),
-            Backend::FRG => None,
             Backend::UNKNOWN => None,
         }
     }

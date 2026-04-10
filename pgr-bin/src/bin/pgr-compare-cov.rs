@@ -21,9 +21,6 @@ struct CmdOptions {
     /// option to process data from pre-build AGC backed index
     #[clap(long, short)]
     agc_idx_prefix: Option<String>,
-    /// option to process data from pre-build frg backed index
-    #[clap(long, short)]
-    frg_idx_prefix: Option<String>,
     /// the path to the file contains the paths to the first set of sequence
     filepath0: String,
     /// the path to the file contains the paths to the seconde set of sequence
@@ -302,15 +299,9 @@ fn generate_bed_graph_from_fastx_files(args: &CmdOptions) {
     });
 }
 
-fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
+fn generate_bed_graph_from_sdb(args: &CmdOptions) {
     let mut seq_index_db = SeqIndexDB::new();
-    if input_type == "AGC" {
-        let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
-    } else if input_type == "FRG" {
-        let _ = seq_index_db.load_from_frg_index(args.frg_idx_prefix.as_ref().unwrap().clone());
-    } else {
-        panic!("input type has to be specified  AGC or FRG backends")
-    };
+    let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
 
     let shmmr_spec = seq_index_db.shmmr_spec.clone().unwrap();
 
@@ -492,9 +483,7 @@ fn main() {
     CmdOptions::command().version(VERSION_STRING).get_matches();
     let args = CmdOptions::parse();
     if let Some(_agc_idx_prefix) = args.agc_idx_prefix.clone() {
-        generate_bed_graph_from_sdb(&args, "AGC");
-    } else if let Some(_frg_idx_prefix) = args.frg_idx_prefix.clone() {
-        generate_bed_graph_from_sdb(&args, "FRG");
+        generate_bed_graph_from_sdb(&args);
     } else {
         generate_bed_graph_from_fastx_files(&args);
     }

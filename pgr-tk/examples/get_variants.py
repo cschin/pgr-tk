@@ -138,7 +138,7 @@ def seq_align_to_sdb(seq_db, seq1):
 
 def main(sdb_prefix, query_seq_fasta_path, out_prefix = "out"):
     target_sdb = pgrtk.SeqIndexDB()
-    target_sdb.load_from_frg_index(sdb_prefix)
+    target_sdb.load_from_agc_index(sdb_prefix)
     query_sdb = pgrtk.SeqIndexDB()
     query_sdb.load_from_fastx(query_seq_fasta_path)
 

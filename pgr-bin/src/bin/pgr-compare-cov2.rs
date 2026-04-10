@@ -22,9 +22,6 @@ struct CmdOptions {
     /// option to process data from pre-build AGC backed index
     #[clap(long, short)]
     agc_idx_prefix: Option<String>,
-    /// option to process data from pre-build frg backed index
-    #[clap(long, short)]
-    frg_idx_prefix: Option<String>,
     /// the path to the file contains the paths to the first set of sequence
     input: String,
     /// coverage threshold
@@ -119,16 +116,10 @@ fn output_cov_bed(
     });
 }
 
-fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
+fn generate_bed_graph_from_sdb(args: &CmdOptions) {
     let mut seq_index_db = SeqIndexDB::new();
 
-    if input_type == "AGC" {
-        let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
-    } else if input_type == "FRG" {
-        let _ = seq_index_db.load_from_frg_index(args.frg_idx_prefix.as_ref().unwrap().clone());
-    } else {
-        panic!("input type has to be specified  AGC or FRG backends")
-    };
+    let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
 
     let shmmr_spec = seq_index_db.shmmr_spec.clone().unwrap();
 
@@ -175,19 +166,11 @@ fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
             //let frag_map = seq_index_db.get_shmmr_map_internal().unwrap();
 
             let get_shmmr_matches = |smps: ShmmrPair| {
-                if input_type == "AGC" {
-                    get_shmmr_matches_from_mmap_file(
-                        &seq_index_db.agc_db.as_ref().unwrap().frag_location_map,
-                        smps,
-                        &seq_index_db.agc_db.as_ref().unwrap().frag_map_file,
-                    )
-                } else {
-                    get_shmmr_matches_from_mmap_file(
-                        &seq_index_db.frg_db.as_ref().unwrap().frag_location_map,
-                        smps,
-                        &seq_index_db.frg_db.as_ref().unwrap().frag_map_file,
-                    )
-                }
+                get_shmmr_matches_from_mmap_file(
+                    &seq_index_db.agc_db.as_ref().unwrap().frag_location_map,
+                    smps,
+                    &seq_index_db.agc_db.as_ref().unwrap().frag_map_file,
+                )
             };
             let mut output_bedgraph_file0 = BufWriter::new(
                 File::create(Path::new(&prefix).with_extension("0.bedgraph"))
@@ -324,10 +307,8 @@ fn main() {
     CmdOptions::command().version(VERSION_STRING).get_matches();
     let args = CmdOptions::parse();
     if let Some(_agc_idx_prefix) = args.agc_idx_prefix.clone() {
-        generate_bed_graph_from_sdb(&args, "AGC");
-    } else if let Some(_frg_idx_prefix) = args.frg_idx_prefix.clone() {
-        generate_bed_graph_from_sdb(&args, "FRG");
+        generate_bed_graph_from_sdb(&args);
     } else {
-        panic!("need a AGC/FRC backed seq index and db")
+        panic!("need an AGC backed seq index and db")
     }
 }

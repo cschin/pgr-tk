@@ -78,7 +78,6 @@ impl SeqIndexDB {
         SeqIndexDB {
             db_internal: pgr_db::ext::SeqIndexDB {
                 seq_db: None,
-                frg_db: None,
                 agc_db: None,
                 shmmr_spec: None,
                 seq_index: None,
@@ -110,12 +109,6 @@ impl SeqIndexDB {
     #[pyo3(text_signature = "($self, prefix)")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> PyResult<()> {
         self.db_internal.load_from_agc_index(prefix)?;
-        Ok(())
-    }
-
-    #[pyo3(text_signature = "($self, prefix)")]
-    pub fn load_from_frg_index(&mut self, prefix: String) -> PyResult<()> {
-        self.db_internal.load_from_frg_index(prefix)?;
         Ok(())
     }
 
@@ -271,19 +264,6 @@ impl SeqIndexDB {
                     &shmmr_spec,
                 ))
             }
-            Backend::FRG => {
-                let (frag_location_map, frag_map_file) = (
-                    &self.db_internal.frg_db.as_ref().unwrap().frag_location_map,
-                    &self.db_internal.frg_db.as_ref().unwrap().frag_map_file,
-                );
-                let shmmr_spec = self.db_internal.shmmr_spec.as_ref().unwrap().clone();
-                Ok(pgr_db::seq_db::raw_query_fragment_from_mmap_midx(
-                    frag_location_map,
-                    frag_map_file,
-                    &seq,
-                    &shmmr_spec,
-                ))
-            }
             Backend::MEMORY | Backend::FASTX => {
                 let shmmr_spec = &self.db_internal.shmmr_spec.as_ref().unwrap();
                 let shmmr_to_frags = self.get_shmmr_map_internal().unwrap();
@@ -382,19 +362,6 @@ impl SeqIndexDB {
         let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
         match self.db_internal.backend {
             Backend::AGC => Ok(self
-                .db_internal
-                .query_fragment_to_hps_from_mmap_file(
-                    &seq,
-                    penalty,
-                    max_count,
-                    max_count_query,
-                    max_count_target,
-                    max_aln_span,
-                    max_gap,
-                    orientated
-                )
-                .unwrap()),
-            Backend::FRG => Ok(self
                 .db_internal
                 .query_fragment_to_hps_from_mmap_file(
                     &seq,
@@ -1380,7 +1347,6 @@ impl SeqIndexDB {
         if self.db_internal.seq_db.is_some() {
             let internal = self.db_internal.seq_db.as_ref().unwrap();
 
-            internal.write_to_frag_files(file_prefix.clone(), None);
             internal
                 .write_shmmr_map_index(file_prefix.clone(), None)
                 .expect("write mdb file fail");
@@ -1415,7 +1381,6 @@ impl SeqIndexDB {
             Backend::AGC => None,
             Backend::FASTX => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
-            Backend::FRG => None,
             Backend::UNKNOWN => None,
         }
     }

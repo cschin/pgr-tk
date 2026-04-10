@@ -15,10 +15,6 @@ struct CmdOptions {
     /// the prefix to a PGR-TK sequence database
     pgr_db_prefix: String,
 
-    /// using the frg format for the sequence database (default to the AGC backend database if not specified)
-    #[clap(long, default_value_t = false)]
-    frg_file: bool,
-
     /// the regions file path
     #[clap(short, long, default_value=None)]
     region_file: Option<String>,
@@ -38,11 +34,7 @@ fn main() -> Result<(), std::io::Error> {
 
     let mut seq_index_db = SeqIndexDB::new();
 
-    if args.frg_file {
-        let _ = seq_index_db.load_from_frg_index(args.pgr_db_prefix);
-    } else {
-        let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
-    }
+    let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
 
     if args.list {
         let mut out = if args.output_file.is_some() {

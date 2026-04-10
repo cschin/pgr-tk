@@ -5,8 +5,6 @@ use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, 
 use bincode::{config, Decode, Encode};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use flate2::bufread::MultiGzDecoder;
-use flate2::write::DeflateEncoder;
-use flate2::Compression;
 use memmap2::Mmap;
 use petgraph::graphmap::DiGraphMap;
 use petgraph::visit::Dfs;
@@ -828,69 +826,6 @@ impl CompactSeqDB {
         // Write SQLite sequence index (.midx), storing the AGC archive path when known.
         write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix, agc_path)?;
         Ok(())
-    }
-}
-
-impl CompactSeqDB {
-    pub fn write_to_frag_files(&self, file_prefix: String, chunk_size: Option<usize>) {
-        let mut sdx_file = BufWriter::new(
-            File::create(file_prefix.clone() + ".sdx").expect("sdx file creating fail\n"),
-        );
-        sdx_file
-            .write_all("SDX:0.5".as_bytes())
-            .expect("sdx file writing error");
-        let mut frg_file =
-            BufWriter::new(File::create(file_prefix + ".frg").expect("frg file creating fail\n"));
-
-        frg_file
-            .write_all("FRG:0.5".as_bytes())
-            .expect("frg file writing error");
-        let config = config::standard();
-
-        let chunk_size = chunk_size.unwrap_or(256_usize);
-        let compressed_frags = self
-            .frags
-            .as_ref()
-            .unwrap()
-            .chunks(chunk_size)
-            .collect::<Vec<&[Fragment]>>()
-            .par_iter()
-            .map(|&frags| {
-                let mut total_frag_len = 0_u32;
-                frags.iter().for_each(|f| {
-                    total_frag_len += match f {
-                        Fragment::AlnSegments(d) => d.2 - self.shmmr_spec.k,
-                        Fragment::Prefix(b) => b.len() as u32,
-                        Fragment::Internal(b) => b.len() as u32 - self.shmmr_spec.k,
-                        Fragment::Suffix(b) => b.len() as u32,
-                    };
-                });
-
-                let w = bincode::encode_to_vec(frags.to_vec(), config).unwrap();
-                let mut compressor = DeflateEncoder::new(Vec::new(), Compression::default());
-                compressor.write_all(&w).unwrap();
-                let compress_frag = compressor.finish().unwrap();
-                (total_frag_len, compress_frag)
-            })
-            .collect::<Vec<(u32, Vec<u8>)>>();
-
-        let mut frag_addr_offset = vec![];
-        let mut offset = 0_usize;
-        compressed_frags.iter().for_each(|(frag_len, v)| {
-            let l = v.len();
-            frag_addr_offset.push((offset, v.len(), *frag_len));
-            offset += l;
-            frg_file.write_all(v).expect("frag file writing error\n");
-        });
-
-        bincode::encode_into_std_write(
-            (chunk_size, frag_addr_offset, &self.seqs),
-            &mut sdx_file,
-            config,
-        )
-        .expect("sdx file writing error\n");
-        //bincode::encode_into_std_write(compressed_frags, &mut frg_file, config)
-        //    .expect(" frag file writing error");
     }
 }
 

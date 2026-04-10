@@ -22,10 +22,6 @@ struct CmdOptions {
     /// the prefix of the output file
     output_prefix: String,
 
-    /// using the frg format for the sequence database (default to the AGC backend database if not specified)
-    #[clap(long, default_value_t = false)]
-    frg_file: bool,
-
     #[clap(long, default_value_t = false)]
     fastx_file: bool,
 
@@ -109,12 +105,7 @@ fn main() -> Result<(), std::io::Error> {
     };
 
     let mut seq_index_db = SeqIndexDB::new();
-    if args.frg_file {
-        let stderr = io::stderr();
-        let mut handle = stderr.lock();
-        let _ = handle.write_all(b"the option `--frg_file` is specified, read the input file as a FRG backed index database files.\n");
-        let _ = seq_index_db.load_from_frg_index(args.pgr_db_prefix);
-    } else if args.fastx_file {
+    if args.fastx_file {
         let stderr = io::stderr();
         let mut handle = stderr.lock();
         let _ = handle.write_all(
@@ -129,12 +120,10 @@ fn main() -> Result<(), std::io::Error> {
             true,
         );
     } else {
-        {
-            let stderr = io::stderr();
-            let mut handle = stderr.lock();
-            let _ = handle.write_all(b"Read the input as a AGC backed index database files.\n");
-            let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
-        }
+        let stderr = io::stderr();
+        let mut handle = stderr.lock();
+        let _ = handle.write_all(b"Read the input as a AGC backed index database files.\n");
+        let _ = seq_index_db.load_from_agc_index(args.pgr_db_prefix);
     }
     let prefix = Path::new(&args.output_prefix);
 
