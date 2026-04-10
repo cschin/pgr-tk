@@ -11,6 +11,7 @@ use pgr_db::seq_db;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// output file prefix (produces <prefix>.mdbi, <prefix>.mdbv, <prefix>.midx)
+    #[clap(long)]
     prefix: String,
     /// path to the AGC archive (.agcrs)
     #[clap(long)]
