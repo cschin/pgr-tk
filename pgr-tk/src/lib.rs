@@ -6,7 +6,6 @@ use pgr_db::seq_db;
 //use pgr_db::seqs2variants;
 use pgr_db::shmmrutils::{sequence_to_shmmrs, DeltaPoint, ShmmrSpec};
 
-#[cfg(feature = "with_agc")]
 use pgr_db::agc_io;
 
 use pgr_db::fasta_io;
@@ -80,7 +79,6 @@ impl SeqIndexDB {
             db_internal: pgr_db::ext::SeqIndexDB {
                 seq_db: None,
                 frg_db: None,
-                #[cfg(feature = "with_agc")]
                 agc_db: None,
                 shmmr_spec: None,
                 seq_index: None,
@@ -109,7 +107,6 @@ impl SeqIndexDB {
     ///     from the legacy ``.mdb`` format to the split ``.mdbi`` + ``.mdbv`` format.
     ///     A fix will be addressed in a future update.
     ///
-    #[cfg(feature = "with_agc")]
     #[pyo3(text_signature = "($self, prefix)")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> PyResult<()> {
         self.db_internal.load_from_agc_index(prefix)?;
@@ -261,7 +258,6 @@ impl SeqIndexDB {
         seq: Vec<u8>,
     ) -> PyResult<Vec<((u64, u64), (u32, u32, u8), Vec<seq_db::FragmentSignature>)>> {
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
                 let (frag_location_map, frag_map_file) = (
                     &self.db_internal.agc_db.as_ref().unwrap().frag_location_map,
@@ -385,7 +381,6 @@ impl SeqIndexDB {
     ) -> PyResult<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
         let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => Ok(self
                 .db_internal
                 .query_fragment_to_hps_from_mmap_file(
@@ -1417,7 +1412,6 @@ impl SeqIndexDB {
     // depending on the storage type, return the corresponded index
     fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => None,
             Backend::FASTX => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
@@ -1433,7 +1427,6 @@ impl SeqIndexDB {
 ///
 ///      >>> agc_file = AGCFile("/path/to/genomes.agc")
 ///
-#[cfg(feature = "with_agc")]
 #[pyclass(unsendable)] // lock in one thread (see https://github.com/PyO3/pyo3/blob/main/guide/src/class.md)
 struct AGCFile {
     /// internal agc_file handle
@@ -1450,7 +1443,6 @@ struct AGCFile {
     pub ctg_lens: FxHashMap<(String, String), usize>,
 }
 
-#[cfg(feature = "with_agc")]
 #[pymethods]
 impl AGCFile {
     /// constructor
@@ -2009,7 +2001,6 @@ pub fn shmmr_sparse_aln_consensus(
 #[pymodule]
 fn pgrtk(_: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<SeqIndexDB>()?;
-    #[cfg(feature = "with_agc")]
     m.add_class::<AGCFile>()?;
     m.add_function(wrap_pyfunction!(sparse_aln, m)?)?;
     m.add_function(wrap_pyfunction!(get_shmmr_dots, m)?)?;

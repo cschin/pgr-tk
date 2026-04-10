@@ -25,9 +25,5 @@ regex = "1"
 bincode = { version = "2", features = ["alloc"] }
 memmap2 = "0.9.10"
 wavefront-aln = {git = "https://github.com/cschin/wavefront-aln.git"}
-agc-rs = { path = "../agc-rs", optional = true }
+agc-rs = { path = "../agc-rs" }
 rusqlite = { version = "0.39", features = ["bundled"] }
-
-[features]
-default = ["with_agc"]
-with_agc = ["agc-rs"]

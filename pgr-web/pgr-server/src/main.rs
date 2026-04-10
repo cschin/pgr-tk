@@ -74,11 +74,7 @@ async fn main() {
     if opt.frg_file {
         let _ = seq_db.load_from_frg_index(opt.data_path_prefix);
     } else {
-        #[cfg(feature = "with_agc")]
         let _ = seq_db.load_from_agc_index(opt.data_path_prefix);
-
-        #[cfg(not(feature = "with_agc"))]
-        panic!("This command is compiled with only frg file support, please specify `--frg-file");
     }
 
     let seq_db = Arc::new(seq_db);

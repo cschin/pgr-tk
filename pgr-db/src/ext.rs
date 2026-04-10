@@ -1,6 +1,5 @@
 use flate2::bufread::MultiGzDecoder;
 
-#[cfg(feature = "with_agc")]
 use memmap2::Mmap;
 
 use crate::fasta_io::FastaReader;
@@ -11,7 +10,6 @@ use crate::seq_db::{self, raw_query_fragment, raw_query_fragment_from_mmap_midx,
 pub use crate::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
 use crate::{aln, frag_file_io::CompactSeqFragFileStorage};
 
-#[cfg(feature = "with_agc")]
 use crate::agc_io::{self, AGCSeqDB};
 
 use rayon::prelude::*;
@@ -35,7 +33,6 @@ pub enum GZFastaReader {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    #[cfg(feature = "with_agc")]
     AGC,
     FRG,
     FASTX,
@@ -48,7 +45,6 @@ pub struct SeqIndexDB {
     pub shmmr_spec: Option<ShmmrSpec>,
     /// Rust internal: store the sequences
     pub seq_db: Option<seq_db::CompactSeqDB>,
-    #[cfg(feature = "with_agc")]
     /// Rust internal: store the agc file and the index
     pub agc_db: Option<AGCSeqDB>,
     pub frg_db: Option<CompactSeqFragFileStorage>,
@@ -72,7 +68,6 @@ impl SeqIndexDB {
         SeqIndexDB {
             seq_db: None,
             frg_db: None,
-            #[cfg(feature = "with_agc")]
             agc_db: None,
             shmmr_spec: None,
             seq_index: None,
@@ -81,7 +76,6 @@ impl SeqIndexDB {
         }
     }
 
-    #[cfg(feature = "with_agc")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
         let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix).unwrap();
         let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
@@ -285,25 +279,12 @@ impl SeqIndexDB {
     ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
         let shmmr_spec = self.shmmr_spec.as_ref().unwrap();
 
-        #[cfg(feature = "with_agc")]
         let (frag_location_map, frag_map_file) = if self.backend == Backend::AGC {
             (
                 &self.agc_db.as_ref().unwrap().frag_location_map,
                 &self.agc_db.as_ref().unwrap().frag_map_file,
             )
         } else if self.backend == Backend::FRG {
-            (
-                &self.frg_db.as_ref().unwrap().frag_location_map,
-                &self.frg_db.as_ref().unwrap().frag_map_file,
-            )
-        } else {
-            panic!(
-                "the call query_fragment_to_hps_from_mmap_file() needs AGC or FRAG backend file"
-            );
-        };
-
-        #[cfg(not(feature = "with_agc"))]
-        let (frag_location_map, frag_map_file) = if self.backend == Backend::FRG {
             (
                 &self.frg_db.as_ref().unwrap().frag_location_map,
                 &self.frg_db.as_ref().unwrap().frag_map_file,
@@ -339,7 +320,6 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => Ok(self.agc_db.as_ref().unwrap().agc_file.get_sub_seq(
                 sample_name,
                 ctg_name,
@@ -385,7 +365,6 @@ impl SeqIndexDB {
         ctg_name: String,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => Ok(self
                 .agc_db
                 .as_ref()
@@ -419,7 +398,6 @@ impl SeqIndexDB {
 
     pub fn get_seq_by_id(&self, sid: u32) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
                 let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
                 let ctg_name = ctg_name.clone();
@@ -449,7 +427,6 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
                 let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
                 let ctg_name = ctg_name.clone();
@@ -648,7 +625,6 @@ impl SeqIndexDB {
     ) -> Result<(), std::io::Error> {
         let get_seq_by_id = |sid| -> Vec<u8> {
             match self.backend {
-                #[cfg(feature = "with_agc")]
                 Backend::AGC => {
                     let (ctg_name, sample_name, _) =
                         self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
@@ -953,7 +929,6 @@ impl SeqIndexDB {
     // depending on the storage type, return the corresponded index
     pub fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => None,
             Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),

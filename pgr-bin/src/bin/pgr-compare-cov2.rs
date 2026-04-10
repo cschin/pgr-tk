@@ -122,16 +122,9 @@ fn output_cov_bed(
 fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
     let mut seq_index_db = SeqIndexDB::new();
 
-    #[cfg(feature = "with_agc")]
     if input_type == "AGC" {
         let _ = seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().unwrap().clone());
     } else if input_type == "FRG" {
-        let _ = seq_index_db.load_from_frg_index(args.frg_idx_prefix.as_ref().unwrap().clone());
-    } else {
-        panic!("input type has to be specified  AGC or FRG backends")
-    };
-    #[cfg(not(feature = "with_agc"))]
-    if input_type == "FRG" {
         let _ = seq_index_db.load_from_frg_index(args.frg_idx_prefix.as_ref().unwrap().clone());
     } else {
         panic!("input type has to be specified  AGC or FRG backends")
@@ -182,7 +175,6 @@ fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
             //let frag_map = seq_index_db.get_shmmr_map_internal().unwrap();
 
             let get_shmmr_matches = |smps: ShmmrPair| {
-                #[cfg(feature = "with_agc")]
                 if input_type == "AGC" {
                     get_shmmr_matches_from_mmap_file(
                         &seq_index_db.agc_db.as_ref().unwrap().frag_location_map,
@@ -190,14 +182,6 @@ fn generate_bed_graph_from_sdb(args: &CmdOptions, input_type: &str) {
                         &seq_index_db.agc_db.as_ref().unwrap().frag_map_file,
                     )
                 } else {
-                    get_shmmr_matches_from_mmap_file(
-                        &seq_index_db.frg_db.as_ref().unwrap().frag_location_map,
-                        smps,
-                        &seq_index_db.frg_db.as_ref().unwrap().frag_map_file,
-                    )
-                }
-                #[cfg(not(feature = "with_agc"))]
-                {
                     get_shmmr_matches_from_mmap_file(
                         &seq_index_db.frg_db.as_ref().unwrap().frag_location_map,
                         smps,

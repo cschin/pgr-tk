@@ -1,4 +1,3 @@
-#[cfg(feature = "with_agc")]
 use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
 use crate::graph_utils::{AdjList, AdjPair, ShmmrGraphNode};
@@ -690,7 +689,6 @@ impl CompactSeqDB {
 
         Ok(())
     }
-    #[cfg(feature = "with_agc")]
     pub fn load_index_from_agcfile(&mut self, agcfile: AGCFile) -> Result<(), std::io::Error> {
         // Fetch all contigs in parallel (one SQLite connection per rayon task).
         // This replaces the serial AGCFileIter that held a single Mutex-locked

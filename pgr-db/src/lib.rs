@@ -1,6 +1,5 @@
 pub const VERSION_STRING: &str = env!("VERSION_STRING");
 
-#[cfg(feature = "with_agc")]
 pub mod agc_io;
 pub mod aln;
 pub mod ec;
@@ -181,7 +180,6 @@ mod tests {
     // raw_agc_test removed: the C FFI bindings are replaced by agc-rs (Rust SQLite backend).
 
     #[test]
-    #[cfg(feature = "with_agc")]
     fn act_io_test() -> Result<(), Box<dyn std::error::Error>> {
         use crate::agc_io::AGCFile;
         const PATH: &str = "test/test_data/test.agcrs";
@@ -204,7 +202,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "with_agc")]
     fn query_frag_test() -> Result<(), std::io::Error> {
         use crate::agc_io::AGCFile;
         use seq_db::raw_query_fragment;
@@ -237,7 +234,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "with_agc")]
     fn test_frag_map_to_adj_list() -> Result<(), std::io::Error> {
         use crate::agc_io::AGCFile;
         const PATH: &str = "test/test_data/test.agcrs";
