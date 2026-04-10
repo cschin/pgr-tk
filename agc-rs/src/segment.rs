@@ -97,9 +97,8 @@ pub fn decompress_reference(blob: &[u8]) -> Result<Vec<u8>> {
 /// Encode `query` as an LZ-diff delta against the reference already loaded
 /// into `lz` and return the raw byte stream.
 ///
-/// The caller is responsible for compression: either store the bytes
-/// temporarily in `segment.delta_data` and batch-compress later via
-/// [`batch_compress_deltas`], or compress individually for testing.
+/// Compress the result with [`compress_delta_data`] before storing in
+/// `segment.delta_data`.
 pub fn compress_delta(lz: &LzDiff, query: &[u8]) -> Result<Vec<u8>> {
     Ok(lz.encode(query))
 }
@@ -132,70 +131,6 @@ pub fn decompress_delta_data(blob: &[u8]) -> Result<Vec<u8>> {
             .decompress(blob, capacity)
             .map_err(|e| AgcError::Zstd(e.to_string()))
     })
-}
-
-// ---------------------------------------------------------------------------
-// Per-group batch delta compression
-// ---------------------------------------------------------------------------
-
-/// Concatenate multiple raw LZ-diff byte streams and ZSTD-compress them as a
-/// single blob for storage in `segment_group.delta_blob`.
-///
-/// Frame format (little-endian):
-/// ```text
-/// [n : u32]
-/// [len_0 : u32][bytes_0 ...]
-/// [len_1 : u32][bytes_1 ...]
-/// ...
-/// ```
-///
-/// `in_group_id` values are 1-based; element at index `i` (0-based) in
-/// `raw_deltas` corresponds to `in_group_id = i + 1`.
-pub fn batch_compress_deltas(raw_deltas: &[Vec<u8>]) -> Result<Vec<u8>> {
-    let n = raw_deltas.len() as u32;
-    let payload = 4 + raw_deltas.iter().map(|d| 4 + d.len()).sum::<usize>();
-    let mut buf = Vec::with_capacity(payload);
-    buf.extend_from_slice(&n.to_le_bytes());
-    for d in raw_deltas {
-        buf.extend_from_slice(&(d.len() as u32).to_le_bytes());
-        buf.extend_from_slice(d);
-    }
-    ZSTD_CTX.with(|ctx| {
-        ctx.borrow_mut()
-            .compress(buf.as_slice())
-            .map_err(|e| AgcError::Zstd(e.to_string()))
-    })
-}
-
-/// ZSTD-decompress a `delta_blob` and return the raw LZ-diff bytes at
-/// position `idx` (0-based, so `in_group_id - 1`).
-pub fn extract_delta_from_batch(blob: &[u8], idx: usize) -> Result<Vec<u8>> {
-    let frame = zstd::decode_all(blob).map_err(|e| AgcError::Zstd(e.to_string()))?;
-    if frame.len() < 4 {
-        return Err(AgcError::LzDiff("delta_blob frame too short".to_string()));
-    }
-    let n = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
-    if idx >= n {
-        return Err(AgcError::LzDiff(format!(
-            "delta index {idx} out of range (batch has {n} entries)"
-        )));
-    }
-    let mut pos = 4usize;
-    for i in 0..=idx {
-        if pos + 4 > frame.len() {
-            return Err(AgcError::LzDiff("truncated delta_blob frame".to_string()));
-        }
-        let len = u32::from_le_bytes(frame[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        if pos + len > frame.len() {
-            return Err(AgcError::LzDiff("truncated delta entry in batch".to_string()));
-        }
-        if i == idx {
-            return Ok(frame[pos..pos + len].to_vec());
-        }
-        pos += len;
-    }
-    unreachable!()
 }
 
 // ---------------------------------------------------------------------------
