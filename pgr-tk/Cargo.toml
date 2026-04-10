@@ -13,9 +13,9 @@ crate-type = ["rlib","cdylib"]
 pyo3 = { version = "0.18.3", features = ["extension-module"] }
 
 pgr-db = { path = "../pgr-db/", default-features = false  }
-rustc-hash = "1.1.0"
+rustc-hash = "2.1.2"
 rayon = "1.5.2"
-memmap2 = "0.5.10"
+memmap2 = "0.9.10"
 
 [features]
 with_agc = []

@@ -62,7 +62,7 @@ fn get_variant_recs_from_db(
             .expect("prepare variants query");
         let mut rows = stmt.query([]).expect("query variants");
         while let Some(row) = rows.next().expect("variants row") {
-            let aln_idx: u64 = row.get(0).unwrap();
+            let aln_idx: u64 = row.get::<_, i64>(0).unwrap() as u64;
             let dup_flag: i32 = row.get(1).unwrap();
             let ovlp_flag: i32 = row.get(2).unwrap();
             let t_name: String = row.get(3).unwrap();
@@ -88,7 +88,7 @@ fn get_variant_recs_from_db(
         let mut stmt = conn.prepare(stmt_sql).expect("prepare blocks query");
         let mut rows = stmt.query([]).expect("query blocks");
         while let Some(row) = rows.next().expect("blocks row") {
-            let aln_idx: u64 = row.get(0).unwrap();
+            let aln_idx: u64 = row.get::<_, i64>(0).unwrap() as u64;
             let dup_flag: i32 = row.get(1).unwrap();
             let ovlp_flag: i32 = row.get(2).unwrap();
             let t_name: String = row.get(3).unwrap();
