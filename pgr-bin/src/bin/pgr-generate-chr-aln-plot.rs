@@ -50,9 +50,11 @@ struct CytoBands {
 
 struct CmdOptions {
     /// path to a ctgmap.json file
+    #[clap(long, short)]
     ctgmap_json_path: String,
 
     /// the prefix of the output files
+    #[clap(long, short)]
     output_prefix: String,
 
     /// if given, we will use this to determine the plot scale, this is useful for generate many plot in the same scale

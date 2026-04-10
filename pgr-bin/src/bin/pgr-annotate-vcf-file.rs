@@ -15,10 +15,13 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the the a vcf file
+    #[clap(long, short)]
     vcf_path: String,
     /// path to the annotation file (gzipped)
+    #[clap(long, short)]
     annotation_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_path: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]

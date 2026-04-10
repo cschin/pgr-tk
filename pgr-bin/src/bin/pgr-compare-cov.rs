@@ -26,6 +26,7 @@ struct CmdOptions {
     /// the path to the file contains the paths to the seconde set of sequence
     filepath1: String,
     /// output prefix
+    #[clap(long, short)]
     prefix: String,
     /// minimizer window size
     #[clap(long, short, default_value_t = 80)]

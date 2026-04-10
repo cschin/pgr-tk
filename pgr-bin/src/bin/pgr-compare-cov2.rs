@@ -23,6 +23,7 @@ struct CmdOptions {
     #[clap(long, short)]
     agc_idx_prefix: Option<String>,
     /// the path to the file contains the paths to the first set of sequence
+    #[clap(long, short)]
     input: String,
     /// coverage threshold
     #[clap(long, short, default_value_t = 2.0)]

@@ -16,10 +16,13 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// the prefix to a PGR-TK sequence database
+    #[clap(long, short)]
     pgr_db_prefix: String,
     /// the path to the query fasta file
+    #[clap(long, short)]
     query_fastx_path: String,
     /// the prefix of the output file
+    #[clap(long, short)]
     output_prefix: String,
 
     #[clap(long, default_value_t = false)]

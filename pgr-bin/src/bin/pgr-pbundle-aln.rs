@@ -14,10 +14,13 @@ use std::{fs::File, path};
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// the path to the principal bundle bed file
+    #[clap(long, short)]
     bed_file_path: String,
     /// a file contain two lines of the contig ids that should be aligned to each other
+    #[clap(long, short)]
     aln_spec: String,
     /// the prefix of the output file
+    #[clap(long, short)]
     output_prefix: String,
 }
 

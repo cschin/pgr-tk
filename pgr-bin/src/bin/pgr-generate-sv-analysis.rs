@@ -16,8 +16,10 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the data file containing the reference and query sequence of SV candidates
+    #[clap(long, short)]
     sv_candidate_seq_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_prefix: String,
     /// the prefix of the output files
     #[clap(long, default_value = "Sample")]

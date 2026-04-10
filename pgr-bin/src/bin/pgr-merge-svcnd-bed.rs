@@ -14,8 +14,10 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the file contain the input bed files, each line should be "label<tab>input file path"
+    #[clap(long, short)]
     input_files: String,
     /// the path of the output files
+    #[clap(long, short)]
     output_path: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]

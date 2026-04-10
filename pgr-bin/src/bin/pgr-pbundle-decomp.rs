@@ -19,8 +19,10 @@ use std::{
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// the path to the input fasta file for building the principal bundles
+    #[clap(long, short)]
     fastx_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_prefix: String,
     /// if specified, we will use file in <PRECOMPUTED_BUNDLES> for the principal bundle data, this overrides computing bundles from <FASTX_PATH>
     #[clap(long, short, default_value = None)]

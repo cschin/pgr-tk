@@ -28,12 +28,15 @@ enum OptPreset {
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the reference fasta file
+    #[clap(long, short = 'R')]
     reference_fasta_path: String,
 
     /// the path to the query assembly contig file
+    #[clap(long, short)]
     assembly_contig_path: String,
 
     /// the prefix of the output files
+    #[clap(long, short)]
     output_prefix: String,
 
     /// use preset parameters ( (w,k,r,min_span,max_sw_aln_size) = (80, 55, 4, 64, 1024) for fast, (48, 55, 2, 16, 32864) for detail)

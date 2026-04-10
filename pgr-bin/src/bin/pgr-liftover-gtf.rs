@@ -24,12 +24,15 @@ use pgr_db::fasta_io::reverse_complement;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the alndb file (reference → haplotype contig alignment)
+    #[clap(long, short)]
     alndb_path: String,
 
     /// path to the GTF annotation file (plain or gzip-compressed)
+    #[clap(long, short)]
     gtf_path: String,
 
     /// path for the output SQLite database
+    #[clap(long, short)]
     output_db: String,
 
     /// minimum fraction [0.0–1.0] of exon bases that must be covered by M-blocks on

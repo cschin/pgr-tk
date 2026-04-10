@@ -12,8 +12,10 @@ use std::{fs::File, path};
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// the path to the pricipal bundle bed file
+    #[clap(long, short)]
     bed_file_path: String,
     /// the prefix of the output file
+    #[clap(long, short)]
     output_prefix: String,
 }
 

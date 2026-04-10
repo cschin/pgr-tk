@@ -19,6 +19,7 @@ struct CmdOptions {
     /// path to the second haplotype alnmap or alndb file
     hap1_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_prefix: String,
     /// path to target_len.json (required when using .alnmap input; inferred from .alndb)
     #[clap(long)]

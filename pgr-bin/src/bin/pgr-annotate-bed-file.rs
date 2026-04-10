@@ -15,10 +15,13 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the the a bed file
+    #[clap(long, short)]
     bed_path: String,
     /// path to the annotation file (gzipped)
+    #[clap(long, short)]
     annotation_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_path: String,
     /// type 
     #[clap(long, default_value = "transcript")]

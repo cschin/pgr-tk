@@ -84,14 +84,19 @@ fn get_aln_blocks_from_db(db_path: &str) -> FxHashMap<u32, Vec<ShimmerMatchBlock
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// path to the alnmap or alndb file
+    #[clap(long, short)]
     alnmap_path: String,
     /// path to the target fasta file
+    #[clap(long, short)]
     target_fasta_path: String,
     /// the path to the query fasta file
+    #[clap(long, short)]
     query_fasta_path: String,
     /// path to query coordinate file
+    #[clap(long, short)]
     coorindate_file_path: String,
     /// the prefix of the output files
+    #[clap(long, short)]
     output_path: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]

@@ -13,6 +13,7 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 struct CmdOptions {
     /// the prefix to a PGR-TK sequence database
+    #[clap(long, short)]
     pgr_db_prefix: String,
 
     /// the regions file path
