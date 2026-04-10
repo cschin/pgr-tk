@@ -44,7 +44,7 @@ fn track_delta_point(
     let mut d = d_final;
     let mut k = k_final;
     while d > 0 {
-        let dpt = delta_pts.get(&(d, k)).unwrap();
+        let dpt = delta_pts.get(&(d, k)).expect("invariant: DP cell (d,k) populated during forward pass");
         if dpt.x >= s && dpt.x <= e {
             dpts.push(*dpt);
         }
@@ -117,8 +117,8 @@ pub fn match_reads<'a>(
         for k in (k_min..=k_max).step_by(2) {
             let mut x: u32;
             let mut y: u32;
-            let (_, vn) = uv_map.get(&(k - 1)).unwrap();
-            let (_, vp) = uv_map.get(&(k + 1)).unwrap();
+            let (_, vn) = uv_map.get(&(k - 1)).expect("invariant: k-1 diagonal populated in DP iteration");
+            let (_, vp) = uv_map.get(&(k + 1)).expect("invariant: k+1 diagonal populated in DP iteration");
             if k == k_min || ((k != k_max) && vn < vp) {
                 x = *vp;
                 pre_k = k + 1;
@@ -182,7 +182,7 @@ pub fn match_reads<'a>(
         let mut k_max_new = k_min;
         let mut k_min_new = k_max;
         for k2 in (k_min..=k_max).step_by(2) {
-            let (u, _) = uv_map.get(&k2).unwrap();
+            let (u, _) = uv_map.get(&k2).expect("invariant: k2 diagonal populated before traceback");
             if *u as i32 >= (best_m - (band_tolerance as i32)) {
                 if k2 < k_min_new {
                     k_min_new = k2;

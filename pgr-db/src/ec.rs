@@ -68,13 +68,13 @@ pub fn naive_dbg_consensus(
             let in_edges = db_g.edges_directed(m, Incoming);
             let mut bs = 0;
             let mut bn: Option<usize> = None;
-            let ms = *kmer_count.get(&m).unwrap();
+            let ms = *kmer_count.get(&m).expect("invariant: kmer_count populated for all graph nodes");
             in_edges.into_iter().for_each(|(v, _w, _)| {
                 if bn.is_none() {
-                    bs = *node_score.get(&v).unwrap();
+                    bs = *node_score.get(&v).expect("invariant: node_score set in topological order");
                     bn = Some(v);
                 } else {
-                    let s = *node_score.get(&v).unwrap();
+                    let s = *node_score.get(&v).expect("invariant: node_score set in topological order");
                     if s > bs {
                         bs = s;
                         bn = Some(v);
@@ -95,27 +95,27 @@ pub fn naive_dbg_consensus(
         (0..tgt_seq.len() - kmer_size + 1).for_each(|p| {
             if p != 0 {
                 let kmer0 = tgt_seq[p..p + kmer_size].to_vec();
-                let idx0 = *kmer_idx.get(&kmer0).unwrap();
+                let idx0 = *kmer_idx.get(&kmer0).expect("invariant: kmer indexed during build");
                 let kmer1 = tgt_seq[p - 1..p + kmer_size - 1].to_vec();
-                let idx1 = *kmer_idx.get(&kmer1).unwrap();
+                let idx1 = *kmer_idx.get(&kmer1).expect("invariant: kmer indexed during build");
                 // println!("{:?} {:?} {} {}", kmer0, kmer1, idx0, idx1);
                 tgt_rev_path.insert(idx0, Some(idx1));
             } else {
                 let kmer0 = tgt_seq[p..p + kmer_size].to_vec();
-                let idx0 = *kmer_idx.get(&kmer0).unwrap();
+                let idx0 = *kmer_idx.get(&kmer0).expect("invariant: kmer indexed during build");
                 tgt_rev_path.insert(idx0, None);
             }
         });
 
         let last_kmer = tgt_seq[tgt_seq.len() - kmer_size..tgt_seq.len()].to_vec();
         // println!("{:?}", last_kmer);
-        let last_tgt_idx = *kmer_idx.get(&last_kmer.to_vec()).unwrap();
+        let last_tgt_idx = *kmer_idx.get(&last_kmer.to_vec()).expect("invariant: last kmer indexed during build");
         let mut rev_path = Vec::<usize>::new();
         let mut cur_idx = last_tgt_idx;
         rev_path.push(cur_idx);
         loop {
             if let Some(Some(p_idx)) = tgt_rev_path.get(&cur_idx) {
-                if *kmer_count.get(p_idx).unwrap() >= min_cov {
+                if *kmer_count.get(p_idx).expect("invariant: kmer_count populated for all path nodes") >= min_cov {
                     cur_idx = *p_idx;
                     rev_path.push(cur_idx);
                     continue;
@@ -221,7 +221,7 @@ pub fn shmmr_dbg_consensus(
     let mut wdfs_walker = BiDiGraphWeightedDfs::new(&g, start, &score);
     let mut out = vec![];
     while let Some((node, p_node, is_leaf, rank, branch_id, branch_rank)) = wdfs_walker.next(&g) {
-        let node_count = *score.get(&node).unwrap();
+        let node_count = *score.get(&node).expect("invariant: score set for all graph nodes");
         let p_node = p_node.map(|pnode| (pnode.0, pnode.1, pnode.2));
         out.push((
             node,
@@ -241,14 +241,14 @@ pub fn shmmr_dbg_consensus(
     //let mut head_orientation = 0_u8;
     for (node, _p_node, node_count, is_leaf, _rank, _branch_id, _branch_rank) in out {
         if out_seq.is_empty() {
-            let seq = frg_seqs.get(&node).unwrap().clone();
+            let seq = frg_seqs.get(&node).expect("invariant: frg_seqs populated for all graph nodes").clone();
             for _ in 0..seq.len() {
                 out_cov.push(node_count);
             }
             out_seq.extend(seq);
         } else {
             let k = shmmr_spec.k as usize;
-            let seq = frg_seqs.get(&node).unwrap().clone();
+            let seq = frg_seqs.get(&node).expect("invariant: frg_seqs populated for all graph nodes").clone();
             assert!(out_seq[out_seq.len() - k..] == seq[..k]);
             let seq = seq[k..].to_vec();
             for _ in 0..seq.len() {
@@ -351,7 +351,7 @@ pub fn guided_shmmr_dbg_consensus(
         .into_iter()
         .for_each(|(n, p)| {
             let node = ShmmrGraphNode(n.0, n.1, n.2);
-            let s = *score.get(&node).unwrap();
+            let s = *score.get(&node).expect("invariant: score set for all graph nodes");
             if s >= min_cov {
                 guide_nodes.insert(node, p);
             }
@@ -362,7 +362,7 @@ pub fn guided_shmmr_dbg_consensus(
     //let mut wdfs_walker = BiDiGraphWeightedDfs::new(&g, start, &score);
 
     let start = ShmmrGraphNode(s0.1 .0, s0.1 .1, s0.1 .2);
-    let w = *score.get(&start).unwrap();
+    let w = *score.get(&start).expect("invariant: start node has a score");
 
     let mut out = vec![];
     let mut next_node: WeightedNode<ShmmrGraphNode> = WeightedNode(w, start);
@@ -382,11 +382,11 @@ pub fn guided_shmmr_dbg_consensus(
                 if !visited.contains(&succ) {
                     //println!("DBG: pushing0: {:?}", succ);
                     out_count += 1;
-                    let s = *score.get(&succ).unwrap();
+                    let s = *score.get(&succ).expect("invariant: score set for all successor nodes");
                     if guide_nodes.contains_key(&succ) {
                         // choose the closest one for repetitive cases
                         if let Some(pos) = current_node_position {
-                            let pos2 = *guide_nodes.get(&succ).unwrap();
+                            let pos2 = *guide_nodes.get(&succ).expect("invariant: succ was just found to be in guide_nodes");
                             if pos2 > *pos {
                                 if let Some(mdist) = min_dist {
                                     let dist = pos2 - *pos;
@@ -416,11 +416,11 @@ pub fn guided_shmmr_dbg_consensus(
                 last_in_guide_nodes = Some(next_node.1);
             } else if !succ_list_f.is_empty() {
                 succ_list_f.sort();
-                next_node = succ_list_f.pop().unwrap();
+                next_node = succ_list_f.pop().expect("invariant: succ_list_f is non-empty after is_empty() check");
             } else {
                 break;
             }
-            out.push((node.1, *score.get(&node.1).unwrap()));
+            out.push((node.1, *score.get(&node.1).expect("invariant: score set for all visited nodes")));
         }
     }
 
@@ -429,14 +429,14 @@ pub fn guided_shmmr_dbg_consensus(
     //let mut head_orientation = 0_u8;
     for (node, node_count) in out {
         if out_seq.is_empty() {
-            let seq = frg_seqs.get(&node).unwrap().clone();
+            let seq = frg_seqs.get(&node).expect("invariant: frg_seqs populated for all graph nodes").clone();
             for _ in 0..seq.len() {
                 out_cov.push(node_count);
             }
             out_seq.extend(seq);
         } else {
             let k = shmmr_spec.k as usize;
-            let seq = frg_seqs.get(&node).unwrap().clone();
+            let seq = frg_seqs.get(&node).expect("invariant: frg_seqs populated for all graph nodes").clone();
             /*
             println!(
                 "{} {} {} {} {}",
@@ -461,7 +461,7 @@ pub fn guided_shmmr_dbg_consensus(
             println!("YY");
         }
         */
-        if last_in_guide_nodes.is_some() && node == last_in_guide_nodes.unwrap() {
+        if last_in_guide_nodes.is_some() && node == last_in_guide_nodes.expect("invariant: just checked is_some()") {
             break;
         }
     }
@@ -501,7 +501,7 @@ pub fn shmmr_sparse_aln_consensus(
         })
         .collect::<Vec<(u32, Option<String>, String, Vec<u8>)>>();
     sdb.load_seqs_from_seq_vec(&seqs);
-    let out = shmmr_sparse_aln_consensus_with_sdb(vec![0], &sdb, min_cov).unwrap();
+    let out = shmmr_sparse_aln_consensus_with_sdb(vec![0], &sdb, min_cov).expect("algorithm invariant: consensus with valid SDB should succeed");
 
     Ok(out[0].1.clone())
 }
@@ -558,7 +558,7 @@ pub fn shmmr_sparse_aln_consensus_with_sdb(
         let mut reliable_regions = Vec::<((u32, u32, u8), u32)>::new();
         keys.sort();
         keys.into_iter().for_each(|k| {
-            let m = hit_map.get(&k).unwrap();
+            let m = hit_map.get(&k).expect("invariant: k came from hit_map.keys()");
             let mut count = FxHashSet::<u32>::default();
             m.iter().for_each(|(sid, _)| {
                 count.insert(*sid);
@@ -583,7 +583,7 @@ pub fn shmmr_sparse_aln_consensus_with_sdb(
                 });
             } else {
                 // println!("DBG R PR : {:?} {:?}", r, p_region);
-                if r.0 == p_region.unwrap().0 .1 {
+                if r.0 == p_region.expect("invariant: p_region is Some after else branch").0 .1 {
                     seq.extend(seq0[r.0 as usize..r.1 as usize].to_vec());
                     (r.0..r.1).for_each(|_| {
                         cov.push(c);
@@ -591,8 +591,8 @@ pub fn shmmr_sparse_aln_consensus_with_sdb(
                 } else {
                     // println!("DBG R SL : {:?} {}", r, seq.len());
                     // find the next hit in the seq and patch in other support sequence for the un-reliable gaps
-                    let p_hit = hit_map.get(&p_region.unwrap().0).unwrap();
-                    let c_hit = hit_map.get(&r).unwrap();
+                    let p_hit = hit_map.get(&p_region.expect("invariant: p_region is Some in else branch").0).expect("invariant: p_region key in hit_map");
+                    let c_hit = hit_map.get(&r).expect("invariant: r came from reliable_regions which came from hit_map keys");
                     let p_hit = p_hit
                         .iter()
                         .copied()
@@ -610,7 +610,7 @@ pub fn shmmr_sparse_aln_consensus_with_sdb(
                         }
 
                         if c_hit.contains_key(&sid) {
-                            let w = *c_hit.get(&sid).unwrap();
+                            let w = *c_hit.get(&sid).expect("invariant: sid found in c_hit after contains_key check");
                             //println!("DBG R: {} {:?} {:?}", sid, p_region, r);
                             //println!("DBG S: {} {:?} {:?}", sid, v, w);
 

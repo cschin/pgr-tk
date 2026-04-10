@@ -287,7 +287,7 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            Backend::AGC => Ok(self.agc_db.as_ref().unwrap().agc_file.get_sub_seq(
+            Backend::AGC => Ok(self.agc_db.as_ref().expect("invariant: agc_db set when backend is AGC").agc_file.get_sub_seq(
                 sample_name,
                 ctg_name,
                 bgn,

@@ -90,7 +90,7 @@ pub fn get_aln_segments(
     if cigar.is_err() {
         return Err("Fail to find variants");
     };
-    let cigar = cigar.unwrap();
+    let cigar = cigar.expect("invariant: cigar is Ok after error check above");
     let mut v = AlnSegments::new();
     let mut p0: u32 = 0;
     let mut p1: u32 = 0;
@@ -123,7 +123,7 @@ pub fn get_aln_segments(
                 b'D' => Some((AlnSegType::Deletion, adv, 0)),
                 _ => None,
             }
-            .unwrap()
+            .expect("invariant: cigar bytes are one of M/X/I/D")
         })
         .for_each(|advs| {
             let sl_r = SeqLocus {
@@ -256,8 +256,8 @@ pub fn get_aln_fragment(
     } else {
         ref_len - 1
     };
-    let bgn = aln_map.pmap.get(ref_bgn as usize).unwrap().1 as usize;
-    let end = aln_map.pmap.get(ref_end as usize).unwrap().1 as usize;
+    let bgn = aln_map.pmap.get(ref_bgn as usize).expect("invariant: ref_bgn within pmap bounds").1 as usize;
+    let end = aln_map.pmap.get(ref_end as usize).expect("invariant: ref_end within pmap bounds").1 as usize;
     (
         ref_a_seq[bgn..end].to_vec(),
         aln_seq[bgn..end].to_vec(),

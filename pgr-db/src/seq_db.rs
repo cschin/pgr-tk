@@ -197,7 +197,7 @@ impl CompactSeqDB {
         let mut seq_frags = Vec::<u32>::new();
 
         assert!(self.frags.is_some());
-        let frags: &mut Vec<Fragment> = self.frags.as_mut().unwrap();
+        let frags: &mut Vec<Fragment> = self.frags.as_mut().expect("invariant: frags initialized in new()");
 
         let mut frg_id = frags.len() as u32;
         let mut seq_len = 0_usize;
@@ -246,9 +246,9 @@ impl CompactSeqDB {
                 let mut out_frag = None;
 
                 if frg_len > 128 && try_compress && self.frag_map.contains_key(&shmmr_pair) {
-                    let e = self.frag_map.get(&shmmr_pair).unwrap();
+                    let e = self.frag_map.get(&shmmr_pair).expect("invariant: shmmr_pair just inserted into frag_map");
                     for t_frg_id in e.iter() {
-                        let base_frg = frags.get(t_frg_id.0 as usize).unwrap();
+                        let base_frg = frags.get(t_frg_id.0 as usize).expect("invariant: t_frg_id in bounds");
                         if let Fragment::Internal(b) = base_frg {
                             let base_frg = b;
                             //assert!(base_frg.len() > KMERSIZE as usize);
@@ -269,7 +269,7 @@ impl CompactSeqDB {
                             assert!(base_frg.len() < (1 << 32) - 1);
                             let m = match_reads(base_frg, &frg, true, 0.1, 0, 0, 32);
                             if let Some(m) = m {
-                                let deltas: Vec<DeltaPoint> = m.deltas.unwrap();
+                                let deltas: Vec<DeltaPoint> = m.deltas.expect("invariant: deltas populated by match_reads");
                                 let aln_segs = deltas_to_aln_segs(
                                     &deltas,
                                     m.end0 as usize,
@@ -328,7 +328,7 @@ impl CompactSeqDB {
                     self.frag_map
                         .insert(*shmmr, Vec::<(u32, u32, u32, u32, u8)>::new());
                 }
-                let e = self.frag_map.get_mut(shmmr).unwrap();
+                let e = self.frag_map.get_mut(shmmr).expect("invariant: shmmr just inserted into frag_map");
                 e.push((frg_id, id, *bgn, *end, *orientation));
                 seq_len += (*end - *bgn) as usize;
                 frags.push(frg.clone());
@@ -729,11 +729,11 @@ impl CompactSeqDB {
 impl CompactSeqDB {
     fn reconstruct_seq_from_frags<I: Iterator<Item = u32>>(&self, frag_ids: I) -> Vec<u8> {
         let mut reconstructed_seq = <Vec<u8>>::new();
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
+        let frags: &Vec<Fragment> = self.frags.as_ref().expect("invariant: frags initialized in new()");
         // let mut _p = 0;
         frag_ids.for_each(|frag_id| {
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
-            match frags.get(frag_id as usize).unwrap() {
+            match frags.get(frag_id as usize).expect("invariant: frag_id in bounds") {
                 Fragment::Prefix(b) => {
                     reconstructed_seq.extend_from_slice(&b[..]);
                     //println!("P p: {} {} {}", frag_id, _p, _p + b.len());
@@ -750,7 +750,7 @@ impl CompactSeqDB {
                     //_p += b.len()-self.shmmr_spec.k as usize;
                 }
                 Fragment::AlnSegments((frg_id, reversed, _length, a)) => {
-                    if let Fragment::Internal(base_seq) = frags.get(*frg_id as usize).unwrap() {
+                    if let Fragment::Internal(base_seq) = frags.get(*frg_id as usize).expect("invariant: frg_id in bounds") {
                         let mut seq = reconstruct_seq_from_aln_segs(base_seq, a);
                         /*  // for debugging
                         if *_length as usize != seq.len() {
@@ -789,7 +789,7 @@ impl CompactSeqDB {
 
 impl GetSeq for CompactSeqDB {
     fn get_seq_by_id(&self, sid: u32) -> Vec<u8> {
-        let seq = self.seqs.get(sid as usize).unwrap();
+        let seq = self.seqs.get(sid as usize).expect("invariant: sid in bounds");
         self.reconstruct_seq_from_frags(
             seq.seq_frag_range.0..seq.seq_frag_range.0 + seq.seq_frag_range.1,
         )
@@ -802,7 +802,7 @@ impl GetSeq for CompactSeqDB {
         let mut _p = 0;
         let mut base_offset = 0_u32;
         let mut sub_seq_frag = vec![];
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
+        let frags: &Vec<Fragment> = self.frags.as_ref().expect("invariant: frags initialized in new()");
         for frag_id in frag_range.0..frag_range.0 + frag_range.1 {
             let f = &frags[frag_id as usize];
             let frag_len = match f {
@@ -869,7 +869,7 @@ pub fn frag_map_to_adj_list(
         // more or less duplicate code, but this takes the hashset check out of the loop if keeps is None.
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).unwrap().len() >= min_count
+                if frag_map.get(&(v.3 .0, v.3 .1)).expect("invariant: key from iterating frag_map").len() >= min_count
                     || keeps.contains(&v.0)
                 {
                     Some(v)
@@ -881,7 +881,7 @@ pub fn frag_map_to_adj_list(
     } else {
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).unwrap().len() >= min_count {
+                if frag_map.get(&(v.3 .0, v.3 .1)).expect("invariant: key from iterating frag_map").len() >= min_count {
                     Some(v)
                 } else {
                     None
@@ -946,8 +946,8 @@ pub fn generate_smp_adj_list_for_seq(
                 let v = res[i];
                 let w = res[i + 1];
                 if (frag_map.get(&(v.0, v.1)).is_none() || frag_map.get(&(w.0, w.1)).is_none())
-                    || (frag_map.get(&(v.0, v.1)).unwrap().len() < min_count
-                        || frag_map.get(&(w.0, w.1)).unwrap().len() < min_count)
+                    || (frag_map.get(&(v.0, v.1)).expect("invariant: key from iterating frag_map").len() < min_count
+                        || frag_map.get(&(w.0, w.1)).expect("invariant: key from iterating frag_map").len() < min_count)
                     || v.3 != w.2
                 {
                     vec![None]
@@ -1001,10 +1001,10 @@ pub fn sort_adj_list_by_weighted_dfs(
         // println!("DBG: add_edge {:?} {:?}", v, w);
         score
             .entry(v)
-            .or_insert_with(|| frag_map.get(&vv).unwrap().len() as u32);
+            .or_insert_with(|| frag_map.get(&vv).expect("invariant: vv from iterating frag_map keys").len() as u32);
         score
             .entry(w)
-            .or_insert_with(|| frag_map.get(&ww).unwrap().len() as u32);
+            .or_insert_with(|| frag_map.get(&ww).expect("invariant: ww from iterating frag_map keys").len() as u32);
     });
 
     // println!("DBG: # node: {}, # edge: {}", g.node_count(), g.edge_count());
@@ -1016,7 +1016,7 @@ pub fn sort_adj_list_by_weighted_dfs(
     while let Some((node, p_node, is_leaf, rank, branch_id, branch_rank)) =
         weighted_dfs_walker.next(&g)
     {
-        let node_count = *score.get(&node).unwrap();
+        let node_count = *score.get(&node).expect("invariant: score set for all traversed nodes");
         let p_node = p_node.map(|pnode| ShmmrGraphNode(pnode.0, pnode.1, pnode.2));
         out.push((
             ShmmrGraphNode(node.0, node.1, node.2),
@@ -1108,7 +1108,7 @@ pub fn get_principal_bundles_from_adj_list(
     let mut principal_bundles = Vec::<Vec<ShmmrGraphNode>>::new();
 
     while !starts.is_empty() {
-        let s = starts.pop().unwrap();
+        let s = starts.pop().expect("invariant: starts is non-empty in loop");
         let mut dfs = Dfs::new(&g1, s);
         let mut path = Vec::<ShmmrGraphNode>::new();
         while let Some(v) = dfs.next(&g1) {
@@ -1151,7 +1151,7 @@ pub fn get_principal_bundles_from_adj_list(
             }
         };
     }
-    principal_bundles.sort_by(|a, b| b.len().partial_cmp(&(a.len())).unwrap());
+    principal_bundles.sort_by(|a, b| b.len().partial_cmp(&(a.len())).expect("invariant: usize comparison is total order"));
     (principal_bundles, filtered_adj_list)
 }
 
