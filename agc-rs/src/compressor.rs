@@ -685,42 +685,66 @@ impl Compressor {
             t1.elapsed().as_secs_f64(),
         );
 
-        // Parallel: split each contig and ZSTD-compress each segment.
-        eprintln!("[{:7.2}s]   compressing segments (parallel) ...", t0.elapsed().as_secs_f64());
+        // Split all records first (parallel, fast — just k-mer lookups).
+        // Then flatten ALL segments into one list so rayon load-balances at
+        // segment granularity rather than contig granularity.  Large chromosomes
+        // (e.g. chr1 with ~4000 segments) would otherwise monopolise a thread
+        // and stall the last phase of the pool.
+        let splits: Vec<Vec<SegInfo>> = records
+            .par_iter()
+            .map(|rec| split_contig(&rec.seq, &splitters, splitter_k))
+            .collect();
+
+        let total_segs: usize = splits.iter().map(|s| s.len()).sum();
+        eprintln!(
+            "[{:7.2}s]   compressing {} segments across {} contigs (parallel) ...",
+            t0.elapsed().as_secs_f64(), total_segs, n_contigs,
+        );
         let t1 = Instant::now();
+
+        // Flat list: (rec_idx, seg_order, &SegInfo)
+        let flat: Vec<(usize, usize, &SegInfo)> = splits
+            .iter()
+            .enumerate()
+            .flat_map(|(ri, segs)| segs.iter().enumerate().map(move |(si, seg)| (ri, si, seg)))
+            .collect();
+
         let done = AtomicUsize::new(0);
-        let compressed_per_record: Vec<Vec<(Vec<u8>, usize, Option<i64>, Option<i64>, bool)>> =
-            records
-                .par_iter()
-                .map(|rec| {
-                    let result = split_contig(&rec.seq, &splitters, splitter_k)
-                        .into_iter()
-                        .map(|seg| {
-                            let blob = segment::compress_reference(&seg.seq)
-                                .expect("compress_reference failed");
-                            let kf = if seg.kmer_front != SENTINEL {
-                                Some(seg.kmer_front as i64)
-                            } else {
-                                None
-                            };
-                            let kb = if seg.kmer_back != SENTINEL {
-                                Some(seg.kmer_back as i64)
-                            } else {
-                                None
-                            };
-                            (blob, seg.raw_len, kf, kb, seg.is_rc)
-                        })
-                        .collect();
+        let mut compressed_flat: Vec<(usize, usize, Vec<u8>, usize, Option<i64>, Option<i64>, bool)> =
+            flat.par_iter()
+                .map(|(ri, si, seg)| {
+                    let blob = segment::compress_reference(&seg.seq)
+                        .expect("compress_reference failed");
+                    let kf = if seg.kmer_front != SENTINEL {
+                        Some(seg.kmer_front as i64)
+                    } else {
+                        None
+                    };
+                    let kb = if seg.kmer_back != SENTINEL {
+                        Some(seg.kmer_back as i64)
+                    } else {
+                        None
+                    };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n % 50 == 0 || n == n_contigs {
+                    if n % 5000 == 0 || n == total_segs {
                         eprintln!(
-                            "[{:7.2}s]   {:4}/{} contigs compressed",
-                            t0.elapsed().as_secs_f64(), n, n_contigs,
+                            "[{:7.2}s]   {:6}/{} segments compressed",
+                            t0.elapsed().as_secs_f64(), n, total_segs,
                         );
                     }
-                    result
+                    (*ri, *si, blob, seg.raw_len, kf, kb, seg.is_rc)
                 })
                 .collect();
+
+        // Restore (ri, si) order — par_iter output order is not guaranteed.
+        compressed_flat.par_sort_unstable_by_key(|&(ri, si, ..)| (ri, si));
+
+        // Reassemble per-record: segments are now in correct seg_order.
+        let mut compressed_per_record: Vec<Vec<(Vec<u8>, usize, Option<i64>, Option<i64>, bool)>> =
+            splits.iter().map(|segs| Vec::with_capacity(segs.len())).collect();
+        for (ri, _, blob, raw_len, kf, kb, is_rc) in compressed_flat {
+            compressed_per_record[ri].push((blob, raw_len, kf, kb, is_rc));
+        }
 
         eprintln!(
             "[{:7.2}s]   compression done ({:.2}s); writing to DB ...",
@@ -848,12 +872,20 @@ impl Compressor {
         // build the index once.  Memory is bounded to (groups in one contig) ×
         // (LzDiff size) per thread, rather than all groups simultaneously.
 
-        eprintln!("[{:7.2}s]   compressing with LzDiff (parallel) ...", t0.elapsed().as_secs_f64());
+        // Sort records largest-first so rayon's work-stealing scheduler picks up
+        // the most expensive tasks (large chromosomes) before the small ones,
+        // preventing a single huge contig from stalling the pool at the tail.
+        // The original index is preserved so we can reassemble in input order.
+        let mut order: Vec<usize> = (0..records.len()).collect();
+        order.sort_unstable_by_key(|&i| std::cmp::Reverse(records[i].seq.len()));
+
+        eprintln!("[{:7.2}s]   compressing with LzDiff (parallel, largest-first) ...", t0.elapsed().as_secs_f64());
         let t1 = Instant::now();
         let done = AtomicUsize::new(0);
-        let compressed_per_record: Vec<(Vec<ChunkResult>, Vec<u64>)> = records
+        let compressed_ordered: Vec<(usize, Vec<ChunkResult>, Vec<u64>)> = order
             .par_iter()
-            .map(|rec| {
+            .map(|&orig_idx| {
+                let rec = &records[orig_idx];
                 let mut local_splitters: Vec<u64> = Vec::new();
 
                 // Initial split with global splitters.
@@ -973,9 +1005,16 @@ impl Compressor {
                         t0.elapsed().as_secs_f64(), n, n_contigs,
                     );
                 }
-                (chunks, local_splitters)
+                (orig_idx, chunks, local_splitters)
             })
             .collect();
+
+        // Restore input order so the DB write loop zips correctly with `records`.
+        let mut compressed_per_record: Vec<(Vec<ChunkResult>, Vec<u64>)> =
+            (0..records.len()).map(|_| (vec![], vec![])).collect();
+        for (orig_idx, chunks, local_spl) in compressed_ordered {
+            compressed_per_record[orig_idx] = (chunks, local_spl);
+        }
 
         eprintln!(
             "[{:7.2}s]   LzDiff compression done ({:.2}s); writing segments to DB ...",
