@@ -94,35 +94,30 @@ PYEOF
 # 1. Prepare input FASTAs (chr6 subset or full genome)
 # ---------------------------------------------------------------------------
 if $CHR6_ONLY; then
-    for f in "$OUT/hg002_hap0.ctgmap.bed" "$OUT/hg002_hap1.ctgmap.bed"; do
-        [[ -f "$f" ]] || { echo "ERROR: $f not found — run 01_align_alnmap.sh first"; exit 1; }
-    done
-
     REF_INPUT="$OUT/ref_chr6.fa"
     HAP0_INPUT="$OUT/hap0_chr6.fa"
     HAP1_INPUT="$OUT/hap1_chr6.fa"
 
+    # GRCh38 header format: ">GRCh38#0#chr6  AC:... description"
+    # match contig name before any whitespace/description
     if [[ ! -s "$REF_INPUT" ]]; then
         echo "=== [1a] Extracting chr6 from GRCh38 ==="
-        extract_seqs "$REF_FA" "#chr6$" "$REF_INPUT"
+        extract_seqs "$REF_FA" "^>\\S*#chr6(\\s|$)" "$REF_INPUT"
     else
         echo "[SKIP] $REF_INPUT already exists"
     fi
 
+    # HG002 header format: ">HG002#2#chr6" (clean, no description)
     if [[ ! -s "$HAP0_INPUT" ]]; then
-        echo "=== [1b] Extracting chr6-mapping contigs from HG002 hap0 ==="
-        CHR6_CTGS=$(awk '$1 ~ /chr6$/ {print $4}' "$OUT/hg002_hap0.ctgmap.bed" | sort -u | tr '\n' '|' | sed 's/|$//')
-        [[ -n "$CHR6_CTGS" ]] || { echo "ERROR: no chr6 contigs in hap0 ctgmap.bed"; exit 1; }
-        extract_seqs "$HAP0_FA" "($CHR6_CTGS)" "$HAP0_INPUT"
+        echo "=== [1b] Extracting chr6 contig from HG002 hap0 ==="
+        extract_seqs "$HAP0_FA" "^>#*\\S*#chr6(\\s|$)" "$HAP0_INPUT"
     else
         echo "[SKIP] $HAP0_INPUT already exists"
     fi
 
     if [[ ! -s "$HAP1_INPUT" ]]; then
-        echo "=== [1c] Extracting chr6-mapping contigs from HG002 hap1 ==="
-        CHR6_CTGS=$(awk '$1 ~ /chr6$/ {print $4}' "$OUT/hg002_hap1.ctgmap.bed" | sort -u | tr '\n' '|' | sed 's/|$//')
-        [[ -n "$CHR6_CTGS" ]] || { echo "ERROR: no chr6 contigs in hap1 ctgmap.bed"; exit 1; }
-        extract_seqs "$HAP1_FA" "($CHR6_CTGS)" "$HAP1_INPUT"
+        echo "=== [1c] Extracting chr6 contig from HG002 hap1 ==="
+        extract_seqs "$HAP1_FA" "^>#*\\S*#chr6(\\s|$)" "$HAP1_INPUT"
     else
         echo "[SKIP] $HAP1_INPUT already exists"
     fi
