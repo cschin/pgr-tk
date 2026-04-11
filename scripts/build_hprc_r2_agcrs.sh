@@ -14,8 +14,8 @@
 #   - Sub-archives and the cached reference FA are removed after a successful
 #     merge (set KEEP_BATCHES=1 to disable cleanup).
 #
-# Disk headroom needed during a batch: BATCH_SIZE × genome_size (e.g. 8 ×
-# 3 GB ≈ 24 GB for human).  Increase BATCH_SIZE if more disk is available
+# Disk headroom needed during a batch: BATCH_SIZE × genome_size (e.g. 24 ×
+# 3 GB ≈ 72 GB for human).  Adjust BATCH_SIZE to fit available disk space
 # (larger batches amortize the shared-index build across more samples).
 #
 # Resume support: if a batch sub-archive already exists it is skipped; if the
@@ -35,7 +35,7 @@
 
 set -euo pipefail
 
-BATCH_SIZE=8
+BATCH_SIZE=24
 KEEP_BATCHES="${KEEP_BATCHES:-0}"   # set to 1 to skip cleanup of sub-archives
 
 # ---------------------------------------------------------------------------
