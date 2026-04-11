@@ -593,6 +593,338 @@ enum ChunkResult {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Shared delta index — amortizes index-build cost across multiple samples
+// ---------------------------------------------------------------------------
+
+/// Pre-loaded lookup tables for delta-compressing new samples.
+///
+/// Building this index (loading all segment_groups from the DB and sampling
+/// their k-mers) is the dominant cost in `add_as_delta`.  By extracting it
+/// into a separate struct, `add_fasta_batch` can build it once and reuse it
+/// for every input sample.
+struct DeltaIndex {
+    splitters: HashSet<u64>,
+    exact_map: HashMap<(u64, u64), i64>,
+    terminators_map: HashMap<u64, Vec<u64>>,
+    kmer_index: HashMap<u64, Vec<i64>>,
+    ref_data_map: HashMap<i64, Vec<u8>>,
+    ref_len_map: HashMap<i64, usize>,
+    sample_rate: u64,
+}
+
+impl DeltaIndex {
+    fn from_db(conn: &Connection, params: &Params, t0: Instant) -> crate::error::Result<Self> {
+        let segment_size = params.segment_size as usize;
+        let kmer_len = params.min_match_len as usize;
+
+        eprintln!("[{:7.2}s]   loading index maps ...", t0.elapsed().as_secs_f64());
+        let t1 = Instant::now();
+
+        let splitters: HashSet<u64> = {
+            let mut stmt = conn.prepare("SELECT kmer FROM splitter")?;
+            let collected: HashSet<u64> = stmt
+                .query_map([], |r| r.get::<_, i64>(0))?
+                .filter_map(|r| r.ok())
+                .map(|v| v as u64)
+                .collect();
+            collected
+        };
+        let exact_map = build_exact_map(conn)?;
+        let terminators_map = build_terminators_map(conn)?;
+        let sample_rate = compute_sample_rate(segment_size, kmer_len);
+        let (kmer_index, ref_data_map, ref_len_map) =
+            build_fallback_index(conn, kmer_len, sample_rate, MAX_KMER_BUCKET)?;
+
+        eprintln!(
+            "[{:7.2}s]   index ready ({:.2}s): {} exact groups, {} fallback groups",
+            t0.elapsed().as_secs_f64(),
+            t1.elapsed().as_secs_f64(),
+            ref_data_map.len(),
+            kmer_index.len(),
+        );
+
+        Ok(Self {
+            splitters,
+            exact_map,
+            terminators_map,
+            kmer_index,
+            ref_data_map,
+            ref_len_map,
+            sample_rate,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Standalone compression helpers (used by both add_as_delta and add_fasta_batch)
+// ---------------------------------------------------------------------------
+
+/// Compress `records` as LZ-deltas against the pre-built `index`.
+///
+/// Returns one `(chunks, local_splitters)` entry per record in input order.
+/// Compression is parallel across records via rayon (largest-first scheduling).
+fn compress_records_with_index(
+    records: &[FastaRecord],
+    index: &DeltaIndex,
+    params: &Params,
+    t0: Instant,
+) -> Vec<(Vec<ChunkResult>, Vec<u64>)> {
+    let segment_size = params.segment_size as usize;
+    let splitter_k = params.splitter_k as usize;
+    let kmer_len = params.min_match_len as usize;
+    let n_contigs = records.len();
+
+    // Largest-first so rayon's work-stealing picks up expensive contigs early,
+    // avoiding a single huge chromosome stalling the pool tail.
+    let mut order: Vec<usize> = (0..records.len()).collect();
+    order.sort_unstable_by_key(|&i| std::cmp::Reverse(records[i].seq.len()));
+
+    eprintln!(
+        "[{:7.2}s]   compressing with LzDiff (parallel, largest-first) ...",
+        t0.elapsed().as_secs_f64()
+    );
+    let t1 = Instant::now();
+    let done = AtomicUsize::new(0);
+
+    let compressed_ordered: Vec<(usize, Vec<ChunkResult>, Vec<u64>)> = order
+        .par_iter()
+        .map(|&orig_idx| {
+            let rec = &records[orig_idx];
+            let mut local_splitters: Vec<u64> = Vec::new();
+
+            let mut segs = split_contig(&rec.seq, &index.splitters, splitter_k);
+            if segs.len() == 1 && rec.seq.len() >= segment_size {
+                let new_spl =
+                    find_local_splitters(&rec.seq, &index.splitters, splitter_k, segment_size);
+                if !new_spl.is_empty() {
+                    let combined: HashSet<u64> = index
+                        .splitters
+                        .iter()
+                        .chain(new_spl.iter())
+                        .copied()
+                        .collect();
+                    segs = split_contig(&rec.seq, &combined, splitter_k);
+                    local_splitters.extend(new_spl);
+                }
+            }
+
+            let mut lz_local: HashMap<i64, crate::lz_diff::LzDiff> = HashMap::new();
+            let mut chunks: Vec<ChunkResult> = Vec::with_capacity(segs.len());
+
+            for seg in segs {
+                let exact_group = if seg.kmer_front != SENTINEL && seg.kmer_back != SENTINEL {
+                    let kf = seg.kmer_front;
+                    let kb = seg.kmer_back;
+                    index.exact_map.get(&(kf.min(kb), kf.max(kb))).copied()
+                } else {
+                    None
+                };
+
+                let one_spl_group = if exact_group.is_none() {
+                    let single_kmer =
+                        if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
+                            Some(seg.kmer_front)
+                        } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
+                            Some(seg.kmer_back)
+                        } else {
+                            None
+                        };
+                    single_kmer.and_then(|kmer| {
+                        find_one_splitter_group(
+                            kmer,
+                            seg.seq.len(),
+                            &index.terminators_map,
+                            &index.exact_map,
+                            &index.ref_len_map,
+                        )
+                    })
+                } else {
+                    None
+                };
+
+                let matched_group = exact_group.or(one_spl_group).or_else(|| {
+                    find_best_ref_group(
+                        &seg.seq,
+                        &index.kmer_index,
+                        kmer_len,
+                        index.sample_rate,
+                    )
+                });
+
+                let chunk = match matched_group {
+                    Some(group_id) => {
+                        if !lz_local.contains_key(&group_id) {
+                            let ref_blob = index
+                                .ref_data_map
+                                .get(&group_id)
+                                .expect("group_id missing from ref_data_map");
+                            let lz = segment::lz_from_ref_blob(ref_blob, params)
+                                .expect("lz_from_ref_blob");
+                            lz_local.insert(group_id, lz);
+                        }
+                        let lz = lz_local.get(&group_id).unwrap();
+                        let raw_delta =
+                            segment::compress_delta(lz, &seg.seq).expect("compress_delta");
+                        ChunkResult::Delta {
+                            group_id,
+                            raw_length: seg.raw_len,
+                            raw_delta,
+                            is_rc: seg.is_rc,
+                        }
+                    }
+                    None => {
+                        let ref_blob = segment::compress_reference(&seg.seq)
+                            .expect("compress_reference");
+                        let kf = if seg.kmer_front != SENTINEL {
+                            Some(seg.kmer_front as i64)
+                        } else {
+                            None
+                        };
+                        let kb = if seg.kmer_back != SENTINEL {
+                            Some(seg.kmer_back as i64)
+                        } else {
+                            None
+                        };
+                        ChunkResult::NewRef {
+                            raw_length: seg.raw_len,
+                            ref_blob,
+                            kmer_front: kf,
+                            kmer_back: kb,
+                            is_rc: seg.is_rc,
+                        }
+                    }
+                };
+                chunks.push(chunk);
+            }
+
+            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if n % 50 == 0 || n == n_contigs {
+                eprintln!(
+                    "[{:7.2}s]   {:4}/{} contigs compressed",
+                    t0.elapsed().as_secs_f64(),
+                    n,
+                    n_contigs,
+                );
+            }
+            (orig_idx, chunks, local_splitters)
+        })
+        .collect();
+
+    eprintln!(
+        "[{:7.2}s]   LzDiff compression done ({:.2}s)",
+        t0.elapsed().as_secs_f64(),
+        t1.elapsed().as_secs_f64(),
+    );
+
+    // Restore input order.
+    let mut result: Vec<(Vec<ChunkResult>, Vec<u64>)> =
+        (0..records.len()).map(|_| (vec![], vec![])).collect();
+    for (orig_idx, chunks, local_spl) in compressed_ordered {
+        result[orig_idx] = (chunks, local_spl);
+    }
+    result
+}
+
+/// Write a single sample's compressed chunks to the database in one transaction.
+fn write_sample_to_db(
+    conn: &Connection,
+    sample_name: &str,
+    records: &[FastaRecord],
+    compressed: Vec<(Vec<ChunkResult>, Vec<u64>)>,
+    params_json_str: &str,
+    t0: Instant,
+) -> crate::error::Result<()> {
+    let t1 = Instant::now();
+    eprintln!(
+        "[{:7.2}s]   writing segments to DB ...",
+        t0.elapsed().as_secs_f64()
+    );
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("INSERT INTO sample (name) VALUES (?1)", params![sample_name])?;
+    let sample_id: i64 = tx.last_insert_rowid();
+
+    for (record, (chunks, local_spl)) in records.iter().zip(compressed.iter()) {
+        tx.execute(
+            "INSERT INTO contig (sample_id, name, length) VALUES (?1, ?2, ?3)",
+            params![sample_id, &record.name, record.seq.len() as i64],
+        )?;
+        let contig_id: i64 = tx.last_insert_rowid();
+
+        for &kmer in local_spl {
+            tx.execute(
+                "INSERT OR IGNORE INTO splitter (kmer) VALUES (?1)",
+                params![kmer as i64],
+            )?;
+        }
+
+        for (seg_order, chunk_result) in chunks.iter().enumerate() {
+            match chunk_result {
+                ChunkResult::Delta {
+                    group_id,
+                    raw_length,
+                    raw_delta,
+                    is_rc,
+                } => {
+                    let compressed_delta =
+                        segment::compress_delta_data(raw_delta).expect("compress_delta_data");
+                    tx.execute(
+                        "INSERT INTO segment \
+                         (contig_id, seg_order, group_id, in_group_id, \
+                          is_rev_comp, raw_length, delta_data) \
+                         VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
+                        params![
+                            contig_id,
+                            seg_order as i64,
+                            group_id,
+                            *is_rc,
+                            *raw_length as i64,
+                            compressed_delta,
+                        ],
+                    )?;
+                }
+                ChunkResult::NewRef {
+                    raw_length,
+                    ref_blob,
+                    kmer_front,
+                    kmer_back,
+                    is_rc,
+                } => {
+                    tx.execute(
+                        "INSERT INTO segment_group \
+                         (ref_data, params, kmer_front, kmer_back) \
+                         VALUES (?1, ?2, ?3, ?4)",
+                        params![ref_blob, params_json_str, kmer_front, kmer_back],
+                    )?;
+                    let new_group_id: i64 = tx.last_insert_rowid();
+                    tx.execute(
+                        "INSERT INTO segment \
+                         (contig_id, seg_order, group_id, in_group_id, \
+                          is_rev_comp, raw_length, delta_data) \
+                         VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL)",
+                        params![
+                            contig_id,
+                            seg_order as i64,
+                            new_group_id,
+                            *is_rc,
+                            *raw_length as i64,
+                        ],
+                    )?;
+                }
+            }
+        }
+    }
+
+    tx.commit()?;
+    eprintln!(
+        "[{:7.2}s]   segment inserts done ({:.2}s)",
+        t0.elapsed().as_secs_f64(),
+        t1.elapsed().as_secs_f64(),
+    );
+    Ok(())
+}
+
 impl Compressor {
     // -----------------------------------------------------------------------
     // Construction
@@ -813,322 +1145,124 @@ impl Compressor {
     // -----------------------------------------------------------------------
 
     fn add_as_delta(&mut self, records: Vec<FastaRecord>, sample_name: &str, t0: Instant) -> Result<()> {
-        let segment_size = self.params.segment_size as usize;
-        let splitter_k = self.params.splitter_k as usize;
+        eprintln!(
+            "[{:7.2}s] delta path: {} contigs",
+            t0.elapsed().as_secs_f64(),
+            records.len()
+        );
         let params_json_str = params_json(&self.params);
-        let params_ref = &self.params;
-        let kmer_len = self.params.min_match_len as usize;
-        let n_contigs = records.len();
-
-        eprintln!("[{:7.2}s] delta path: {} contigs", t0.elapsed().as_secs_f64(), n_contigs);
-
-        // --- Phase 1: load splitters and build lookup maps -------------------
-        eprintln!("[{:7.2}s]   loading index maps ...", t0.elapsed().as_secs_f64());
-        let t1 = Instant::now();
-
-        // Load persisted splitters from the archive.
-        let splitters: HashSet<u64> = {
-            let mut stmt = self
-                .db
-                .conn()
-                .prepare("SELECT kmer FROM splitter")?;
-            let collected: HashSet<u64> = stmt
-                .query_map([], |r| r.get::<_, i64>(0))?
-                .filter_map(|r| r.ok())
-                .map(|v| v as u64)
-                .collect();
-            collected
-        };
-
-        // Exact (kmer_front, kmer_back) → group_id map.
-        let exact_map = build_exact_map(self.db.conn())?;
-
-        // Terminators map: splitter → list of partner splitters it has been
-        // paired with in stored segment groups (one-splitter lookup).
-        let terminators_map = build_terminators_map(self.db.conn())?;
-
-        // Fallback vote-based index (hash-sampled k-mers) and ref-len map.
-        let sample_rate = compute_sample_rate(segment_size, kmer_len);
-        let (kmer_index, ref_data_map, ref_len_map) =
-            build_fallback_index(self.db.conn(), kmer_len, sample_rate, MAX_KMER_BUCKET)?;
-
-        eprintln!(
-            "[{:7.2}s]   index ready ({:.2}s): {} exact groups, {} fallback groups",
-            t0.elapsed().as_secs_f64(),
-            t1.elapsed().as_secs_f64(),
-            ref_data_map.len(),
-            kmer_index.len(),
-        );
-
-        // --- Phase 2: parallel compression with adaptive splitting -----------
-        //
-        // For each contig, split with global splitters.  If no global splitter
-        // fired (single large segment), apply AGC's adaptive strategy:
-        // find singleton k-mers unique to this contig (absent from the full
-        // reference k-mer set) and re-split with those local splitters.  The
-        // local splitters are returned alongside the chunk results so they can
-        // be saved to the DB for future append calls.
-        //
-        // LzDiff instances are cached per-record in a local HashMap so that
-        // multiple segments of the same record mapping to the same group only
-        // build the index once.  Memory is bounded to (groups in one contig) ×
-        // (LzDiff size) per thread, rather than all groups simultaneously.
-
-        // Sort records largest-first so rayon's work-stealing scheduler picks up
-        // the most expensive tasks (large chromosomes) before the small ones,
-        // preventing a single huge contig from stalling the pool at the tail.
-        // The original index is preserved so we can reassemble in input order.
-        let mut order: Vec<usize> = (0..records.len()).collect();
-        order.sort_unstable_by_key(|&i| std::cmp::Reverse(records[i].seq.len()));
-
-        eprintln!("[{:7.2}s]   compressing with LzDiff (parallel, largest-first) ...", t0.elapsed().as_secs_f64());
-        let t1 = Instant::now();
-        let done = AtomicUsize::new(0);
-        let compressed_ordered: Vec<(usize, Vec<ChunkResult>, Vec<u64>)> = order
-            .par_iter()
-            .map(|&orig_idx| {
-                let rec = &records[orig_idx];
-                let mut local_splitters: Vec<u64> = Vec::new();
-
-                // Initial split with global splitters.
-                let mut segs = split_contig(&rec.seq, &splitters, splitter_k);
-
-                // Adaptive: one big segment with no boundaries → try local splitters.
-                if segs.len() == 1 && rec.seq.len() >= segment_size {
-                    let new_spl =
-                        find_local_splitters(&rec.seq, &splitters, splitter_k, segment_size);
-                    if !new_spl.is_empty() {
-                        let combined: HashSet<u64> = splitters
-                            .iter()
-                            .chain(new_spl.iter())
-                            .copied()
-                            .collect();
-                        segs = split_contig(&rec.seq, &combined, splitter_k);
-                        local_splitters.extend(new_spl);
-                    }
-                }
-
-                // Per-record LzDiff cache: built on demand, dropped after this
-                // record is done.  Avoids rebuilding hash tables for groups that
-                // appear in multiple segments of the same contig.
-                let mut lz_local: HashMap<i64, crate::lz_diff::LzDiff> = HashMap::new();
-
-                let mut chunks: Vec<ChunkResult> = Vec::with_capacity(segs.len());
-                for seg in segs {
-                    // Try exact kmer-pair lookup first.
-                    let exact_group = if seg.kmer_front != SENTINEL
-                        && seg.kmer_back != SENTINEL
-                    {
-                        let kf = seg.kmer_front;
-                        let kb = seg.kmer_back;
-                        exact_map.get(&(kf.min(kb), kf.max(kb))).copied()
-                    } else {
-                        None
-                    };
-
-                    // One-splitter lookup.
-                    let one_spl_group = if exact_group.is_none() {
-                        let single_kmer =
-                            if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
-                                Some(seg.kmer_front)
-                            } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
-                                Some(seg.kmer_back)
-                            } else {
-                                None
-                            };
-                        single_kmer.and_then(|kmer| {
-                            find_one_splitter_group(
-                                kmer,
-                                seg.seq.len(),
-                                &terminators_map,
-                                &exact_map,
-                                &ref_len_map,
-                            )
-                        })
-                    } else {
-                        None
-                    };
-
-                    // Fall back to vote-based matching if no hit yet.
-                    let matched_group = exact_group.or(one_spl_group).or_else(|| {
-                        find_best_ref_group(&seg.seq, &kmer_index, kmer_len, sample_rate)
-                    });
-
-                    let chunk = match matched_group {
-                        Some(group_id) => {
-                            // Build LzDiff for this group on first use, reuse thereafter.
-                            if !lz_local.contains_key(&group_id) {
-                                let ref_blob = ref_data_map
-                                    .get(&group_id)
-                                    .expect("group_id missing from ref_data_map");
-                                let lz = segment::lz_from_ref_blob(ref_blob, params_ref)
-                                    .expect("lz_from_ref_blob");
-                                lz_local.insert(group_id, lz);
-                            }
-                            let lz = lz_local.get(&group_id).unwrap();
-                            let raw_delta = segment::compress_delta(lz, &seg.seq)
-                                .expect("compress_delta");
-                            ChunkResult::Delta {
-                                group_id,
-                                raw_length: seg.raw_len,
-                                raw_delta,
-                                is_rc: seg.is_rc,
-                            }
-                        }
-                        None => {
-                            let ref_blob = segment::compress_reference(&seg.seq)
-                                .expect("compress_reference");
-                            let kf = if seg.kmer_front != SENTINEL {
-                                Some(seg.kmer_front as i64)
-                            } else {
-                                None
-                            };
-                            let kb = if seg.kmer_back != SENTINEL {
-                                Some(seg.kmer_back as i64)
-                            } else {
-                                None
-                            };
-                            ChunkResult::NewRef {
-                                raw_length: seg.raw_len,
-                                ref_blob,
-                                kmer_front: kf,
-                                kmer_back: kb,
-                                is_rc: seg.is_rc,
-                            }
-                        }
-                    };
-                    chunks.push(chunk);
-                }
-
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % 50 == 0 || n == n_contigs {
-                    eprintln!(
-                        "[{:7.2}s]   {:4}/{} contigs compressed",
-                        t0.elapsed().as_secs_f64(), n, n_contigs,
-                    );
-                }
-                (orig_idx, chunks, local_splitters)
-            })
-            .collect();
-
-        // Restore input order so the DB write loop zips correctly with `records`.
-        let mut compressed_per_record: Vec<(Vec<ChunkResult>, Vec<u64>)> =
-            (0..records.len()).map(|_| (vec![], vec![])).collect();
-        for (orig_idx, chunks, local_spl) in compressed_ordered {
-            compressed_per_record[orig_idx] = (chunks, local_spl);
-        }
-
-        eprintln!(
-            "[{:7.2}s]   LzDiff compression done ({:.2}s); writing segments to DB ...",
-            t0.elapsed().as_secs_f64(),
-            t1.elapsed().as_secs_f64(),
-        );
-        let t1 = Instant::now();
-
-        // --- Phase 3: insert in a single transaction -------------------------
-        //
-        // Strategy for batch delta compression:
-        // 1. Pre-query MAX(in_group_id) per group to find existing delta counts.
-        // 2. During the insert loop, assign sequential in_group_id per group and
-        //    accumulate raw LZ-diff bytes keyed by group_id.
-        // 3. After all segments are inserted, batch-ZSTD each group's raw deltas
-        //    and UPDATE segment_group.delta_blob.  For groups with an existing
-        //    delta_blob, extract all previous raw entries, append the new ones,
-        //    and re-compress the combined list.
-
-        let conn = self.db.conn();
-        let tx = conn.unchecked_transaction()?;
-
-        tx.execute("INSERT INTO sample (name) VALUES (?1)", params![sample_name])?;
-        let sample_id: i64 = tx.last_insert_rowid();
-
-        for (record, (chunks, local_spl)) in records.iter().zip(compressed_per_record.iter()) {
-            tx.execute(
-                "INSERT INTO contig (sample_id, name, length) VALUES (?1, ?2, ?3)",
-                params![sample_id, &record.name, record.seq.len() as i64],
-            )?;
-            let contig_id: i64 = tx.last_insert_rowid();
-
-            // Persist any local (adaptive) splitters found for this contig.
-            for &kmer in local_spl {
-                tx.execute(
-                    "INSERT OR IGNORE INTO splitter (kmer) VALUES (?1)",
-                    params![kmer as i64],
-                )?;
-            }
-
-            for (seg_order, chunk_result) in chunks.iter().enumerate() {
-                match chunk_result {
-                    ChunkResult::Delta {
-                        group_id,
-                        raw_length,
-                        raw_delta,
-                        is_rc,
-                    } => {
-                        // Compress the raw LZ-diff delta and store it directly
-                        // in segment.delta_data.  This is O(1) per segment
-                        // regardless of archive size, avoiding the O(n²)
-                        // recompression that the old delta_blob accumulation
-                        // required (decompress all N-1 existing deltas, append
-                        // new one, recompress N together).
-                        let compressed = segment::compress_delta_data(raw_delta)
-                            .expect("compress_delta_data");
-                        tx.execute(
-                            "INSERT INTO segment \
-                             (contig_id, seg_order, group_id, in_group_id, \
-                              is_rev_comp, raw_length, delta_data) \
-                             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
-                            params![
-                                contig_id,
-                                seg_order as i64,
-                                group_id,
-                                *is_rc,
-                                *raw_length as i64,
-                                compressed,
-                            ],
-                        )?;
-                    }
-                    ChunkResult::NewRef {
-                        raw_length,
-                        ref_blob,
-                        kmer_front,
-                        kmer_back,
-                        is_rc,
-                    } => {
-                        tx.execute(
-                            "INSERT INTO segment_group \
-                             (ref_data, params, kmer_front, kmer_back) \
-                             VALUES (?1, ?2, ?3, ?4)",
-                            params![ref_blob, &params_json_str, kmer_front, kmer_back],
-                        )?;
-                        let new_group_id: i64 = tx.last_insert_rowid();
-                        tx.execute(
-                            "INSERT INTO segment \
-                             (contig_id, seg_order, group_id, in_group_id, \
-                              is_rev_comp, raw_length, delta_data) \
-                             VALUES (?1, ?2, ?3, 0, ?4, ?5, NULL)",
-                            params![
-                                contig_id,
-                                seg_order as i64,
-                                new_group_id,
-                                *is_rc,
-                                *raw_length as i64
-                            ],
-                        )?;
-                    }
-                }
-            }
-        }
-
-        eprintln!(
-            "[{:7.2}s]   segment inserts done ({:.2}s)",
-            t0.elapsed().as_secs_f64(),
-            t1.elapsed().as_secs_f64(),
-        );
-
-        tx.commit()?;
+        let index = DeltaIndex::from_db(self.db.conn(), &self.params, t0)?;
+        let compressed = compress_records_with_index(&records, &index, &self.params, t0);
+        write_sample_to_db(
+            self.db.conn(),
+            sample_name,
+            &records,
+            compressed,
+            &params_json_str,
+            t0,
+        )?;
         eprintln!(
             "[{:7.2}s]   done ({:.2}s total)",
+            t0.elapsed().as_secs_f64(),
+            t0.elapsed().as_secs_f64(),
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch append (shared index across N samples)
+    // -----------------------------------------------------------------------
+
+    /// Append multiple FASTA files to this archive, building the delta index
+    /// only once for all samples.
+    ///
+    /// Each element of `inputs` is `(fasta_path, sample_name)`.  The archive
+    /// must already contain at least one sample (the reference); use
+    /// [`Compressor::create`] / [`Compressor::add_fasta`] for the first sample
+    /// before calling this.
+    ///
+    /// The big win over repeated [`add_fasta`] calls is that the index-build
+    /// (loading all segment_groups from the DB) happens only once, amortizing
+    /// its cost across every input sample.  Compression of each sample is still
+    /// parallelised internally via rayon.
+    ///
+    /// Returns an error if the archive is empty or if any sample name already
+    /// exists.
+    pub fn add_fasta_batch(&mut self, inputs: &[(&Path, &str)]) -> Result<()> {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+
+        let t0 = Instant::now();
+        let existing: i64 = self
+            .db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM sample", [], |r| r.get(0))?;
+        if existing == 0 {
+            return Err(crate::error::AgcError::SampleNotFound(
+                "batch-append requires an existing reference sample; \
+                 use `create` or `append` to add the reference first"
+                    .to_string(),
+            ));
+        }
+
+        // Check for duplicates upfront so we don't do partial work.
+        for &(_, name) in inputs {
+            let already: i64 = self.db.conn().query_row(
+                "SELECT COUNT(*) FROM sample WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )?;
+            if already > 0 {
+                return Err(crate::error::AgcError::SampleNotFound(format!(
+                    "sample '{}' already exists in the archive",
+                    name
+                )));
+            }
+        }
+
+        eprintln!(
+            "[{:7.2}s] batch-append: {} samples — building shared index ...",
+            t0.elapsed().as_secs_f64(),
+            inputs.len(),
+        );
+        let params_json_str = params_json(&self.params);
+        let index = DeltaIndex::from_db(self.db.conn(), &self.params, t0)?;
+
+        for (i, &(path, sample_name)) in inputs.iter().enumerate() {
+            eprintln!(
+                "[{:7.2}s] sample {}/{}: {} ({})",
+                t0.elapsed().as_secs_f64(),
+                i + 1,
+                inputs.len(),
+                sample_name,
+                path.display(),
+            );
+            let records = fasta_io::read_fasta_gz(path)?;
+            if records.is_empty() {
+                eprintln!("[{:7.2}s]   (empty FASTA, skipping)", t0.elapsed().as_secs_f64());
+                continue;
+            }
+            let total_bp: usize = records.iter().map(|r| r.seq.len() * 4).sum();
+            eprintln!(
+                "[{:7.2}s]   {} contigs, {:.2} Mbp",
+                t0.elapsed().as_secs_f64(),
+                records.len(),
+                total_bp as f64 / 1e6,
+            );
+            let compressed = compress_records_with_index(&records, &index, &self.params, t0);
+            write_sample_to_db(
+                self.db.conn(),
+                sample_name,
+                &records,
+                compressed,
+                &params_json_str,
+                t0,
+            )?;
+        }
+
+        eprintln!(
+            "[{:7.2}s] batch-append complete ({:.2}s total)",
             t0.elapsed().as_secs_f64(),
             t0.elapsed().as_secs_f64(),
         );

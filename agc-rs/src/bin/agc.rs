@@ -1,5 +1,6 @@
 use agc_rs::compressor::Compressor;
 use agc_rs::decompressor::AgcFile;
+use agc_rs::merge::merge_archives;
 use agc_rs::segment::Params;
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
@@ -35,6 +36,23 @@ enum Commands {
         sample: String,
         /// Input FASTA file
         input: String,
+    },
+    /// Append multiple FASTA files to an existing archive, building the delta index only once
+    BatchAppend {
+        /// Path to the existing archive (must already contain a reference sample)
+        archive: String,
+        /// Input files in the form `sample_name:fasta_path` (plain or .gz)
+        #[arg(required = true)]
+        inputs: Vec<String>,
+    },
+    /// Merge multiple archives that share the same reference into one
+    Merge {
+        /// Output archive path
+        #[arg(short, long)]
+        output: String,
+        /// Source archives to merge (must share the same reference / splitter set)
+        #[arg(required = true)]
+        inputs: Vec<String>,
     },
     /// List samples, or contigs within a sample
     List {
@@ -101,6 +119,53 @@ fn main() -> anyhow::Result<()> {
                 .with_context(|| format!("appending {input} as sample {sample}"))?;
             c.finish()?;
             eprintln!("Appended sample '{sample}' to {archive}");
+        }
+
+        // -------------------------------------------------------------------
+        Commands::BatchAppend { archive, inputs } => {
+            if inputs.is_empty() {
+                bail!("at least one input is required");
+            }
+            // Parse "sample_name:fasta_path" pairs.
+            let parsed: Vec<(String, String)> = inputs
+                .iter()
+                .map(|s| {
+                    let colon = s.find(':').with_context(|| {
+                        format!(
+                            "input '{}' is not in 'sample_name:fasta_path' format",
+                            s
+                        )
+                    })?;
+                    Ok((s[..colon].to_string(), s[colon + 1..].to_string()))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+
+            let mut c = Compressor::append(Path::new(&archive))
+                .with_context(|| format!("opening archive {archive}"))?;
+
+            let path_name_pairs: Vec<(&Path, &str)> = parsed
+                .iter()
+                .map(|(name, path)| (Path::new(path.as_str()), name.as_str()))
+                .collect();
+
+            c.add_fasta_batch(&path_name_pairs)
+                .with_context(|| format!("batch-appending to {archive}"))?;
+            c.finish()?;
+            eprintln!(
+                "Batch-appended {} samples to {archive}",
+                path_name_pairs.len()
+            );
+        }
+
+        // -------------------------------------------------------------------
+        Commands::Merge { output, inputs } => {
+            if inputs.is_empty() {
+                bail!("at least one source archive is required");
+            }
+            let source_paths: Vec<&Path> = inputs.iter().map(|s| Path::new(s.as_str())).collect();
+            merge_archives(Path::new(&output), &source_paths)
+                .with_context(|| format!("merging {} archives into {output}", inputs.len()))?;
+            eprintln!("Merged {} archives into {output}", inputs.len());
         }
 
         // -------------------------------------------------------------------
