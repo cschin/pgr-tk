@@ -580,7 +580,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                         // repeated O(n_frags) scans inside the innermost loop.
                         let ref_seq = ref_seq_index_db.get_seq_by_id(t_idx).unwrap();
                         let mapped_region_aln = mapped_regions
-                            .into_iter()
+                            .into_par_iter()
                             .map(|(aln_segs, orientation)| {
                                 let aln_segs = if orientation == 0 {
                                     filter_aln(&aln_segs)
