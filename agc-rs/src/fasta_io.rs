@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use flate2::bufread::MultiGzDecoder;
@@ -12,8 +12,6 @@ pub struct FastaRecord {
     pub name: String,
     /// 2-bit encoded sequence: A=0, C=1, G=2, T=3, N (and anything else)=4.
     pub seq: Vec<u8>,
-    /// Original uppercase ASCII bases.
-    pub seq_ascii: Vec<u8>,
 }
 
 /// Convert an uppercase ASCII nucleotide to its 2-bit code.
@@ -72,19 +70,15 @@ fn parse_fasta<R: BufRead>(reader: R) -> Result<Vec<FastaRecord>> {
             if let Some(name) = current_name.take() {
                 if !current_ascii.is_empty() {
                     let seq: Vec<u8> = current_ascii.iter().map(|&b| ascii_to_2bit(b)).collect();
-                    records.push(FastaRecord {
-                        name,
-                        seq,
-                        seq_ascii: current_ascii,
-                    });
+                    records.push(FastaRecord { name, seq });
                 }
                 current_ascii = Vec::new();
             }
 
             // Parse the new header: name is everything after '>' up to the
             // first whitespace character.
-            let header = std::str::from_utf8(&line[1..])
-                .map_err(|e| AgcError::FastaParse(e.to_string()))?;
+            let header =
+                std::str::from_utf8(&line[1..]).map_err(|e| AgcError::FastaParse(e.to_string()))?;
             let name = header.split_whitespace().next().unwrap_or("").to_string();
             current_name = Some(name);
         } else if current_name.is_some() {
@@ -98,11 +92,7 @@ fn parse_fasta<R: BufRead>(reader: R) -> Result<Vec<FastaRecord>> {
     if let Some(name) = current_name {
         if !current_ascii.is_empty() {
             let seq: Vec<u8> = current_ascii.iter().map(|&b| ascii_to_2bit(b)).collect();
-            records.push(FastaRecord {
-                name,
-                seq,
-                seq_ascii: current_ascii,
-            });
+            records.push(FastaRecord { name, seq });
         }
     }
 
@@ -135,7 +125,6 @@ mod tests {
 
         let r1 = &records[0];
         assert_eq!(r1.name, "seq1");
-        assert_eq!(r1.seq_ascii, b"ACGTACGTACGT");
         // 2-bit: A=0, C=1, G=2, T=3
         assert_eq!(r1.seq, vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]);
 
@@ -151,7 +140,6 @@ mod tests {
         let fasta = ">lower\nacgt\n";
         let tmp = write_tmp_fasta(fasta);
         let records = read_fasta_gz(tmp.path()).expect("read");
-        assert_eq!(records[0].seq_ascii, b"ACGT");
         assert_eq!(records[0].seq, vec![0, 1, 2, 3]);
     }
 
@@ -174,6 +162,6 @@ mod tests {
         }
         let records = read_fasta_gz(p).expect("read ecoli");
         assert!(!records.is_empty(), "expected at least one record");
-        assert!(!records[0].seq_ascii.is_empty(), "sequence must not be empty");
+        assert!(!records[0].seq.is_empty(), "sequence must not be empty");
     }
 }

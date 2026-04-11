@@ -1,8 +1,10 @@
 use crate::fasta_io::SeqRec;
-use crate::frag_file_io::ShmmrToFragMapLocation;
 use agc_rs::decompressor::AgcFile as InnerAgcFile;
 use memmap2::Mmap;
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+
+pub type ShmmrToFragMapLocation = FxHashMap<(u64, u64), (usize, usize)>;
 use std::io;
 use std::path::Path;
 use std::sync::Mutex;
@@ -23,7 +25,7 @@ pub struct AGCFile {
     pub samples: Vec<AGCSample>,
     pub ctg_lens: FxHashMap<(String, String), usize>,
     sample_ctg: Vec<(String, String)>,
-    pub prefetching: bool,       // API-compat no-op
+    pub prefetching: bool,         // API-compat no-op
     pub number_iter_thread: usize, // API-compat no-op
 }
 
@@ -119,9 +121,7 @@ impl AGCFile {
             .lock()
             .expect("agc_io mutex poisoned")
             .contig_seq(&sample_name, &ctg_name, bgn as u64, end as u64)
-            .unwrap_or_else(|e| {
-                panic!("get_sub_seq({sample_name}/{ctg_name} {bgn}..{end}): {e}")
-            })
+            .unwrap_or_else(|e| panic!("get_sub_seq({sample_name}/{ctg_name} {bgn}..{end}): {e}"))
     }
 
     /// Return the full sequence of a contig as ASCII bytes.
@@ -131,6 +131,80 @@ impl AGCFile {
             .expect("agc_io mutex poisoned")
             .full_contig(&sample_name, &ctg_name)
             .unwrap_or_else(|e| panic!("get_seq({sample_name}/{ctg_name}): {e}"))
+    }
+
+    /// Return the full flat list of `(sample_name, contig_name)` pairs in
+    /// archive order (one entry per contig across all samples).
+    ///
+    /// Prefer [`sample_batches`] when batching by whole samples (haplotypes),
+    /// since that keeps all contigs of a sample together and avoids creating
+    /// many more shards than necessary.
+    pub fn sample_ctg_list(&self) -> &[(String, String)] {
+        &self.sample_ctg
+    }
+
+    /// Partition the archive into batches of `batch_size` whole samples.
+    ///
+    /// Returns a `Vec` of batches; each batch is a `Vec<(sample_name,
+    /// contig_name)>` covering every contig of the included samples.
+    /// Using sample-level batches ensures that:
+    ///  - `batch_size=16` means 16 haplotypes (not 16 individual contigs).
+    ///  - All contigs of a sample land in the same shard, avoiding spurious
+    ///    cross-shard duplicates in the shimmer-pair key space.
+    ///  - The number of shards stays proportional to `num_samples / batch_size`
+    ///    rather than `num_contigs / batch_size`.
+    pub fn sample_batches(&self, batch_size: usize) -> Vec<Vec<(String, String)>> {
+        self.samples
+            .chunks(batch_size)
+            .map(|sample_chunk| {
+                sample_chunk
+                    .iter()
+                    .flat_map(|s| {
+                        s.contigs
+                            .iter()
+                            .map(|(ctg, _)| (s.name.clone(), ctg.clone()))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Fetch all contigs in parallel using one read-only SQLite connection per
+    /// rayon task.
+    ///
+    /// SQLite WAL mode supports unlimited concurrent readers, so opening
+    /// multiple `open_readonly` connections to the same file is safe and
+    /// avoids the single-Mutex serialization of `AGCFileIter`.  For a human
+    /// genome (50 chromosomes) this turns ~50 sequential decompression calls
+    /// into a single parallel batch.
+    pub fn par_fetch_seqs(&self) -> Vec<SeqRec> {
+        self.par_fetch_seqs_batch(&self.sample_ctg)
+    }
+
+    /// Decompress only the given `(sample_name, contig_name)` pairs in parallel.
+    ///
+    /// This is the core primitive for batched memory-bounded indexing: callers
+    /// slice `sample_ctg_list()` into chunks and call this function once per
+    /// chunk, keeping peak decompression memory proportional to the chunk size
+    /// rather than the total archive size.
+    pub fn par_fetch_seqs_batch(&self, batch: &[(String, String)]) -> Vec<SeqRec> {
+        let filepath = self.filepath.clone();
+        batch
+            .par_iter()
+            .map(|(sample_name, ctg_name)| {
+                // Each rayon task opens its own read-only connection.
+                let conn = InnerAgcFile::open_readonly(Path::new(&filepath))
+                    .unwrap_or_else(|e| panic!("par_fetch_seqs open {filepath}: {e}"));
+                let seq = conn
+                    .full_contig(sample_name, ctg_name)
+                    .unwrap_or_else(|e| panic!("par_fetch_seqs {sample_name}/{ctg_name}: {e}"));
+                SeqRec {
+                    source: Some(sample_name.clone()),
+                    id: ctg_name.as_bytes().to_vec(),
+                    seq,
+                }
+            })
+            .collect()
     }
 }
 
@@ -170,9 +244,7 @@ impl<'a> Iterator for AGCFileIter<'a> {
             .full_contig(sample_name, ctg_name)
         {
             Ok(s) => s,
-            Err(e) => {
-                return Some(Err(io::Error::new(io::ErrorKind::Other, e.to_string())))
-            }
+            Err(e) => return Some(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
         };
 
         Some(Ok(SeqRec {

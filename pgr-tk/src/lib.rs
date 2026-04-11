@@ -6,14 +6,12 @@ use pgr_db::seq_db;
 //use pgr_db::seqs2variants;
 use pgr_db::shmmrutils::{sequence_to_shmmrs, DeltaPoint, ShmmrSpec};
 
-#[cfg(feature = "with_agc")]
 use pgr_db::agc_io;
 
 use pgr_db::fasta_io;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use pyo3::Python;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -24,7 +22,6 @@ use pgr_db::ext::Backend;
 pub fn pgr_lib_version() -> PyResult<String> {
     Ok(VERSION_STRING.to_string())
 }
-
 
 type Bundles = Vec<Vec<(u64, u64, u8)>>; // each bundle is a Vec<node>, each node is (hash0, hash1, orientation)
 
@@ -41,10 +38,14 @@ type Bundles = Vec<Vec<(u64, u64, u8)>>; // each bundle is a Vec<node>, each nod
 ///
 ///     $ pgr-mdb filelist HPRC-y1-rebuild-04252022
 ///
-///     # two index files will be created by the pgr-mdb command
-///     # one with a suffix .mdb and another one with a suffix .midx
-///     # when we use the load_from_agc_index() method, all three files, e.g., genomes.agc, genomes.mdb and
-///     # genomes.midx should have the same prefix as the parameter used to call  load_from_agc_index() method
+///     # pgr-mdb creates index files with suffixes .mdbi, .mdbv, and .midx (SQLite).
+///     # When calling load_from_agc_index(), all files (.agcrs, .mdbi, .mdbv, .midx)
+///     # must share the same prefix passed to this method.
+///
+///     # NOTE: Python bindings for load_from_agc_index() are currently broken because
+///     # the underlying index format has been migrated from the legacy .mdb format to
+///     # the split .mdbi + .mdbv format. A plan to restore full Python binding support
+///     # will be addressed in a future update.
 ///
 /// One can also create index and load the sequences from a fasta file using ```load_from_fastx()``` methods.
 /// Currently, this might be a good option for mid-size dataset (up to a couple of hundred megabases).
@@ -63,7 +64,6 @@ struct SeqIndexDB {
     pub principal_bundles: Option<(usize, usize, Bundles)>,
 }
 
-
 type CtgNameSrcToIdLen = FxHashMap<(String, Option<String>), (u32, u32)>;
 type SeqInfoMap = FxHashMap<u32, (String, Option<String>, u32)>; // seq_id -> (ctg_name ,src, length)
 
@@ -75,9 +75,9 @@ impl SeqIndexDB {
         SeqIndexDB {
             db_internal: pgr_db::ext::SeqIndexDB {
                 seq_db: None,
-                frg_db: None,
-                #[cfg(feature = "with_agc")]
                 agc_db: None,
+                low_mem_agc_db: None,
+                mem_frag_map: None,
                 shmmr_spec: None,
                 seq_index: None,
                 seq_info: None,
@@ -93,23 +93,21 @@ impl SeqIndexDB {
     /// ----------
     ///
     /// prefix: string
-    ///     the prefix to the `.agc`, `.mdb` and `.midx` files
+    ///     the prefix to the `.agcrs`, `.mdbi`, `.mdbv`, and `.midx` files
     ///
     /// Returns
     /// -------
     ///
     /// None or I/O Error
     ///
-    #[cfg(feature = "with_agc")]
+    /// .. warning::
+    ///     Python bindings for this method are currently broken following migration
+    ///     from the legacy ``.mdb`` format to the split ``.mdbi`` + ``.mdbv`` format.
+    ///     A fix will be addressed in a future update.
+    ///
     #[pyo3(text_signature = "($self, prefix)")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> PyResult<()> {
         self.db_internal.load_from_agc_index(prefix)?;
-        Ok(())
-    }
-
-    #[pyo3(text_signature = "($self, prefix)")]
-    pub fn load_from_frg_index(&mut self, prefix: String) -> PyResult<()> {
-        self.db_internal.load_from_frg_index(prefix)?;
         Ok(())
     }
 
@@ -147,7 +145,7 @@ impl SeqIndexDB {
         k: u32,
         r: u32,
         min_span: u32,
-        to_upper_case: bool
+        to_upper_case: bool,
     ) -> PyResult<()> {
         self.db_internal
             .load_from_fastx(filepath, w, k, r, min_span, to_upper_case)?;
@@ -210,12 +208,9 @@ impl SeqIndexDB {
         Ok(())
     }
 
-
     /// get a dictionary that maps (ctg_name, source) -> (id, len)
     #[getter]
-    pub fn get_seq_index(
-        &self,
-    ) -> PyResult<Option<CtgNameSrcToIdLen>> {
+    pub fn get_seq_index(&self) -> PyResult<Option<CtgNameSrcToIdLen>> {
         Ok(self.db_internal.seq_index.clone())
     }
 
@@ -252,24 +247,10 @@ impl SeqIndexDB {
         seq: Vec<u8>,
     ) -> PyResult<Vec<((u64, u64), (u32, u32, u8), Vec<seq_db::FragmentSignature>)>> {
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
                 let (frag_location_map, frag_map_file) = (
                     &self.db_internal.agc_db.as_ref().unwrap().frag_location_map,
                     &self.db_internal.agc_db.as_ref().unwrap().frag_map_file,
-                );
-                let shmmr_spec = self.db_internal.shmmr_spec.as_ref().unwrap().clone();
-                Ok(pgr_db::seq_db::raw_query_fragment_from_mmap_midx(
-                    frag_location_map,
-                    frag_map_file,
-                    &seq,
-                    &shmmr_spec,
-                ))
-            }
-            Backend::FRG => {
-                let (frag_location_map, frag_map_file) = (
-                    &self.db_internal.frg_db.as_ref().unwrap().frag_location_map,
-                    &self.db_internal.frg_db.as_ref().unwrap().frag_map_file,
                 );
                 let shmmr_spec = self.db_internal.shmmr_spec.as_ref().unwrap().clone();
                 Ok(pgr_db::seq_db::raw_query_fragment_from_mmap_midx(
@@ -372,11 +353,14 @@ impl SeqIndexDB {
         max_count_target: Option<u32>,
         max_aln_span: Option<u32>,
         max_gap: Option<u32>,
-        orientated: Option<bool>
+        orientated: Option<bool>,
     ) -> PyResult<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
-        let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
+        let orientated = if let Some(orientated) = orientated {
+            orientated
+        } else {
+            false
+        };
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => Ok(self
                 .db_internal
                 .query_fragment_to_hps_from_mmap_file(
@@ -387,20 +371,7 @@ impl SeqIndexDB {
                     max_count_target,
                     max_aln_span,
                     max_gap,
-                    orientated
-                )
-                .unwrap()),
-            Backend::FRG => Ok(self
-                .db_internal
-                .query_fragment_to_hps_from_mmap_file(
-                    &seq,
-                    penalty,
-                    max_count,
-                    max_count_query,
-                    max_count_target,
-                    max_aln_span,
-                    max_gap,
-                    orientated
+                    orientated,
                 )
                 .unwrap()),
             Backend::MEMORY | Backend::FASTX => Ok(self
@@ -413,7 +384,7 @@ impl SeqIndexDB {
                     max_count_target,
                     max_aln_span,
                     max_gap,
-                    orientated
+                    orientated,
                 )
                 .unwrap()),
             Backend::UNKNOWN => Ok(vec![]),
@@ -479,10 +450,14 @@ impl SeqIndexDB {
         max_count_target: Option<u32>,
         max_aln_span: Option<u32>,
         max_gap: Option<u32>,
-        orientated: Option<bool>
+        orientated: Option<bool>,
     ) -> PyResult<Vec<(u32, (u32, u32, u8), (u32, u32), (u32, u32))>> {
         let shmmr_spec = self.db_internal.shmmr_spec.as_ref().unwrap();
-        let orientated = if let Some(orientated) = orientated {orientated} else {false};
+        let orientated = if let Some(orientated) = orientated {
+            orientated
+        } else {
+            false
+        };
         let mut all_alns = {
             let raw_query_hits = self.query_fragment(seq.clone()).unwrap();
             aln::query_fragment_to_hps(
@@ -495,7 +470,7 @@ impl SeqIndexDB {
                 max_count_target,
                 max_aln_span,
                 max_gap,
-                orientated
+                orientated,
             )
         };
 
@@ -521,7 +496,7 @@ impl SeqIndexDB {
                         }
                     });
                     if let (Some(left_match), Some(right_match)) = (left_match, right_match) {
-                        out.push((*t_id, *score, left_match, right_match)); 
+                        out.push((*t_id, *score, left_match, right_match));
                     };
 
                     pos2hits.entry(pos).or_insert(vec![]).extend(out);
@@ -911,7 +886,6 @@ impl SeqIndexDB {
                 })
                 .collect();
             Ok(out)
-    
         } else {
             Err(exceptions::PyException::new_err(
                 "This method only support FASTX or MEMORY backend.",
@@ -1272,7 +1246,7 @@ impl SeqIndexDB {
                     .iter()
                     .map(|v| {
                         let seg_match = vertex_to_bundle_id_direction_pos.get(&(v.0, v.1)).copied();
-                       
+
                         (*v, seg_match)
                     })
                     .collect::<Vec<((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>)>>();
@@ -1376,9 +1350,8 @@ impl SeqIndexDB {
         if self.db_internal.seq_db.is_some() {
             let internal = self.db_internal.seq_db.as_ref().unwrap();
 
-            internal.write_to_frag_files(file_prefix.clone(), None);
             internal
-                .write_shmmr_map_index(file_prefix.clone())
+                .write_shmmr_map_index(file_prefix.clone(), None)
                 .expect("write mdb file fail");
         };
     }
@@ -1408,11 +1381,9 @@ impl SeqIndexDB {
     // depending on the storage type, return the corresponded index
     fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.db_internal.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => None,
             Backend::FASTX => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
             Backend::MEMORY => Some(&self.db_internal.seq_db.as_ref().unwrap().frag_map),
-            Backend::FRG => None,
             Backend::UNKNOWN => None,
         }
     }
@@ -1424,7 +1395,6 @@ impl SeqIndexDB {
 ///
 ///      >>> agc_file = AGCFile("/path/to/genomes.agc")
 ///
-#[cfg(feature = "with_agc")]
 #[pyclass(unsendable)] // lock in one thread (see https://github.com/PyO3/pyo3/blob/main/guide/src/class.md)
 struct AGCFile {
     /// internal agc_file handle
@@ -1441,7 +1411,6 @@ struct AGCFile {
     pub ctg_lens: FxHashMap<(String, String), usize>,
 }
 
-#[cfg(feature = "with_agc")]
 #[pymethods]
 impl AGCFile {
     /// constructor
@@ -1542,11 +1511,17 @@ pub fn sparse_aln(
     max_span: u32,
     penalty: f32,
     max_gap: Option<u32>,
-    orientated: Option<bool>
+    orientated: Option<bool>,
 ) -> PyResult<Vec<(f32, Vec<HitPair>)>> {
     let mut hp = sp_hits.clone();
-    let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
-    Ok(aln::sparse_aln(&mut hp, max_span, penalty, max_gap, orientated))
+    let orientated = if let Some(orientated) = orientated {
+        orientated
+    } else {
+        false
+    };
+    Ok(aln::sparse_aln(
+        &mut hp, max_span, penalty, max_gap, orientated,
+    ))
 }
 
 /// Generate a list of shimmer pair from a sequence
@@ -1748,7 +1723,7 @@ pub fn get_wfa_aln_pair_map(
     let max_wf_length = if let Some(max_wf_length) = max_wf_length {
         max_wf_length
     } else {
-        std::cmp::max(2*set_len_diff, 128_u32)
+        std::cmp::max(2 * set_len_diff, 128_u32)
     };
 
     if max_wf_length > 128
@@ -1793,8 +1768,8 @@ pub fn get_variants_from_aln_pair_map(
 /// ----------
 /// Documents:TODO
 ///
-#[pyfunction(signature = (target_str, query_str, max_wf_length=None, 
-    mismatch_penalty=4, open_penalty=3, extension_penalty=1, 
+#[pyfunction(signature = (target_str, query_str, max_wf_length=None,
+    mismatch_penalty=4, open_penalty=3, extension_penalty=1,
     max_diff_percent = 0.05))]
 pub fn get_variant_segments(
     target_str: &str,
@@ -1809,7 +1784,7 @@ pub fn get_variant_segments(
     let max_wf_length = if let Some(max_wf_length) = max_wf_length {
         max_wf_length
     } else {
-        std::cmp::max(2*set_len_diff, 128_u32)
+        std::cmp::max(2 * set_len_diff, 128_u32)
     };
 
     if max_wf_length > 128
@@ -1819,7 +1794,7 @@ pub fn get_variant_segments(
         return None;
     };
 
-    if let Some((aln_target_str, aln_query_str)) = aln::wfa_align_bases (
+    if let Some((aln_target_str, aln_query_str)) = aln::wfa_align_bases(
         target_str,
         query_str,
         max_wf_length,
@@ -1998,9 +1973,8 @@ pub fn shmmr_sparse_aln_consensus(
 /// into `pgrtk.*` scope to avoid using the verbose
 /// `pgrtk.pgrtk.*`.
 #[pymodule]
-fn pgrtk(_: Python, m: &PyModule) -> PyResult<()> {
+fn pgrtk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SeqIndexDB>()?;
-    #[cfg(feature = "with_agc")]
     m.add_class::<AGCFile>()?;
     m.add_function(wrap_pyfunction!(sparse_aln, m)?)?;
     m.add_function(wrap_pyfunction!(get_shmmr_dots, m)?)?;

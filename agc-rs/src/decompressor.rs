@@ -4,7 +4,7 @@ use rusqlite::params;
 
 use crate::db::AgcDb;
 use crate::error::{AgcError, Result};
-use crate::segment::{self, Params};
+use crate::segment;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -15,7 +15,6 @@ use crate::segment::{self, Params};
 /// Sequences are decompressed on demand; no data is cached between calls.
 pub struct AgcFile {
     db: AgcDb,
-    params: Params,
 }
 
 impl AgcFile {
@@ -23,7 +22,6 @@ impl AgcFile {
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self {
             db: AgcDb::open(path)?,
-            params: Params::default(),
         })
     }
 
@@ -31,7 +29,6 @@ impl AgcFile {
     pub fn open_readonly(path: &Path) -> Result<Self> {
         Ok(Self {
             db: AgcDb::open_readonly(path)?,
-            params: Params::default(),
         })
     }
 
@@ -41,11 +38,10 @@ impl AgcFile {
 
     /// Return the number of samples in the archive.
     pub fn n_samples(&self) -> Result<usize> {
-        let count: i64 = self.db.conn().query_row(
-            "SELECT COUNT(*) FROM sample",
-            [],
-            |r| r.get(0),
-        )?;
+        let count: i64 = self
+            .db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM sample", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
@@ -62,7 +58,10 @@ impl AgcFile {
 
     /// List all sample names in the archive.
     pub fn list_samples(&self) -> Result<Vec<String>> {
-        let mut stmt = self.db.conn().prepare("SELECT name FROM sample ORDER BY id")?;
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare("SELECT name FROM sample ORDER BY id")?;
         let names = stmt
             .query_map([], |r| r.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
@@ -72,9 +71,10 @@ impl AgcFile {
     /// List the contig names for `sample`.
     pub fn list_contigs(&self, sample: &str) -> Result<Vec<String>> {
         let sample_id = self.sample_id(sample)?;
-        let mut stmt = self.db.conn().prepare(
-            "SELECT name FROM contig WHERE sample_id = ?1 ORDER BY id",
-        )?;
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare("SELECT name FROM contig WHERE sample_id = ?1 ORDER BY id")?;
         let names = stmt
             .query_map(params![sample_id], |r| r.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
@@ -107,13 +107,7 @@ impl AgcFile {
     /// for `contig` within `sample`.
     ///
     /// Returns the sequence as uppercase ASCII bytes.
-    pub fn contig_seq(
-        &self,
-        sample: &str,
-        contig: &str,
-        start: u64,
-        end: u64,
-    ) -> Result<Vec<u8>> {
+    pub fn contig_seq(&self, sample: &str, contig: &str, start: u64, end: u64) -> Result<Vec<u8>> {
         // 1. Contig metadata.
         let total_len = self.contig_len(sample, contig)?;
         let contig_id = self.contig_id(sample, contig)?;
@@ -168,7 +162,8 @@ impl AgcFile {
 
             if seg_end > start && seg_start < end {
                 // This segment contributes to the output.
-                let seq_bits = self.decompress_segment(seg.group_id, seg.in_group_id, &seg.delta_data)?;
+                let seq_bits =
+                    self.decompress_segment(seg.group_id, seg.in_group_id, &seg.delta_data)?;
 
                 // 6. Handle reverse complement.
                 let seq_bits = if seg.is_rev_comp {
@@ -176,6 +171,18 @@ impl AgcFile {
                 } else {
                     seq_bits
                 };
+
+                // 7. Strip the overlap prefix.
+                //
+                // Stored segments include a k-base overlap prefix from the
+                // previous splitter k-mer (AGC's `split_pos = pos+1-k`
+                // scheme).  `raw_length` is the actual contig contribution
+                // (stored_len - k for non-first segments).  Deriving the
+                // overlap from the stored/decoded length avoids needing to
+                // know k explicitly, and is automatically zero for first
+                // segments (where raw_length == stored_length).
+                let overlap = seq_bits.len().saturating_sub(seg.raw_length as usize);
+                let seq_bits = &seq_bits[overlap..];
 
                 // Trim to the portion that falls within [start, end).
                 let local_start = if start > seg_start {
@@ -240,33 +247,35 @@ impl AgcFile {
 
     /// Decompress one segment.
     ///
-    /// If `in_group_id == 0` the segment *is* the reference (the delta stores
-    /// the reference sequence itself encoded as a delta against an empty
-    /// reference, or delta_data may be `None`).  For `in_group_id > 0` we
-    /// load the group's `ref_data`, build an `LzDiff`, and decode the delta.
+    /// - `in_group_id == 0`: reference segment — decompress `ref_data`.
+    /// - `in_group_id > 0`: delta segment — decompress `delta_data` (ZSTD),
+    ///   then LZ-diff decode against the group's reference.
     fn decompress_segment(
         &self,
         group_id: i64,
         in_group_id: i64,
         delta_data: &Option<Vec<u8>>,
     ) -> Result<Vec<u8>> {
-        // Load the group's ref_data blob.
-        let ref_blob: Vec<u8> = self.db.conn().query_row(
-            "SELECT ref_data FROM segment_group WHERE id = ?1",
-            params![group_id],
-            |r| r.get(0),
-        )?;
-
         if in_group_id == 0 {
-            // This segment IS the reference sequence.
+            let ref_blob: Vec<u8> = self.db.conn().query_row(
+                "SELECT ref_data FROM segment_group WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )?;
             segment::decompress_reference(&ref_blob)
         } else {
-            // Delta-encoded against the reference.
             let blob = delta_data.as_ref().ok_or_else(|| {
-                AgcError::LzDiff("non-reference segment has NULL delta_data".to_string())
+                AgcError::LzDiff(format!("segment in group {} has no delta_data", group_id))
             })?;
-            let lz = segment::lz_from_ref_blob(&ref_blob, &self.params)?;
-            segment::decompress_delta(&lz, blob)
+            let ref_blob: Vec<u8> = self.db.conn().query_row(
+                "SELECT ref_data FROM segment_group WHERE id = ?1",
+                params![group_id],
+                |r| r.get(0),
+            )?;
+            let raw = segment::decompress_delta_data(blob)?;
+            let params = segment::Params::default();
+            let lz = segment::lz_from_ref_blob(&ref_blob, &params)?;
+            segment::decompress_delta(&lz, &raw)
         }
     }
 }
@@ -383,7 +392,6 @@ mod tests {
             })
             .collect();
 
-        let params_s = Params::default();
         let ref_blob = segment::compress_reference(&seq_bits).expect("compress ref");
 
         // segment_group: ref_data = compressed reference; params JSON
@@ -392,8 +400,7 @@ mod tests {
             params![ref_blob, r#"{"min_match_len":18,"segment_size":60000}"#],
         )
         .expect("insert segment_group");
-        let group_id: i64 = conn
-            .last_insert_rowid();
+        let group_id: i64 = conn.last_insert_rowid();
 
         // segment: in_group_id = 0 means this segment IS the reference;
         // delta_data is NULL.
@@ -408,7 +415,6 @@ mod tests {
     fn open_agc_file(f: &NamedTempFile) -> AgcFile {
         AgcFile {
             db: AgcDb::open(f.path()).expect("open db"),
-            params: Params::default(),
         }
     }
 

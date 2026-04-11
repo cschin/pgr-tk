@@ -14,13 +14,13 @@ The workflow has four steps:
 New Assembly (FASTA, two haplotypes)
          |
          v
-[1] pgr-alnmap          -- align each haplotype against the reference
+[1] pgr align alnmap          -- align each haplotype against the reference
          |
          v
-[2] pgr-generate-diploid-vcf   -- merge both alnmap files into a diploid VCF
+[2] pgr variant diploid-vcf   -- merge both alndb files into a diploid VCF
          |
          v
-[3] (optional) pgr-annotate-vcf-file  -- annotate with gene names from GTF
+[3] (optional) pgr variant annotate-vcf  -- annotate with gene names from GTF
          |
          v
 [4] External annotation  -- ClinVar, gnomAD, dbSNP via bcftools annotate
@@ -38,32 +38,32 @@ cargo build --release
 
 The tools used in this workflow are:
 
-- `pgr-alnmap` — whole genome alignment, produces `.alnmap` files
-- `pgr-generate-diploid-vcf` — merges two haplotype `.alnmap` files into a VCF
-- `pgr-annotate-vcf-file` — optional gene-name annotation using a GTF file
+- `pgr align alnmap` — whole genome alignment, produces `.alndb`, `.alnmap`, `.ctgmap.*` files
+- `pgr variant diploid-vcf` — merges two haplotype `.alndb` files into a VCF
+- `pgr variant annotate-vcf` — optional gene-name annotation using a GTF file
 
-All binaries are in `target/release/`.
+All are subcommands of the single `pgr` binary in `target/release/`.
 
 ---
 
 ## Step 1: Align Each Haplotype Against the Reference
 
-Run `pgr-alnmap` once per haplotype. It uses SHIMMER (sparse hierarchical minimizer matching)
+Run `pgr align alnmap` once per haplotype. It uses SHIMMER (sparse hierarchical minimizer matching)
 anchoring followed by Wavefront Alignment (WFA) or Smith-Waterman to call base-level variants.
 
 ```bash
 # Haplotype 0
-pgr-alnmap \
-    reference.fasta \
-    assembly_hap0.fasta \
-    sample_hap0 \
+pgr align alnmap \
+    --reference-fasta-path reference.fasta \
+    --assembly-contig-path assembly_hap0.fasta \
+    --output-prefix sample_hap0 \
     --preset default
 
 # Haplotype 1
-pgr-alnmap \
-    reference.fasta \
-    assembly_hap1.fasta \
-    sample_hap1 \
+pgr align alnmap \
+    --reference-fasta-path reference.fasta \
+    --assembly-contig-path assembly_hap1.fasta \
+    --output-prefix sample_hap1 \
     --preset default
 ```
 
@@ -79,28 +79,26 @@ Parameters can also be set manually with `--w`, `--k`, `--r`, `--min-span`.
 
 ### Output files
 
-| File                     | Contents                                              |
-|--------------------------|-------------------------------------------------------|
-| `sample_hap0.alnmap`     | Alignment blocks and called variants (M, V, S records)|
-| `sample_hap0.ctgmap.json`| Contig-to-reference mapping with sequence lengths     |
-| `sample_hap0.svcnd.bed`  | Structural variant candidate regions                  |
-| `sample_hap0_svcnd/`     | FASTA sequences spanning SV candidates (if enabled)   |
-
-The `.ctgmap.json` from either haplotype (they reference the same target) is used in Step 2.
+| File                       | Contents                                              |
+|----------------------------|-------------------------------------------------------|
+| `sample_hap0.alndb`        | SQLite alignment database (blocks and variants)       |
+| `sample_hap0.alnmap`       | Text alignment blocks and called variants (M, V, S)   |
+| `sample_hap0.ctgmap.json`  | Contig-to-reference mapping with sequence lengths     |
+| `sample_hap0.svcnd.bed`    | Structural variant candidate regions                  |
+| `sample_hap0_svcnd/`       | FASTA sequences spanning SV candidates (if enabled)   |
 
 ---
 
 ## Step 2: Generate the Diploid VCF
 
-`pgr-generate-diploid-vcf` reads the two `.alnmap` files, groups overlapping variant records,
+`pgr variant diploid-vcf` reads the two `.alndb` files, groups overlapping variant records,
 resolves alleles per haplotype, deduplicates, and emits VCFv4.2.
 
 ```bash
-pgr-generate-diploid-vcf \
-    sample_hap0.alnmap \
-    sample_hap1.alnmap \
-    sample_hap0.ctgmap.json \
-    sample \
+pgr variant diploid-vcf \
+    --hap0-path sample_hap0.alndb \
+    --hap1-path sample_hap1.alndb \
+    --output-prefix sample \
     --sample-name SAMPLE_ID
 ```
 
@@ -137,7 +135,7 @@ chr1    982736  .   T     TGCA  30    DUP     .     GT      .|1
 
 ## Step 3: (Optional) Annotate with Gene Names
 
-`pgr-annotate-vcf-file` adds a `GN` INFO field with the gene name(s) overlapping each variant.
+`pgr variant annotate-vcf` adds a `GN` INFO field with the gene name(s) overlapping each variant.
 It accepts a gzip-compressed GTF file (NCBI RefSeq or GENCODE format).
 
 Download a GTF annotation for GRCh38:
@@ -149,10 +147,10 @@ wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/genes/hg38.ncbiRefS
 Run annotation:
 
 ```bash
-pgr-annotate-vcf-file \
-    sample.vcf \
-    hg38.ncbiRefSeq.gtf.gz \
-    sample.annotated.vcf
+pgr variant annotate-vcf \
+    --vcf-path sample.vcf \
+    --annotation-path hg38.ncbiRefSeq.gtf.gz \
+    --output-path sample.annotated.vcf
 ```
 
 The output adds `INFO/GN=<gene_name>` to any variant overlapping a transcript. Variants outside
@@ -266,17 +264,20 @@ bcftools filter \
 
 ## Notes on Haploid Assemblies
 
-If only a single (haploid) assembly is available, run `pgr-alnmap` once and pass the same
-`.alnmap` file for both haplotype inputs to `pgr-generate-diploid-vcf`:
+If only a single (haploid) assembly is available, run `pgr align alnmap` once and pass the same
+`.alndb` file for both haplotype inputs to `pgr variant diploid-vcf`:
 
 ```bash
-pgr-alnmap reference.fasta assembly.fasta sample sample --preset default
+pgr align alnmap \
+    --reference-fasta-path reference.fasta \
+    --assembly-contig-path assembly.fasta \
+    --output-prefix sample \
+    --preset default
 
-pgr-generate-diploid-vcf \
-    sample.alnmap \
-    sample.alnmap \
-    sample.ctgmap.json \
-    sample \
+pgr variant diploid-vcf \
+    --hap0-path sample.alndb \
+    --hap1-path sample.alndb \
+    --output-prefix sample \
     --sample-name SAMPLE_ID
 ```
 
@@ -289,17 +290,21 @@ to restrict downstream analysis to covered regions.
 
 ```bash
 # 1. Align both haplotypes
-pgr-alnmap reference.fasta hap0.fasta out_hap0 --preset default
-pgr-alnmap reference.fasta hap1.fasta out_hap1 --preset default
+pgr align alnmap --reference-fasta-path reference.fasta \
+    --assembly-contig-path hap0.fasta --output-prefix out_hap0 --preset default
+pgr align alnmap --reference-fasta-path reference.fasta \
+    --assembly-contig-path hap1.fasta --output-prefix out_hap1 --preset default
 
 # 2. Generate diploid VCF
-pgr-generate-diploid-vcf \
-    out_hap0.alnmap out_hap1.alnmap \
-    out_hap0.ctgmap.json \
-    sample --sample-name MY_SAMPLE
+pgr variant diploid-vcf \
+    --hap0-path out_hap0.alndb --hap1-path out_hap1.alndb \
+    --output-prefix sample --sample-name MY_SAMPLE
 
 # 3. (Optional) Annotate with gene names
-pgr-annotate-vcf-file sample.vcf hg38.ncbiRefSeq.gtf.gz sample.gene_annotated.vcf
+pgr variant annotate-vcf \
+    --vcf-path sample.vcf \
+    --annotation-path hg38.ncbiRefSeq.gtf.gz \
+    --output-path sample.gene_annotated.vcf
 
 # 4. Sort, compress, index
 bcftools sort sample.vcf -O z -o sample.vcf.gz && bcftools index -t sample.vcf.gz

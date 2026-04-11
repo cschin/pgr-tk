@@ -1,26 +1,24 @@
 use flate2::bufread::MultiGzDecoder;
 
-#[cfg(feature = "with_agc")]
-use memmap2::Mmap;
+use memmap2::{Advice, Mmap};
 
+use crate::aln;
 use crate::fasta_io::FastaReader;
-use crate::frag_file_io;
 use crate::graph_utils::{AdjList, ShmmrGraphNode};
 pub use crate::seq_db::pair_shmmrs;
-use crate::seq_db::{self, raw_query_fragment, raw_query_fragment_from_mmap_midx, GetSeq};
+use crate::seq_db::{
+    self, get_fragment_signatures_from_mmap_file, parse_mdbi_header_from_mmap,
+    raw_query_fragment, raw_query_fragment_from_mmap_midx, raw_query_fragment_from_sorted_mdbi,
+    GetSeq,
+};
 pub use crate::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
-use crate::{aln, frag_file_io::CompactSeqFragFileStorage};
 
-#[cfg(feature = "with_agc")]
 use crate::agc_io::{self, AGCSeqDB};
 
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::fs::File;
-
-#[cfg(feature = "with_agc")]
-use std::io::BufRead;
-
+use std::io;
 use std::io::{BufReader, BufWriter, Read, Write};
 
 pub type PrincipalBundles = Vec<Vec<(u64, u64, u8)>>; //shimmer pair vector
@@ -37,12 +35,23 @@ pub enum GZFastaReader {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
-    #[cfg(feature = "with_agc")]
     AGC,
-    FRG,
     FASTX,
     MEMORY,
     UNKNOWN,
+}
+
+/// AGC-backed index for low-memory operation.
+///
+/// Avoids loading the large `frag_location_map` HashMap into RAM.  Instead,
+/// both `.mdbi` (sorted key table) and `.mdbv` (fragment values) are kept as
+/// memory maps, and shimmer-pair lookups use binary search on the sorted
+/// `.mdbi` — O(log n) accessed pages per lookup rather than an in-RAM HashMap.
+pub struct LowMemAGCSeqDB {
+    pub agc_file: agc_io::AGCFile,
+    pub mdbi_mmap: Mmap,
+    pub mdbi_n_keys: u64,
+    pub mdbv_mmap: Mmap,
 }
 
 pub struct SeqIndexDB {
@@ -50,10 +59,10 @@ pub struct SeqIndexDB {
     pub shmmr_spec: Option<ShmmrSpec>,
     /// Rust internal: store the sequences
     pub seq_db: Option<seq_db::CompactSeqDB>,
-    #[cfg(feature = "with_agc")]
     /// Rust internal: store the agc file and the index
     pub agc_db: Option<AGCSeqDB>,
-    pub frg_db: Option<CompactSeqFragFileStorage>,
+    /// Low-memory AGC backend: binary-search on mmap'd .mdbi, no HashMap.
+    pub low_mem_agc_db: Option<LowMemAGCSeqDB>,
     /// a dictionary maps (ctg_name, source) -> (id, len)
     #[allow(clippy::type_complexity)]
     pub seq_index: Option<FxHashMap<(String, Option<String>), (u32, u32)>>,
@@ -61,6 +70,10 @@ pub struct SeqIndexDB {
     #[allow(clippy::type_complexity)]
     pub seq_info: Option<FxHashMap<u32, (String, Option<String>, u32)>>,
     pub backend: Backend,
+    /// Optional fully in-RAM shimmer index, loaded via `load_index_to_memory()`.
+    /// When populated, `query_fragment_to_hps_from_mmap_file` uses this map
+    /// instead of page-faulting through the mmap, trading RAM for lower latency.
+    pub mem_frag_map: Option<seq_db::ShmmrToFrags>,
 }
 
 impl Default for SeqIndexDB {
@@ -73,30 +86,33 @@ impl SeqIndexDB {
     pub fn new() -> Self {
         SeqIndexDB {
             seq_db: None,
-            frg_db: None,
-            #[cfg(feature = "with_agc")]
             agc_db: None,
+            low_mem_agc_db: None,
             shmmr_spec: None,
             seq_index: None,
             seq_info: None,
             backend: Backend::UNKNOWN,
+            mem_frag_map: None,
         }
     }
 
-    #[cfg(feature = "with_agc")]
     pub fn load_from_agc_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let (shmmr_spec, frag_location_map) =
-            seq_db::read_mdb_file_to_frag_locations(prefix.to_string() + ".mdb").unwrap();
+        let (spec, loc) = seq_db::read_mdbi_file_to_frag_locations(&prefix)
+            .map_err(|e| io::Error::new(e.kind(), format!("{prefix}.mdbi: {e}")))?;
+        let frag_location_map = FxHashMap::<(u64, u64), (usize, usize)>::from_iter(loc);
+        let mdbv_path = format!("{prefix}.mdbv");
+        let f = File::open(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
+        let frag_map_file = unsafe { Mmap::map(&f)? };
+        // Queries access .mdbv at random offsets; hint the OS not to readahead.
+        let _ = frag_map_file.advise(Advice::Random);
+        let shmmr_spec = spec;
 
-        let frag_location_map =
-            FxHashMap::<(u64, u64), (usize, usize)>::from_iter(frag_location_map);
-
-        let agc_file = agc_io::AGCFile::new(prefix.to_string() + ".agcrs")?;
-
-        let fmap_file = File::open(prefix.clone() + ".mdb").expect("frag map file open fail");
-        let frag_map_file =
-            unsafe { Mmap::map(&fmap_file).expect("frag map file memory map creation fail") };
-
+        // Use the AGC archive path recorded in the index; fall back to the
+        // conventional `<prefix>.agcrs` for indexes built before this was added.
+        let agc_path =
+            seq_db::read_agc_path_from_midx(&prefix).unwrap_or_else(|| format!("{prefix}.agcrs"));
+        let agc_file = agc_io::AGCFile::new(agc_path)?;
         self.agc_db = Some(agc_io::AGCSeqDB {
             agc_file,
             frag_location_map,
@@ -105,45 +121,79 @@ impl SeqIndexDB {
         self.backend = Backend::AGC;
         self.shmmr_spec = Some(shmmr_spec);
 
-        let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
-
-        let midx_file = BufReader::new(File::open(prefix + ".midx")?);
-        midx_file
-            .lines()
-            .try_for_each(|line| -> Result<(), std::io::Error> {
-                let line = line.unwrap();
-                let mut line = line.as_str().split('\t');
-                let sid = line.next().unwrap().parse::<u32>().unwrap();
-                let len = line.next().unwrap().parse::<u32>().unwrap();
-                let ctg_name = line.next().unwrap().to_string();
-                let source = line.next().unwrap().to_string();
-                seq_index.insert((ctg_name.clone(), Some(source.clone())), (sid, len));
-                seq_info.insert(sid, (ctg_name, Some(source), len));
-                Ok(())
-            })?;
-
+        let (seq_index, seq_info) = seq_db::read_seq_index_sqlite(&prefix)?;
         self.seq_index = Some(seq_index);
         self.seq_info = Some(seq_info);
         Ok(())
     }
 
-    pub fn load_from_frg_index(&mut self, prefix: String) -> Result<(), std::io::Error> {
-        let mut frag_db = frag_file_io::CompactSeqFragFileStorage::new(prefix);
+    /// Load the shimmer index from the mmap'd `.mdbv` file fully into RAM.
+    ///
+    /// After calling this, `query_fragment_to_hps_from_mmap_file` will perform
+    /// all lookups against the in-memory `ShmmrToFrags` map rather than
+    /// page-faulting through the mmap.  Sequence data continues to be fetched
+    /// from the AGC archive on demand.
+    ///
+    /// This trades a one-time upfront allocation (proportional to the `.mdbv`
+    /// file size) for lower per-query latency once the data is resident.
+    pub fn load_index_to_memory(&mut self) -> Result<(), std::io::Error> {
+        let agc_db = self.agc_db.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "load_index_to_memory requires an AGC index loaded via load_from_agc_index",
+            )
+        })?;
 
-        let seq_index = frag_db.seq_index.into_iter().map(|(k, v)| (k, v)).collect();
+        let mut frag_map = seq_db::ShmmrToFrags::default();
+        for (&shmmr_pair, &(start, vec_len)) in &agc_db.frag_location_map {
+            let sigs =
+                get_fragment_signatures_from_mmap_file(&agc_db.frag_map_file, start, vec_len);
+            frag_map.insert(shmmr_pair, sigs);
+        }
+        self.mem_frag_map = Some(frag_map);
+        Ok(())
+    }
 
-        let seq_info = frag_db.seq_info.into_iter().map(|(k, v)| (k, v)).collect();
+    /// Load the AGC-backed shimmer index in low-memory mode.
+    ///
+    /// Unlike `load_from_agc_index`, this does **not** build the
+    /// `frag_location_map` HashMap in RAM.  Instead it memory-maps both the
+    /// `.mdbi` (sorted key table) and `.mdbv` (fragment values) files directly.
+    /// Shimmer-pair lookups during queries use binary search on the mmap'd
+    /// `.mdbi`, accessing only O(log n) pages per lookup.
+    ///
+    /// Use this on machines where the in-RAM HashMap would exceed available
+    /// memory.  Queries will be somewhat slower than the default (HashMap O(1)
+    /// vs binary-search O(log n)) but use far less resident memory.
+    pub fn load_from_agc_index_low_memory(&mut self, prefix: String) -> Result<(), std::io::Error> {
+        let mdbi_path = format!("{prefix}.mdbi");
+        let mdbi_file = File::open(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?;
+        let mdbi_mmap = unsafe { Mmap::map(&mdbi_file)? };
+        // Binary search accesses .mdbi at random offsets; suppress sequential readahead.
+        let _ = mdbi_mmap.advise(Advice::Random);
+        let (shmmr_spec, mdbi_n_keys) = parse_mdbi_header_from_mmap(&mdbi_mmap)?;
 
-        frag_db.seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
-        frag_db.seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
+        let mdbv_path = format!("{prefix}.mdbv");
+        let mdbv_file = File::open(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
+        let mdbv_mmap = unsafe { Mmap::map(&mdbv_file)? };
+        let _ = mdbv_mmap.advise(Advice::Random);
 
-        let shmmr_spec = frag_db.shmmr_spec.clone();
+        let agc_path =
+            seq_db::read_agc_path_from_midx(&prefix).unwrap_or_else(|| format!("{prefix}.agcrs"));
+        let agc_file = agc_io::AGCFile::new(agc_path)?;
 
-        self.frg_db = Some(frag_db);
-        self.backend = Backend::FRG;
+        self.low_mem_agc_db = Some(LowMemAGCSeqDB {
+            agc_file,
+            mdbi_mmap,
+            mdbi_n_keys,
+            mdbv_mmap,
+        });
+        self.backend = Backend::AGC;
         self.shmmr_spec = Some(shmmr_spec);
 
+        let (seq_index, seq_info) = seq_db::read_seq_index_sqlite(&prefix)?;
         self.seq_index = Some(seq_index);
         self.seq_info = Some(seq_info);
         Ok(())
@@ -165,7 +215,7 @@ impl SeqIndexDB {
             min_span,
             sketch: false,
         };
-        let mut sdb = seq_db::CompactSeqDB::new(spec.clone());
+        let mut sdb = seq_db::CompactSeqDB::new(spec);
 
         sdb.load_seqs_from_fastx(filepath, to_upper_case)?;
         self.shmmr_spec = Some(spec);
@@ -191,7 +241,10 @@ impl SeqIndexDB {
             self.backend == Backend::FASTX,
             "Only DB created with load_from_fastx() can add data from another fastx file"
         );
-        let sdb = self.seq_db.as_mut().unwrap();
+        let sdb = self
+            .seq_db
+            .as_mut()
+            .expect("invariant: seq_db set after assert!(backend == FASTX)");
         sdb.load_seqs_from_fastx(filepath, to_upper_case)?;
         let mut seq_index = FxHashMap::<(String, Option<String>), (u32, u32)>::default();
         let mut seq_info = FxHashMap::<u32, (String, Option<String>, u32)>::default();
@@ -206,11 +259,13 @@ impl SeqIndexDB {
 
     pub fn write_frag_and_index_files(&self, file_prefix: String) {
         if self.seq_db.is_some() {
-            let internal = self.seq_db.as_ref().unwrap();
+            let internal = self
+                .seq_db
+                .as_ref()
+                .expect("invariant: just checked is_some()");
 
-            internal.write_to_frag_files(file_prefix.clone(), None);
             internal
-                .write_shmmr_map_index(file_prefix)
+                .write_shmmr_map_index(file_prefix, None)
                 .expect("write mdb file fail");
         };
     }
@@ -237,7 +292,7 @@ impl SeqIndexDB {
         } else {
             Some("Memory".to_string())
         };
-        let mut sdb = seq_db::CompactSeqDB::new(spec.clone());
+        let mut sdb = seq_db::CompactSeqDB::new(spec);
         let seq_vec = seq_list
             .into_iter()
             .enumerate()
@@ -270,7 +325,7 @@ impl SeqIndexDB {
         max_gap: Option<u32>,
         oriented: bool,
     ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
-        let shmmr_spec = &self.shmmr_spec.as_ref().unwrap();
+        let shmmr_spec = self.shmmr_spec.as_ref()?;
         if let Some(frag_map) = self.get_shmmr_map_internal() {
             let raw_query_hits = raw_query_fragment(frag_map, seq, shmmr_spec);
             let res = aln::query_fragment_to_hps(
@@ -303,35 +358,35 @@ impl SeqIndexDB {
         max_gap: Option<u32>,
         oriented: bool,
     ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
-        let shmmr_spec = self.shmmr_spec.as_ref().unwrap();
+        let shmmr_spec = self.shmmr_spec.as_ref()?;
 
-        #[cfg(feature = "with_agc")]
+        // If the caller pre-loaded the index into RAM via load_index_to_memory(),
+        // use the in-memory map directly and skip all mmap page faults.
+        if let Some(frag_map) = &self.mem_frag_map {
+            let raw_query_hits = raw_query_fragment(frag_map, seq, shmmr_spec);
+            let res = aln::query_fragment_to_hps(
+                raw_query_hits,
+                seq,
+                shmmr_spec,
+                penalty,
+                max_count,
+                max_count_query,
+                max_count_target,
+                max_aln_span,
+                max_gap,
+                oriented,
+            );
+            return Some(res);
+        }
+
         let (frag_location_map, frag_map_file) = if self.backend == Backend::AGC {
-            (
-                &self.agc_db.as_ref().unwrap().frag_location_map,
-                &self.agc_db.as_ref().unwrap().frag_map_file,
-            )
-        } else if self.backend == Backend::FRG {
-            (
-                &self.frg_db.as_ref().unwrap().frag_location_map,
-                &self.frg_db.as_ref().unwrap().frag_map_file,
-            )
+            let db = self
+                .agc_db
+                .as_ref()
+                .expect("invariant: agc_db set when backend is AGC");
+            (&db.frag_location_map, &db.frag_map_file)
         } else {
-            panic!(
-                "the call query_fragment_to_hps_from_mmap_file() needs AGC or FRAG backend file"
-            );
-        };
-
-        #[cfg(not(feature = "with_agc"))]
-        let (frag_location_map, frag_map_file) = if self.backend == Backend::FRG {
-            (
-                &self.frg_db.as_ref().unwrap().frag_location_map,
-                &self.frg_db.as_ref().unwrap().frag_map_file,
-            )
-        } else {
-            panic!(
-                "the call query_fragment_to_hps_from_mmap_file() needs AGC or FRAG backend file"
-            );
+            panic!("needs AGC backend");
         };
 
         let raw_query_hits =
@@ -339,6 +394,48 @@ impl SeqIndexDB {
         let res = aln::query_fragment_to_hps(
             raw_query_hits,
             &seq,
+            shmmr_spec,
+            penalty,
+            max_count,
+            max_count_query,
+            max_count_target,
+            max_aln_span,
+            max_gap,
+            oriented,
+        );
+        Some(res)
+    }
+
+    /// Query a fragment using the low-memory backend (binary search on mmap'd `.mdbi`).
+    ///
+    /// Requires the DB to have been loaded via `load_from_agc_index_low_memory`.
+    #[allow(clippy::type_complexity)]
+    pub fn query_fragment_to_hps_low_memory(
+        &self,
+        seq: &Vec<u8>,
+        penalty: f32,
+        max_count: Option<u32>,
+        max_count_query: Option<u32>,
+        max_count_target: Option<u32>,
+        max_aln_span: Option<u32>,
+        max_gap: Option<u32>,
+        oriented: bool,
+    ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
+        let shmmr_spec = self.shmmr_spec.as_ref()?;
+        let db = self
+            .low_mem_agc_db
+            .as_ref()
+            .expect("low_mem_agc_db not loaded; call load_from_agc_index_low_memory first");
+        let raw_query_hits = raw_query_fragment_from_sorted_mdbi(
+            &db.mdbi_mmap,
+            db.mdbi_n_keys,
+            &db.mdbv_mmap,
+            seq,
+            shmmr_spec,
+        );
+        let res = aln::query_fragment_to_hps(
+            raw_query_hits,
+            seq,
             shmmr_spec,
             penalty,
             max_count,
@@ -359,37 +456,22 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
-            Backend::AGC => Ok(self.agc_db.as_ref().unwrap().agc_file.get_sub_seq(
-                sample_name,
-                ctg_name,
-                bgn,
-                end,
-            )),
+            Backend::AGC => Ok(self
+                .agc_file_ref()
+                .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
+                .get_sub_seq(sample_name, ctg_name, bgn, end)),
             Backend::MEMORY | Backend::FASTX => {
+                let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
                 let &(sid, _) = self
                     .seq_index
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_index set when backend is MEMORY or FASTX")
                     .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, not_found))?;
                 Ok(self
                     .seq_db
                     .as_ref()
-                    .unwrap()
-                    .get_sub_seq_by_id(sid, bgn as u32, end as u32))
-            }
-            Backend::FRG => {
-                let &(sid, _) = self
-                    .seq_index
-                    .as_ref()
-                    .unwrap()
-                    .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self
-                    .frg_db
-                    .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_db set when backend is MEMORY or FASTX")
                     .get_sub_seq_by_id(sid, bgn as u32, end as u32))
             }
             Backend::UNKNOWN => Err(std::io::Error::new(
@@ -405,30 +487,23 @@ impl SeqIndexDB {
         ctg_name: String,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => Ok(self
-                .agc_db
-                .as_ref()
-                .unwrap()
-                .agc_file
+                .agc_file_ref()
+                .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                 .get_seq(sample_name, ctg_name)),
             Backend::MEMORY | Backend::FASTX => {
+                let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
                 let &(sid, _) = self
                     .seq_index
                     .as_ref()
-                    .unwrap()
+                    .expect("invariant: seq_index set when backend is MEMORY or FASTX")
                     .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
-            }
-            Backend::FRG => {
-                let &(sid, _) = self
-                    .seq_index
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, not_found))?;
+                Ok(self
+                    .seq_db
                     .as_ref()
-                    .unwrap()
-                    .get(&(ctg_name, Some(sample_name)))
-                    .unwrap();
-                Ok(self.frg_db.as_ref().unwrap().get_seq_by_id(sid))
+                    .expect("invariant: seq_db set when backend is MEMORY or FASTX")
+                    .get_seq_by_id(sid))
             }
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -439,22 +514,33 @@ impl SeqIndexDB {
 
     pub fn get_seq_by_id(&self, sid: u32) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
-                let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
-                Ok(self
-                    .agc_db
+                let (ctg_name, sample_name, _) = self
+                    .seq_info
                     .as_ref()
-                    .unwrap()
-                    .agc_file
+                    .expect("invariant: seq_info set when backend is AGC")
+                    .get(&sid)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("sequence id {sid} not found"),
+                        )
+                    })?;
+                let ctg_name = ctg_name.clone();
+                let sample_name = sample_name
+                    .as_ref()
+                    .expect("invariant: sample_name set in seq_info")
+                    .clone();
+                Ok(self
+                    .agc_file_ref()
+                    .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                     .get_seq(sample_name, ctg_name))
             }
-            Backend::MEMORY | Backend::FASTX => {
-                Ok(self.seq_db.as_ref().unwrap().get_seq_by_id(sid))
-            }
-            Backend::FRG => Ok(self.frg_db.as_ref().unwrap().get_seq_by_id(sid)),
+            Backend::MEMORY | Backend::FASTX => Ok(self
+                .seq_db
+                .as_ref()
+                .expect("invariant: seq_db set when backend is MEMORY or FASTX")
+                .get_seq_by_id(sid)),
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "fetching sequence fail, database type in not determined",
@@ -469,27 +555,32 @@ impl SeqIndexDB {
         end: usize,
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => {
-                let (ctg_name, sample_name, _) = self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                let (ctg_name, sample_name, _) = self
+                    .seq_info
+                    .as_ref()
+                    .expect("invariant: seq_info set when backend is AGC")
+                    .get(&sid)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("sequence id {sid} not found"),
+                        )
+                    })?;
                 let ctg_name = ctg_name.clone();
-                let sample_name = sample_name.as_ref().unwrap().clone();
-                Ok(self.agc_db.as_ref().unwrap().agc_file.get_sub_seq(
-                    sample_name,
-                    ctg_name,
-                    bgn,
-                    end,
-                ))
+                let sample_name = sample_name
+                    .as_ref()
+                    .expect("invariant: sample_name set in seq_info")
+                    .clone();
+                Ok(self
+                    .agc_file_ref()
+                    .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
+                    .get_sub_seq(sample_name, ctg_name, bgn, end))
             }
             Backend::MEMORY | Backend::FASTX => Ok(self
                 .seq_db
                 .as_ref()
-                .unwrap()
-                .get_sub_seq_by_id(sid, bgn as u32, end as u32)),
-            Backend::FRG => Ok(self
-                .frg_db
-                .as_ref()
-                .unwrap()
+                .expect("invariant: seq_db set when backend is MEMORY or FASTX")
                 .get_sub_seq_by_id(sid, bgn as u32, end as u32)),
             Backend::UNKNOWN => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -519,7 +610,7 @@ impl SeqIndexDB {
         }
     }
 
-    fn get_vertex_map_from_principal_bundles(&self, pb: PrincipalBundles) -> VertexToBundleIdMap {
+    fn get_vertex_map_from_principal_bundles(&self, pb: &PrincipalBundles) -> VertexToBundleIdMap {
         // count segment for filtering, some unidirectional seg may have both forward and reverse in the principle bundles
         // let mut seg_count = FxHashMap::<(u64, u64), usize>::default();
         // pb.iter().for_each(|bundle| {
@@ -568,21 +659,35 @@ impl SeqIndexDB {
         let pb = self.get_principal_bundles(min_count, path_len_cutoff, keeps);
         //println!("DBG: # bundles {}", pb.len());
 
-        let mut vertex_to_bundle_id_direction_pos =
-            self.get_vertex_map_from_principal_bundles(pb.clone()); //not efficient but it is PyO3 limit now
+        let mut vertex_to_bundle_id_direction_pos = self.get_vertex_map_from_principal_bundles(&pb);
 
         let seqid_smps: Vec<(u32, Vec<(u64, u64, u32, u32, u8)>)> = self
             .seq_info
-            .clone()
-            .unwrap_or_default()
-            .iter()
-            .map(|(sid, data)| {
-                let (ctg_name, source, _) = data;
-                let source = source.clone().unwrap();
-                let seq = self.get_seq(source, ctg_name.clone()).unwrap();
-                (*sid, self.get_smps(seq, &self.shmmr_spec.clone().unwrap()))
+            .as_ref()
+            .map(|info| {
+                info.iter()
+                    .map(|(sid, data)| {
+                        let (ctg_name, source, _) = data;
+                        let source = source
+                            .as_ref()
+                            .expect("invariant: source set in seq_info")
+                            .clone();
+                        let seq = self
+                            .get_seq(source, ctg_name.clone())
+                            .expect("invariant: contig in seq_info must be retrievable");
+                        (
+                            *sid,
+                            self.get_smps(
+                                seq,
+                                self.shmmr_spec
+                                    .as_ref()
+                                    .expect("invariant: shmmr_spec set when seq_info is non-empty"),
+                            ),
+                        )
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
         // data for reordering the bundles and for re-ordering them along the sequences
         let mut bundle_id_to_directions = FxHashMap::<usize, Vec<u32>>::default();
         let mut bundle_id_to_orders = FxHashMap::<usize, Vec<f32>>::default();
@@ -616,7 +721,7 @@ impl SeqIndexDB {
                     let sum: f32 = orders.iter().sum();
                     let mean_ord = sum / (orders.len() as f32);
                     let mean_ord = mean_ord as usize;
-                    let directions = bundle_id_to_directions.get(&bid).unwrap();
+                    let directions = bundle_id_to_directions.get(&bid).expect("invariant: bid in bundle_id_to_directions when also in bundle_id_to_orders");
                     let dir_sum = directions.iter().sum::<u32>() as usize;
                     let direction = if dir_sum < (directions.len() >> 1) {
                         0_u8
@@ -668,21 +773,34 @@ impl SeqIndexDB {
     ) -> Result<(), std::io::Error> {
         let get_seq_by_id = |sid| -> Vec<u8> {
             match self.backend {
-                #[cfg(feature = "with_agc")]
                 Backend::AGC => {
-                    let (ctg_name, sample_name, _) =
-                        self.seq_info.as_ref().unwrap().get(&sid).unwrap(); //TODO: handle Option unwrap properly
+                    let (ctg_name, sample_name, _) = self
+                        .seq_info
+                        .as_ref()
+                        .expect("invariant: seq_info set when backend is AGC")
+                        .get(&sid)
+                        .expect("invariant: sid in seq_info");
                     let ctg_name = ctg_name.clone();
-                    let sample_name = sample_name.as_ref().unwrap().clone();
+                    let sample_name = sample_name
+                        .as_ref()
+                        .expect("invariant: sample_name set in seq_info")
+                        .clone();
                     self.agc_db
                         .as_ref()
-                        .unwrap()
+                        .expect("invariant: agc_db set when backend is AGC")
                         .agc_file
                         .get_seq(sample_name, ctg_name)
                 }
-                Backend::MEMORY => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
-                Backend::FASTX => self.seq_db.as_ref().unwrap().get_seq_by_id(sid),
-                Backend::FRG => self.frg_db.as_ref().unwrap().get_seq_by_id(sid),
+                Backend::MEMORY => self
+                    .seq_db
+                    .as_ref()
+                    .expect("invariant: seq_db set when backend is MEMORY")
+                    .get_seq_by_id(sid),
+                Backend::FASTX => self
+                    .seq_db
+                    .as_ref()
+                    .expect("invariant: seq_db set when backend is FASTX")
+                    .get_seq_by_id(sid),
                 Backend::UNKNOWN => vec![],
             }
         };
@@ -699,7 +817,7 @@ impl SeqIndexDB {
         let mut frag_id = FxHashMap::<(u64, u64), usize>::default();
         let mut id = 0_usize;
 
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
 
         let adj_list = if method == "from_fragmap" {
             seq_db::frag_map_to_adj_list(frag_map, min_count, keeps)
@@ -708,7 +826,7 @@ impl SeqIndexDB {
 
             self.seq_info
                 .as_ref()
-                .unwrap()
+                .expect("invariant: seq_info set when frag_map is available")
                 .keys()
                 .copied()
                 .collect::<Vec<u32>>()
@@ -728,7 +846,9 @@ impl SeqIndexDB {
                         &seq,
                         sid,
                         frag_map,
-                        self.shmmr_spec.as_ref().unwrap(),
+                        self.shmmr_spec
+                            .as_ref()
+                            .expect("invariant: shmmr_spec set when frag_map is available"),
                         mc,
                     )
                 })
@@ -753,15 +873,22 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath).unwrap());
+        let mut out_file = BufWriter::new(
+            File::create(filepath)
+                .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?,
+        );
 
-        let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
+        let kmer_size = self
+            .shmmr_spec
+            .as_ref()
+            .expect("invariant: shmmr_spec set when frag_map is available")
+            .k;
         out_file
             .write_all("H\tVN:Z:1.0\tCM:Z:Sparse Genome Graph Generated By pgr-tk\n".as_bytes())?;
         frag_id
             .iter()
             .try_for_each(|(smp, id)| -> Result<(), std::io::Error> {
-                let hits = frag_map.get(smp).unwrap();
+                let hits = frag_map.get(smp).expect("invariant: smp in frag_map");
                 let ave_len =
                     hits.iter().fold(0_u32, |len_sum, &s| len_sum + s.3 - s.2) / hits.len() as u32;
                 let seg_line = format!(
@@ -780,8 +907,12 @@ impl SeqIndexDB {
             .try_for_each(|(op, vs)| -> Result<(), std::io::Error> {
                 let o1 = if op.0 .2 == 0 { "+" } else { "-" };
                 let o2 = if op.1 .2 == 0 { "+" } else { "-" };
-                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).unwrap();
-                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).unwrap();
+                let id0 = frag_id
+                    .get(&(op.0 .0, op.0 .1))
+                    .expect("invariant: overlap node in frag_id");
+                let id1 = frag_id
+                    .get(&(op.1 .0, op.1 .1))
+                    .expect("invariant: overlap node in frag_id");
                 let overlap_line = format!(
                     "L\t{}\t{}\t{}\t{}\t{}M\tSC:i:{}\n",
                     id0,
@@ -801,7 +932,7 @@ impl SeqIndexDB {
     pub fn write_mapg_idx(&self, filepath: &str) -> Result<(), std::io::Error> {
         let mut writer = BufWriter::new(File::create(filepath)?);
 
-        if let Some(shmmr_spec) = self.shmmr_spec.clone() {
+        if let Some(shmmr_spec) = self.shmmr_spec {
             writer.write_all(
                 format!(
                     "K\t{}\t{}\t{}\t{}\t{}\n",
@@ -815,8 +946,11 @@ impl SeqIndexDB {
             )?;
         }
 
-        self.seq_info.as_ref().unwrap().iter().try_for_each(
-            |(k, v)| -> Result<(), std::io::Error> {
+        self.seq_info
+            .as_ref()
+            .expect("invariant: seq_info set when backend is loaded")
+            .iter()
+            .try_for_each(|(k, v)| -> Result<(), std::io::Error> {
                 let line = format!(
                     "C\t{}\t{}\t{}\t{}\n",
                     k,
@@ -826,8 +960,7 @@ impl SeqIndexDB {
                 );
                 writer.write_all(line.as_bytes())?;
                 Ok(())
-            },
-        )?;
+            })?;
 
         let frag_map = self.get_shmmr_map_internal();
         if frag_map.is_none() {
@@ -836,7 +969,7 @@ impl SeqIndexDB {
                 "fail to load index",
             ));
         };
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
         frag_map
             .iter()
             .try_for_each(|v| -> Result<(), std::io::Error> {
@@ -870,7 +1003,7 @@ impl SeqIndexDB {
                 "can't load index",
             ));
         };
-        let frag_map = frag_map.unwrap();
+        let frag_map = frag_map.expect("invariant: just checked frag_map.is_none()");
         let adj_list = seq_db::frag_map_to_adj_list(frag_map, min_count, keeps);
 
         // println!("DBG: adj_list len {:?}", adj_list.len());
@@ -890,7 +1023,7 @@ impl SeqIndexDB {
             .map(|p| p.into_iter().map(|v| (v.0, v.1, v.2)).collect())
             .collect::<Vec<Vec<(u64, u64, u8)>>>();
 
-        let vertex_to_bundle_id_direction_pos = self.get_vertex_map_from_principal_bundles(pb);
+        let vertex_to_bundle_id_direction_pos = self.get_vertex_map_from_principal_bundles(&pb);
 
         filtered_adj_list.iter().for_each(|(k, v, w)| {
             if v.0 <= w.0 {
@@ -910,15 +1043,22 @@ impl SeqIndexDB {
             }
         });
 
-        let mut out_file = BufWriter::new(File::create(filepath).unwrap());
+        let mut out_file = BufWriter::new(
+            File::create(filepath)
+                .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?,
+        );
 
-        let kmer_size = self.shmmr_spec.as_ref().unwrap().k;
+        let kmer_size = self
+            .shmmr_spec
+            .as_ref()
+            .expect("invariant: shmmr_spec set when frag_map is available")
+            .k;
         out_file
             .write_all("H\tVN:Z:1.0\tCM:Z:Sparse Genome Graph Generated By pgr-tk\n".as_bytes())?;
         frag_id
             .iter()
             .try_for_each(|(smp, id)| -> Result<(), std::io::Error> {
-                let hits = frag_map.get(smp).unwrap();
+                let hits = frag_map.get(smp).expect("invariant: smp in frag_map");
                 let ave_len =
                     hits.iter().fold(0_u32, |len_sum, &s| len_sum + s.3 - s.2) / hits.len() as u32;
                 let seg_line;
@@ -950,8 +1090,12 @@ impl SeqIndexDB {
             .try_for_each(|(op, vs)| -> Result<(), std::io::Error> {
                 let o1 = if op.0 .2 == 0 { "+" } else { "-" };
                 let o2 = if op.1 .2 == 0 { "+" } else { "-" };
-                let id0 = frag_id.get(&(op.0 .0, op.0 .1)).unwrap();
-                let id1 = frag_id.get(&(op.1 .0, op.1 .1)).unwrap();
+                let id0 = frag_id
+                    .get(&(op.0 .0, op.0 .1))
+                    .expect("invariant: overlap node in frag_id");
+                let id1 = frag_id
+                    .get(&(op.1 .0, op.1 .1))
+                    .expect("invariant: overlap node in frag_id");
                 let overlap_line = format!(
                     "L\t{}\t{}\t{}\t{}\t{}M\tSC:i:{}\n",
                     id0,
@@ -970,14 +1114,34 @@ impl SeqIndexDB {
 }
 
 impl SeqIndexDB {
+    /// Return a reference to the AGC file regardless of whether the normal or
+    /// low-memory AGC backend is active.
+    fn agc_file_ref(&self) -> Option<&agc_io::AGCFile> {
+        if let Some(db) = &self.agc_db {
+            Some(&db.agc_file)
+        } else {
+            self.low_mem_agc_db.as_ref().map(|db| &db.agc_file)
+        }
+    }
+
     // depending on the storage type, return the corresponded index
     pub fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {
-            #[cfg(feature = "with_agc")]
             Backend::AGC => None,
-            Backend::FASTX => Some(&self.seq_db.as_ref().unwrap().frag_map),
-            Backend::MEMORY => Some(&self.seq_db.as_ref().unwrap().frag_map),
-            Backend::FRG => None,
+            Backend::FASTX => Some(
+                &self
+                    .seq_db
+                    .as_ref()
+                    .expect("invariant: seq_db set when backend is FASTX")
+                    .frag_map,
+            ),
+            Backend::MEMORY => Some(
+                &self
+                    .seq_db
+                    .as_ref()
+                    .expect("invariant: seq_db set when backend is MEMORY")
+                    .frag_map,
+            ),
             Backend::UNKNOWN => None,
         }
     }
@@ -989,19 +1153,32 @@ pub fn get_principal_bundle_decomposition(
 ) -> Vec<(u32, ShmmrPairAndBundleVertices)> {
     let seqid_smps: Vec<(u32, Vec<(u64, u64, u32, u32, u8)>)> = seq_db
         .seq_info
-        .clone()
-        .unwrap_or_default()
-        .iter()
-        .map(|(sid, data)| {
-            let (ctg_name, source, _) = data;
-            let source = source.clone().unwrap();
-            let seq = seq_db.get_seq(source, ctg_name.clone()).unwrap();
-            (
-                *sid,
-                seq_db.get_smps(seq, &seq_db.shmmr_spec.clone().unwrap()),
-            )
+        .as_ref()
+        .map(|info| {
+            info.iter()
+                .map(|(sid, data)| {
+                    let (ctg_name, source, _) = data;
+                    let source = source
+                        .as_ref()
+                        .expect("invariant: source set in seq_info")
+                        .clone();
+                    let seq = seq_db
+                        .get_seq(source, ctg_name.clone())
+                        .expect("invariant: contig in seq_info must be retrievable");
+                    (
+                        *sid,
+                        seq_db.get_smps(
+                            seq,
+                            seq_db
+                                .shmmr_spec
+                                .as_ref()
+                                .expect("invariant: shmmr_spec set when seq_info is non-empty"),
+                        ),
+                    )
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
     // loop through each sequence and generate the decomposition for the sequence
     let seqid_smps_with_bundle_id_seg_direction = seqid_smps
@@ -1052,13 +1229,21 @@ pub fn get_fastx_reader(
 
     if is_gzfile {
         drop(std_buf);
-        Ok(GZFastaReader::GZFile(
-            FastaReader::new(gz_buf, &filepath, 256, false, to_upper_case).unwrap(),
-        ))
+        Ok(GZFastaReader::GZFile(FastaReader::new(
+            gz_buf,
+            &filepath,
+            256,
+            false,
+            to_upper_case,
+        )?))
     } else {
         drop(gz_buf);
-        Ok(GZFastaReader::RegularFile(
-            FastaReader::new(std_buf, &filepath, 256, false, to_upper_case).unwrap(),
-        ))
+        Ok(GZFastaReader::RegularFile(FastaReader::new(
+            std_buf,
+            &filepath,
+            256,
+            false,
+            to_upper_case,
+        )?))
     }
 }

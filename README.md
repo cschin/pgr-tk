@@ -1,140 +1,314 @@
-# PGR-tk: A PanGenomic Research Took Kit
+# PGR-TK: A PanGenomic Research Tool Kit
 
 [![test_and_build](https://github.com/cschin/pgr-tk/actions/workflows/test_and_build.yml/badge.svg)](https://github.com/cschin/pgr-tk/actions/workflows/test_and_build.yml)
 
-This repository is a project to provide Python and Rust libraries to facilitate pangenomics analysis. Several algorithms and data structures used for the Peregrine Genome Assembler are useful for Pangenomics analysis as well. This repo takes those algorithms and data structure, combining other handy 3rd party tools to expose them as a library in Python (with Rust code for those computing parts that need performance.) 
+PGR-TK provides pangenome assembly management, query, and Minimizer Anchored
+Pangenome (MAP) Graph generation with principal bundle decomposition. It is
+designed for the analysis of large diploid and pangenomic assemblies, from
+sequence archiving through structural variant calling and gene annotation
+liftover.
 
-## What is PGR-tk?
-
-Research Preprint: 
-
+Research preprint:
 [Multiscale Analysis of Pangenome Enables Improved Representation of Genomic Diversity For Repetitive And Clinically Relevant Genes](https://www.biorxiv.org/content/10.1101/2022.08.05.502980v2)
-
-PGR-TK provides pangenome assembly management, query and Minimizer Anchored Pangenome (MAP) Graph Generation
 
 ![Pangenome Data Management and Minimizer Anchored Pangenome Graph Generation](/images/PGR_TK_Sketch_MAPG_construction.png)
 
-With the MAP graph, we can use the "principal bundle decomposition" to study complicated structure variants and genome re-arragenment in the human populations.
+With the MAP graph, principal bundle decomposition can reveal complicated
+structural variants and genome rearrangements across a population.
 
 ![AMY1A Example](/images/AMY1A_example.png)
 
+---
 
-## Documentation, Usage and Examples
+## What's New in 0.8.0
 
-Command Line Tools:
+### agc-rs: Pure-Rust genome compression replaces C++ AGC
 
-PGR-TK provides the following tool to 
+The C++ AGC submodule is removed. `agc-rs`, a faithful Rust port with
+comparable compression performance, is now the exclusive backend. Sequences
+are stored in a SQLite-backed `.agcrs` archive that is inspectable with
+standard tools and accessible from any SQLite client.
 
-- create the PGR-TK sequence and index database
-	-  `pgr-mdb`: create pgr minimizer database with AGC backend
-	-  `pgr-make-frgdb`: create PGR-TK fragment minimizer database with frg format backend
-- query the database to fetch sequences
-	- `pgr-query`: query a PGR-TK pangenome sequence database, ouput the hit summary and generate fasta files from the target sequences
-- generate MAP-graph in GFA format and principal bundle decomposition bed file
-	- `pgr-pbundle-decomp`: generat the principal bundle decomposition though MAP Graph from a fasta file
-- generate SVG from the principal bundle decomposition bed file
-	- `pgr-pbundle-bed2svg`: generate SVG from a principal bundle bed file
-- auxiliary tools
-	- `pgr-pbundle-bed2sorted`: generate annotation file with a sorting order from the principal bundle decomposition
-	- `pgr-pbundle-bed2dist`: generate alignment scores between sequences using bundle decomposition from a principal bundle bed file
+New subcommands:
+- `agc-rs batch-append` — compress multiple samples in one pass, sharing the
+  delta-index build across all contigs in the batch
+- `agc-rs merge` — combine pre-built sub-archives into a single archive,
+  enabling a parallelisable batch-then-merge strategy for very large
+  haplotype collections (see `examples/hprc_r2/`)
 
-For each comannd, `command --help` provides the detail usage information. 
+### Index format v3: transparent `.mdbi` / `.mdbv` / SQLite `.midx`
 
-The API documentation is at https://genedx.github.io/pgr-tk/
+The monolithic `.mdb` binary shimmer index is replaced by three files:
+`.mdbi` (sorted keys), `.mdbv` (fragment location values), and `.midx`
+(SQLite metadata with typed schema). The new format is externally queryable,
+composable, and supports a batch-and-merge memory-efficient build strategy
+(`--batch-size` flag on `pgr index mdb`).
 
-A collection of Jupyter Notebooks are at https://github.com/genedx/pgr-tk-notebooks/
+> **Breaking change:** old `.mdb` and tab-delimited `.midx` files are not
+> compatible. Rebuild existing indices with `pgr index mdb`.
 
-## Built Binaries
+### Unified `pgr` CLI: 22 binaries consolidated into one
 
-Check https://github.com/genedx/pgr-tk/releases
+All `pgr-*` standalone binaries are replaced by a single `pgr` executable
+with six subcommand groups (`index`, `align`, `query`, `bundle`, `variant`,
+`plot`). All arguments are explicit `--long-flags`. Run `pgr --help` for
+the full command map.
 
+### GTF liftover and end-to-end annotation pipeline
+
+New `pgr align liftover-gtf` subcommand lifts reference transcript
+annotations to haplotype-contig coordinates. Combined with the alignment
+(`.alndb`), variant calling, ClinVar annotation, and SV analysis steps, this
+provides a complete diploid annotation pipeline with an interactive HTML
+report (see `examples/hg002/`).
+
+`pgr align alnmap` now writes a queryable SQLite `.alndb` database alongside
+legacy text outputs.
+
+### SV annotation with gene impact
+
+The end-to-end report classifies SV candidates by gene impact (exon
+disrupted / exon partial / intronic / intergenic with nearest-neighbour
+genes) and includes a genome-wide ideogram.
+
+### Python bindings: maturin + uv + Python 3.13
+
+The Python binding build system migrates to maturin and uv; Python 3.13 is
+now required. See the [Python bindings section](#python-bindings) below.
+
+### pgr-web removed
+
+The prototype web frontend and server are removed. A redesigned interface
+will follow in a future release.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+```bash
+cargo build --release -p agc-rs -p pgr-bin
+# add target/release to PATH, or set:
+export PGR=$(pwd)/target/release/pgr
+export AGC_RS=$(pwd)/target/release/agc-rs
+```
+
+### Try it in 5 minutes (E. coli, no downloads)
+
+```bash
+cd examples/ecoli
+bash 01_agcrs_basics.sh   # create archive, append, round-trip verify
+bash 02_build_index.sh    # build shimmer index
+bash 03_query_seqs.sh     # pangenome query with --memory-mode demo
+```
+
+### Typical workflow
+
+```bash
+# 1. Build an AGC archive
+agc-rs create pangenome.agcrs --sample GRCh38 GRCh38.fa
+agc-rs append pangenome.agcrs --sample HG002_mat HG002_mat.fa
+agc-rs append pangenome.agcrs --sample HG002_pat HG002_pat.fa
+
+# 2. Build the shimmer index (batch-size 16 haplotypes per pass)
+pgr index mdb --agcrs-input pangenome.agcrs --batch-size 16
+
+# 3. Query a region of interest
+pgr query seqs --pgr-db-prefix pangenome --query-fastx-path query.fa \
+    --output-prefix output --max-count 128 --min-anchor-count 10
+```
+
+### Large pangenome (100+ haplotypes, batch-and-merge)
+
+```bash
+# Build sub-archives in batches of 24, then merge
+bash examples/hprc_r2/01_build_archive.sh
+bash examples/hprc_r2/02_merge_batches.sh
+```
+
+---
+
+## Command Line Reference
+
+### Sequence archive management (`agc-rs`)
+
+```
+agc-rs create  <archive.agcrs> --sample <name> <sequences.fa>
+agc-rs append  <archive.agcrs> --sample <name> <sequences.fa>
+agc-rs batch-append <archive.agcrs> name1:file1.fa name2:file2.fa ...
+agc-rs merge   --output merged.agcrs input1.agcrs input2.agcrs ...
+agc-rs info    <archive.agcrs>
+agc-rs list    <archive.agcrs>
+agc-rs get     <archive.agcrs> --sample <name> [--contig <ctg>]
+```
+
+### `pgr index` — build shimmer indices
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr index mdb` | Build `.mdbi`/`.mdbv`/`.midx` shimmer index from an `.agcrs` archive |
+| `pgr index shmmr-count` | Count shimmer occurrences across three sequence sets |
+
+```bash
+pgr index mdb --agcrs-input archive.agcrs [--prefix out] [--batch-size 16]
+```
+
+### `pgr align` — genome alignment and liftover
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr align alnmap` | Align long contigs to a reference; produces `.alndb`, `.alnmap`, `.ctgmap.*`, `.svcnd.*` |
+| `pgr align map-coord` | Map query coordinates to target via an alnmap/alndb file |
+| `pgr align liftover-gtf` | Lift GTF transcript annotations from reference to haplotype contigs |
+
+```bash
+pgr align alnmap -R ref.fa -Q assembly.fa -O output_prefix
+pgr align liftover-gtf --alndb hap0.alndb --gtf annotation.gtf --output hap0_liftover.db
+```
+
+### `pgr query` — search and fetch
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr query seqs` | Query a pangenome index; outputs hit summary and FASTA |
+| `pgr query fetch` | Fetch sequences from an archive by region |
+| `pgr query cov` / `cov2` | Compare shimmer-pair coverage between two sequence sets |
+
+```bash
+pgr query seqs --pgr-db-prefix pangenome --query-fastx-path query.fa \
+    --output-prefix out --memory-mode moderate
+```
+
+`--memory-mode low|moderate|high` controls the parallelism/RSS trade-off.
+
+### `pgr bundle` — principal bundle decomposition
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr bundle decomp` | Generate principal bundle decomposition via MAP Graph |
+| `pgr bundle svg` | Generate interactive SVG from a bundle BED file |
+| `pgr bundle sort` | Generate contig sort order from bundle decomposition |
+| `pgr bundle dist` | Compute pairwise alignment scores from a bundle BED file |
+| `pgr bundle offset` | Compute bundle offsets |
+| `pgr bundle shmmr-dist` | Shimmer-pair distance between bundle entries |
+| `pgr bundle aln` | Bundle-guided alignment |
+
+### `pgr variant` — variant calling and annotation
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr variant diploid-vcf` | Merge two haplotype `.alndb` files into a phased diploid VCF |
+| `pgr variant annotate-vcf` | Annotate a VCF with gene names from a GTF file |
+| `pgr variant annotate-bed` | Annotate BED regions with gene annotation features |
+| `pgr variant sv-analysis` | Analyse SV candidates with principal bundle decomposition |
+| `pgr variant merge-sv` | Merge SV candidate BED records from multiple haplotypes |
+
+### `pgr plot` — visualisation
+
+| Subcommand | Description |
+|-----------|-------------|
+| `pgr plot chr-aln` | Generate chromosome alignment SVG plots from an alnmap JSON file |
+
+Run `pgr <group> <subcommand> --help` for detailed usage of any subcommand.
+
+---
+
+## Examples
+
+| Directory | Data | What it covers |
+|-----------|------|----------------|
+| `examples/ecoli/` | ~5 MB (included) | agc-rs archive CRUD · shimmer index · `pgr query seqs` |
+| `examples/hg002/` | ~2.5 GB download | Full diploid pipeline: align → VCF → annotate → liftover → query → HTML report |
+| `examples/hprc_r2/` | ~300 GB download | Batch-append + merge for 100+ haplotype pangenome |
+
+### HG002 end-to-end pipeline steps
+
+```
+00_download.sh         fetch reference + assemblies
+01_align_alnmap.sh     sparse alignment for both haplotypes
+02_variant_vcf.sh      diploid VCF generation
+03_annotate_vcf.sh     ClinVar and gene annotation
+04_liftover_gtf.sh     GTF liftover → liftover_report.html
+05_query_mhc.sh        pangenome query of the MHC region
+06_generate_report.sh  composite e2e HTML report
+run_all.sh             orchestrate all steps with timing log
+```
+
+`run_all.sh` is resumable (sentinel-based step skipping), auto-switches to
+chr6-only mode on machines with less than 32 GB RAM, and records wall time,
+CPU time, peak RSS, and CPU % per step in `run_all_timings.tsv`.
+
+---
+
+## Python Bindings
+
+The Python bindings are built with [maturin](https://github.com/PyO3/maturin)
+and managed with [uv](https://github.com/astral-sh/uv). Python 3.13 or later
+is required.
+
+```bash
+cd pgr-tk
+uv venv --python 3.13
+uv pip install --python .venv/bin/python maturin numpy
+env -u CONDA_PREFIX \
+    VIRTUAL_ENV=$(pwd)/.venv \
+    PYO3_PYTHON=$(pwd)/.venv/bin/python \
+    PYTHON_SYS_EXECUTABLE=$(pwd)/.venv/bin/python \
+    .venv/bin/maturin develop
+```
+
+> **Note:** `load_from_agc_index()` and `load_from_frg_index()` are currently
+> broken following the index format migration. `load_from_fastx()` and
+> `load_from_seq_list()` remain functional. Updated bindings are planned for
+> the next release.
+
+API documentation: https://genedx.github.io/pgr-tk/  
+Jupyter Notebooks: https://github.com/genedx/pgr-tk-notebooks/
+
+---
 
 ## Build
 
-See `docker/Dockerfile.build_env-20.04` for a build enviroment under ubuntu 20.04.
-With the proper build environment, just run `bash build.sh` to build all.
+### Native build
 
-For example, on a Mac OS with Docker install, you can clone the repository and build a linux binary
-within an Ubuntu 20.04 Linux distribution as follow:
-
-1. Build the Docker image for a build environment:
-
+```bash
+cargo build --release -p agc-rs -p pgr-bin
 ```
-git clone --recursive git@github.com:cschin/pgr-tk.git # clone the repo
+
+Binaries land in `target/release/`. On Apple Silicon, the build system
+automatically selects the native aarch64 toolchain.
+
+### Docker (Linux / Ubuntu 22.04)
+
+```bash
+git clone git@github.com:cschin/pgr-tk.git
 cd pgr-tk/docker
 ln -s Dockerfile.build_env-20.04 Dockerfile
 docker build -t pgr-tk-build .
+docker run -it --rm -v $PWD:/wd/pgr-tk pgr-tk-build /bin/bash
+# inside container:
+cd /wd/pgr-tk && bash build.sh
 ```
 
-2. In the root directory of the repo `pgr-tk`:
-
-Execute 
-```
-docker run -it --rm -v $PWD:/wd/pgr-tk pgr-tk-build /bin/bash 
-```
-
-3. Build the `pgr-tk` inside the docker container from the image `pgr-tk-build`
-
-```
-cd /wd/pgr-tk
-bash build.sh
-```
-
-The build python wheels will be in `target/wheels` which can be installed for ubuntun 20.04 python3.8 distribution. You can install it in the `pgr-tk-build` image as well to test it out.
-
-
-### Build Singularity image
-
-If you have built the pgr-tk in a Docker container, you can use the following steps to build a Singularity image based on your Docker container.
-
-**Step 1: Commit Docker container to image**
+### Singularity
 
 ```bash
-docker commit <container id> <image name>:<version>
+# 1. Commit and push the Docker container
+docker commit <container_id> <image_name>:<version>
+docker push <image_name>:<version>
+
+# 2. Build Singularity image
+singularity build ./pgr-tk.<version>.sif docker://<docker_repo>/<image_name>:<version>
+
+# 3. Run
+singularity exec --fakeroot -B <host_path>:/<container_path> \
+    ./pgr-tk.<version>.sif pgr index mdb --agcrs-input pangenome.agcrs
 ```
 
-**Step 2: Push Docker image to Docker Hub**
+---
 
-```bash
-docker login # if not already logged in
-docker push <image name>:<version>
-```
+## Release Notes
 
-**Step 3: Build Singularity image**
-
-```bash
-singularity build ./pgr-tk.v0.5.1.sif docker://<docker_repo>/<image name>:<version>
-```
-
-This will generate a .sif file in the current directory.
-
-**Step 4: Execute**
-
-```bash
-singularity exec --fakeroot -B <host_path>:/<container_path> ./pgr-tk.v0.5.1.sif pgr-mdb test.input test_idx
-```
-
-Replace `<host_path>` with the actual path you wish to bind to the container.
-
-The `--fakeroot` option allows you to build and run images as a "fake" root user.
-
-## Install stable verison v0.3.6 with Bioconda
-
-If you have a conda install, you can try this to build an conda environment to use pgr-tk v0.3.6 (on linux only):
-
-```
-conda create -n pgr-tk python=3.8
-conda activate pgr-tk
-conda install -c bioconda -c conda-forge python_abi libstdcxx-ng=12 libclang13 pgr-tk=0.3.6
-```
-
-## Troubleshooting
-
-`Segmentation fault (core dumped)`
-
-Usually, the issue arises because AGC encounters a version incompatibility when called by pgr-tk. The version of AGC that has been well-tested is [453c0afd](https://github.com/cschin/agc/tree/453c0afdc54b4aa00fa8e97a63f196931fdb81c4). To address this error, consider the following potential solutions:
-
-1. Compile pgr-tk using Docker or Singularity instead of directly on your computer. Ensure that the Docker container is based on Ubuntu 20.04.
-
-2. When cloning the pgr-tk repository, make sure to use the `--recursive` option. This will clone the AGC dependency as well."
-
+See [pgr-tk-0.8-release-note.md](pgr-tk-0.8-release-note.md) for the full
+0.8.0 changelog, breaking changes, and migration guide.

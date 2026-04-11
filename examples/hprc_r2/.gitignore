@@ -1,0 +1,5 @@
+# Downloaded FASTAs and working directory (example_output/ ignored via root .gitignore)
+*.fa.gz
+*.fna.gz
+hprc_r2_work/
+hprc_r2_index.csv

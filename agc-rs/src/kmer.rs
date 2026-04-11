@@ -30,7 +30,11 @@ pub fn base_to_bits(b: u8) -> Option<u64> {
 #[inline]
 fn rev_comp_kmer(kmer: u64, k: u8) -> u64 {
     // Complement: flip all bits, then mask to the relevant 2*k bits.
-    let mask = if k == 32 { u64::MAX } else { (1u64 << (2 * k)) - 1 };
+    let mask = if k == 32 {
+        u64::MAX
+    } else {
+        (1u64 << (2 * k)) - 1
+    };
     let comp = (!kmer) & mask;
 
     // Reverse the order of the k 2-bit pairs.
@@ -145,12 +149,47 @@ impl Kmer {
         self.len == self.max_len
     }
 
+    /// Push a 2-bit encoded base (0=A, 1=C, 2=G, 3=T).
+    ///
+    /// Returns `true` on success.  Returns `false` (and resets) if `bits >= 4`
+    /// (i.e. the base is N or unknown).
+    pub fn push_bits(&mut self, bits: u8) -> bool {
+        if bits >= 4 {
+            self.reset();
+            return false;
+        }
+        let k = self.max_len as u64;
+        let mask = if self.max_len == 32 {
+            u64::MAX
+        } else {
+            (1u64 << (2 * k)) - 1
+        };
+        self.forward = ((self.forward << 2) | bits as u64) & mask;
+        let comp = bits as u64 ^ 3; // complement: A↔T (0↔3), C↔G (1↔2)
+        self.revcomp = (self.revcomp >> 2) | (comp << (2 * (k - 1)));
+        if self.len < self.max_len {
+            self.len += 1;
+        }
+        true
+    }
+
     /// Reset to the empty state, as if no bases had been pushed.
     pub fn reset(&mut self) {
         self.forward = 0;
         self.revcomp = 0;
         self.len = 0;
     }
+}
+
+/// Reverse complement of a 2-bit encoded sequence (A=0, C=1, G=2, T=3, N=4).
+///
+/// Reverses the order and complements each base (A↔T, C↔G). N (value ≥ 4)
+/// is preserved as-is.
+pub fn rev_comp_2bit_seq(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&b| if b < 4 { 3 - b } else { b })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

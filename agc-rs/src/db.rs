@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::error::{AgcError, Result};
 
 /// The schema version stored in the `meta` table that this library expects.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 3;
 
 /// SQL statements that create the full agc-rs schema.
 const DDL: &str = "
@@ -27,10 +27,27 @@ CREATE TABLE IF NOT EXISTS contig (
     UNIQUE(sample_id, name)
 );
 
+-- kmer_front / kmer_back: canonical k-mer values at the segment boundaries used
+-- to split contigs (AGC splitter strategy).  NULL when no splitter is present
+-- (e.g. first / last segment of a contig, or fallback-matched segments).
 CREATE TABLE IF NOT EXISTS segment_group (
-    id       INTEGER PRIMARY KEY,
-    ref_data BLOB NOT NULL,
-    params   TEXT NOT NULL
+    id         INTEGER PRIMARY KEY,
+    ref_data   BLOB NOT NULL,
+    params     TEXT NOT NULL,
+    kmer_front INTEGER,
+    kmer_back  INTEGER,
+    delta_blob BLOB
+);
+
+CREATE INDEX IF NOT EXISTS idx_seg_group_kmers
+    ON segment_group(kmer_front, kmer_back)
+    WHERE kmer_front IS NOT NULL AND kmer_back IS NOT NULL;
+
+-- splitter: canonical singleton k-mers chosen from the reference genome used
+-- to determine segment boundaries.  Persisted so that subsequent append calls
+-- can split new samples at the same positions.
+CREATE TABLE IF NOT EXISTS splitter (
+    kmer INTEGER PRIMARY KEY
 );
 
 CREATE TABLE IF NOT EXISTS segment (
@@ -62,14 +79,37 @@ impl AgcDb {
 
     /// Create a brand-new database at `path`.
     ///
-    /// The file must not exist yet (or must be empty). The full schema is
-    /// applied and `schema_version = 1` is written to the `meta` table.
+    /// Any existing file at `path` is removed first so that `create` always
+    /// produces a fresh archive.  The full schema is applied and the current
+    /// `schema_version` is written to the `meta` table.
     /// WAL mode is enabled so that concurrent readers do not block writers.
     pub fn create(path: &Path) -> Result<Self> {
+        // Remove any stale archive (old schema, partial write, etc.).
+        if path.exists() {
+            std::fs::remove_file(path)?;
+            // Also remove the WAL and SHM sidecar files if present.
+            let _ = std::fs::remove_file(path.with_extension("agcrs-wal"));
+            let _ = std::fs::remove_file(path.with_extension("agcrs-shm"));
+            // Generic SQLite WAL/SHM sidecars.
+            let wal = format!("{}-wal", path.display());
+            let shm = format!("{}-shm", path.display());
+            let _ = std::fs::remove_file(&wal);
+            let _ = std::fs::remove_file(&shm);
+        }
         let conn = Connection::open(path)?;
 
-        // Enable WAL before touching anything else.
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        // Enable WAL and performance pragmas.
+        // synchronous=NORMAL: skip fsync on every WAL commit; only sync at
+        // checkpoints — safe for non-power-fail scenarios and dramatically
+        // reduces system-call overhead on large ingests.
+        // cache_size=-131072: 128 MB page cache so recently written blobs are
+        // not immediately evicted before the read-back during delta merge.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA cache_size = -131072;
+             PRAGMA temp_store = MEMORY;",
+        )?;
 
         // Apply schema.
         conn.execute_batch(DDL)?;
@@ -172,10 +212,7 @@ mod tests {
             let db = AgcDb::create(&path).expect("create");
             // Insert a sample to prove the schema is usable.
             db.conn()
-                .execute(
-                    "INSERT INTO sample (name) VALUES (?1)",
-                    params!["sample_A"],
-                )
+                .execute("INSERT INTO sample (name) VALUES (?1)", params!["sample_A"])
                 .expect("insert sample");
         }
 

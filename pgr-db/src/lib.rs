@@ -1,11 +1,9 @@
 pub const VERSION_STRING: &str = env!("VERSION_STRING");
 
-#[cfg(feature = "with_agc")]
 pub mod agc_io;
 pub mod aln;
 pub mod ec;
 pub mod fasta_io;
-pub mod frag_file_io;
 //pub mod gff_db;
 pub mod graph_utils;
 pub mod kmer_filter;
@@ -181,7 +179,6 @@ mod tests {
     // raw_agc_test removed: the C FFI bindings are replaced by agc-rs (Rust SQLite backend).
 
     #[test]
-    #[cfg(feature = "with_agc")]
     fn act_io_test() -> Result<(), Box<dyn std::error::Error>> {
         use crate::agc_io::AGCFile;
         const PATH: &str = "test/test_data/test.agcrs";
@@ -204,7 +201,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "with_agc")]
     fn query_frag_test() -> Result<(), std::io::Error> {
         use crate::agc_io::AGCFile;
         use seq_db::raw_query_fragment;
@@ -237,46 +233,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "with_agc")]
-    fn test_shmmrmap_read_write() -> Result<(), std::io::Error> {
-        use crate::agc_io::AGCFile;
-        use seq_db::{raw_query_fragment, read_mdb_file, write_shmmr_map_file};
-        const PATH: &str = "test/test_data/test.agcrs";
-        if !std::path::Path::new(PATH).exists() {
-            println!("test_shmmrmap_read_write: skipped (test data {PATH} not present)");
-            return Ok(());
-        }
-        let agcfile = AGCFile::new(String::from(PATH))?;
-        let mut sdb = seq_db::CompactSeqDB::new(seq_db::SHMMRSPEC);
-        let _ = sdb.load_index_from_agcfile(agcfile);
-        write_shmmr_map_file(
-            &sdb.shmmr_spec,
-            &sdb.frag_map,
-            "test/test_data/test_shmmr.db".to_string(),
-        )?;
-        let (_shmmr_spec, new_map) =
-            read_mdb_file("test/test_data/test_shmmr.db".to_string()).unwrap();
-
-        let agcfile = AGCFile::new(String::from(PATH))?;
-        let mut agc_iter = agcfile.into_iter();
-        let seq = agc_iter.next();
-        let shmmr_spec = crate::seq_db::SHMMRSPEC;
-        let r_frags = raw_query_fragment(&new_map, &seq.unwrap().unwrap().seq, &shmmr_spec);
-        let mut out = vec![];
-        for res in r_frags {
-            for v in res.2 {
-                out.push((v, res.1, res.0))
-            }
-        }
-        out.sort();
-        for v in out {
-            println!("Q {:?}", v);
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "with_agc")]
     fn test_frag_map_to_adj_list() -> Result<(), std::io::Error> {
         use crate::agc_io::AGCFile;
         const PATH: &str = "test/test_data/test.agcrs";
@@ -317,63 +273,6 @@ mod tests {
         println!("out2: {} {:?}", out2.len(), out2);
         assert!(out1.len() == 2);
         assert!(out2.len() == 2);
-    }
-
-    #[test]
-    fn test_open_compact_seq_db_storage() {
-        use crate::frag_file_io::CompactSeqFragFileStorage;
-        use seq_db::GetSeq;
-        let seq_storage =
-            CompactSeqFragFileStorage::new("test/test_data/test_seqs_frag".to_string());
-        let seq = seq_storage.get_seq_by_id(0);
-        println!("{}", String::from_utf8_lossy(&seq[..]));
-        let seq = seq_storage.get_sub_seq_by_id(0, 100, 200);
-        println!("{}", String::from_utf8_lossy(&seq[..]));
-    }
-
-    #[test]
-    fn test_seq_db_storage_get_sub_read() {
-        use crate::frag_file_io::CompactSeqFragFileStorage;
-        use seq_db::GetSeq;
-        let seq_storage =
-            CompactSeqFragFileStorage::new("test/test_data/test_seqs_frag".to_string());
-        let sid = 0;
-
-        let seq = seq_storage.get_seq_by_id(sid);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 0, 105);
-        assert_eq!(seq[0..105], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 286);
-        assert_eq!(seq[105..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 104, 286);
-        assert_eq!(seq[104..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 287);
-        assert_eq!(seq[105..287], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 250, 1423);
-        assert_eq!(seq[250..1423], sub_seq[..]);
-
-        let sid = 5;
-
-        let seq = seq_storage.get_seq_by_id(sid);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 0, 105);
-        assert_eq!(seq[0..105], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 286);
-        assert_eq!(seq[105..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 104, 286);
-        assert_eq!(seq[104..286], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 105, 287);
-        assert_eq!(seq[105..287], sub_seq[..]);
-
-        let sub_seq = seq_storage.get_sub_seq_by_id(sid, 250, 1423);
-        assert_eq!(seq[250..1423], sub_seq[..]);
     }
 
     #[test]

@@ -5,7 +5,6 @@ use std::collections::hash_map::DefaultHasher;
 pub struct KmerFilter {
     filter: CuckooFilter<DefaultHasher>,
     kmer_size: usize,
-
 }
 
 impl KmerFilter {
@@ -23,7 +22,9 @@ impl KmerFilter {
 impl KmerFilter {
     pub fn add_seq(&mut self, seq: &Vec<u8>) {
         (0..seq.len() - self.kmer_size).for_each(|pos| {
-            self.filter.test_and_add(&seq[pos..pos + self.kmer_size]).unwrap();
+            self.filter
+                .test_and_add(&seq[pos..pos + self.kmer_size])
+                .unwrap();
         })
     }
 
@@ -36,7 +37,7 @@ impl KmerFilter {
         });
         count
     }
-    
+
     pub fn add_seq_mmers(&mut self, seq: &Vec<u8>) {
         let k = self.kmer_size as u32;
         let w = k >> 1;
@@ -63,7 +64,6 @@ impl KmerFilter {
 pub struct MinimizerFilter {
     filter: FxHashSet<u64>,
     kmer_size: usize,
-
 }
 
 impl MinimizerFilter {
@@ -74,7 +74,6 @@ impl MinimizerFilter {
 }
 
 impl MinimizerFilter {
-    
     pub fn add_seq_mmers(&mut self, seq: &Vec<u8>) {
         let k = self.kmer_size as u32;
         let w = k >> 1;

@@ -204,7 +204,7 @@ where
                     if node.1 == succ || node.1 == succ.reverse() {
                         continue;
                     }; // Not walk through self-loop
-                    //println!("DBG: succ: {:?} {:?}", node.1, succ);
+                       //println!("DBG: succ: {:?} {:?}", node.1, succ);
                     if !self.discovered.is_visited(&succ) {
                         //println!("DBG: pushing0: {:?}", succ);
                         f_out_count += 1;
@@ -218,7 +218,7 @@ where
                     if node.1 == succ || node.1 == succ.reverse() {
                         continue;
                     }; // Not walk through self-loop
-                    //println!("DBG: succ: {:?} {:?}", node.1, succ);
+                       //println!("DBG: succ: {:?} {:?}", node.1, succ);
                     if !self.discovered.is_visited(&succ) {
                         //println!("DBG: pushing0: {:?}", succ);
                         let s = self.node_score.unwrap().get(&succ).unwrap();

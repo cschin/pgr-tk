@@ -1,5 +1,5 @@
-use std::{env, process::Command};
 use std::env::consts::{ARCH, OS};
+use std::{env, process::Command};
 
 #[cfg(debug_assertions)]
 const BUILD_TYPE: &str = "debug";

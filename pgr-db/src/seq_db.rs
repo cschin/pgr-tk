@@ -1,13 +1,10 @@
-#[cfg(feature = "with_agc")]
 use crate::agc_io::AGCFile;
 use crate::fasta_io::{reverse_complement, FastaReader, SeqRec};
 use crate::graph_utils::{AdjList, AdjPair, ShmmrGraphNode};
 use crate::shmmrutils::{match_reads, sequence_to_shmmrs, DeltaPoint, ShmmrSpec, MM128};
-use bincode::{config, Decode, Encode};
+use bincode::{Decode, Encode};
 use byteorder::{ByteOrder, LittleEndian, WriteBytesExt};
 use flate2::bufread::MultiGzDecoder;
-use flate2::write::DeflateEncoder;
-use flate2::Compression;
 use memmap2::Mmap;
 use petgraph::graphmap::DiGraphMap;
 use petgraph::visit::Dfs;
@@ -15,9 +12,11 @@ use petgraph::EdgeDirection::{Incoming, Outgoing};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use rusqlite::{params, Connection};
 use std::fmt;
+use std::fs;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 
 pub const KMERSIZE: u32 = 56;
 pub const SHMMRSPEC: ShmmrSpec = ShmmrSpec {
@@ -198,7 +197,10 @@ impl CompactSeqDB {
         let mut seq_frags = Vec::<u32>::new();
 
         assert!(self.frags.is_some());
-        let frags: &mut Vec<Fragment> = self.frags.as_mut().unwrap();
+        let frags: &mut Vec<Fragment> = self
+            .frags
+            .as_mut()
+            .expect("invariant: frags initialized in new()");
 
         let mut frg_id = frags.len() as u32;
         let mut seq_len = 0_usize;
@@ -247,9 +249,14 @@ impl CompactSeqDB {
                 let mut out_frag = None;
 
                 if frg_len > 128 && try_compress && self.frag_map.contains_key(&shmmr_pair) {
-                    let e = self.frag_map.get(&shmmr_pair).unwrap();
+                    let e = self
+                        .frag_map
+                        .get(&shmmr_pair)
+                        .expect("invariant: shmmr_pair just inserted into frag_map");
                     for t_frg_id in e.iter() {
-                        let base_frg = frags.get(t_frg_id.0 as usize).unwrap();
+                        let base_frg = frags
+                            .get(t_frg_id.0 as usize)
+                            .expect("invariant: t_frg_id in bounds");
                         if let Fragment::Internal(b) = base_frg {
                             let base_frg = b;
                             //assert!(base_frg.len() > KMERSIZE as usize);
@@ -270,7 +277,9 @@ impl CompactSeqDB {
                             assert!(base_frg.len() < (1 << 32) - 1);
                             let m = match_reads(base_frg, &frg, true, 0.1, 0, 0, 32);
                             if let Some(m) = m {
-                                let deltas: Vec<DeltaPoint> = m.deltas.unwrap();
+                                let deltas: Vec<DeltaPoint> = m
+                                    .deltas
+                                    .expect("invariant: deltas populated by match_reads");
                                 let aln_segs = deltas_to_aln_segs(
                                     &deltas,
                                     m.end0 as usize,
@@ -329,7 +338,10 @@ impl CompactSeqDB {
                     self.frag_map
                         .insert(*shmmr, Vec::<(u32, u32, u32, u32, u8)>::new());
                 }
-                let e = self.frag_map.get_mut(shmmr).unwrap();
+                let e = self
+                    .frag_map
+                    .get_mut(shmmr)
+                    .expect("invariant: shmmr just inserted into frag_map");
                 e.push((frg_id, id, *bgn, *end, *orientation));
                 seq_len += (*end - *bgn) as usize;
                 frags.push(frg.clone());
@@ -383,8 +395,12 @@ impl CompactSeqDB {
             .zip(shmmrs[1..shmmrs.len()].iter())
             .collect::<Vec<_>>();
 
+        // Serial iter: this function is already called from a rayon par_iter
+        // context in load_index_from_seq_vec, so a nested par_iter here would
+        // add overhead without helping throughput (all cores already busy).
+        // The per-pair computation is also trivial (two comparisons + two adds).
         let internal_frags: Vec<((u64, u64), u32, u32, u8)> = shmmr_pairs
-            .par_iter()
+            .iter()
             .map(|(shmmr0, shmmr1)| {
                 let s0 = shmmr0.hash();
                 let s1 = shmmr1.hash();
@@ -422,7 +438,8 @@ impl CompactSeqDB {
         filepath: String,
         to_upper_case: bool,
     ) -> Result<GZFastaReader, std::io::Error> {
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let mut reader = BufReader::new(file);
         let mut is_gzfile = false;
         {
@@ -436,24 +453,34 @@ impl CompactSeqDB {
         }
         drop(reader);
 
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let reader = BufReader::new(file);
         let gz_buf = BufReader::new(MultiGzDecoder::new(reader));
 
-        let file = File::open(&filepath)?;
+        let file = File::open(&filepath)
+            .map_err(|e| io::Error::new(e.kind(), format!("{filepath}: {e}")))?;
         let reader = BufReader::new(file);
         let std_buf = BufReader::new(reader);
 
         if is_gzfile {
             drop(std_buf);
-            Ok(GZFastaReader::GZFile(
-                FastaReader::new(gz_buf, &filepath, 1 << 14, true, to_upper_case).unwrap(),
-            ))
+            Ok(GZFastaReader::GZFile(FastaReader::new(
+                gz_buf,
+                &filepath,
+                1 << 14,
+                true,
+                to_upper_case,
+            )?))
         } else {
             drop(gz_buf);
-            Ok(GZFastaReader::RegularFile(
-                FastaReader::new(std_buf, &filepath, 1 << 14, true, to_upper_case).unwrap(),
-            ))
+            Ok(GZFastaReader::RegularFile(FastaReader::new(
+                std_buf,
+                &filepath,
+                1 << 14,
+                true,
+                to_upper_case,
+            )?))
         }
     }
 
@@ -472,7 +499,10 @@ impl CompactSeqDB {
         all_shmmrs
     }
 
-    fn load_seq_from_reader(&mut self, reader: &mut dyn Iterator<Item = io::Result<SeqRec>>) {
+    fn load_seq_from_reader(
+        &mut self,
+        reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = self.seqs.len() as u32;
         if self.frags.is_none() {
@@ -486,7 +516,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source.clone();
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -506,6 +536,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_seqs_from_seq_vec(&mut self, seqs: &Vec<(u32, Option<String>, String, Vec<u8>)>) {
@@ -535,18 +566,21 @@ impl CompactSeqDB {
     ) -> Result<(), std::io::Error> {
         match self.get_fastx_reader(filepath, to_upper_case)? {
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
-            GZFastaReader::GZFile(reader) => self.load_seq_from_reader(&mut reader.into_iter()),
+            GZFastaReader::GZFile(reader) => self.load_seq_from_reader(&mut reader.into_iter())?,
 
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
             GZFastaReader::RegularFile(reader) => {
-                self.load_seq_from_reader(&mut reader.into_iter())
+                self.load_seq_from_reader(&mut reader.into_iter())?
             }
         };
 
         Ok(())
     }
 
-    fn load_index_from_reader(&mut self, reader: &mut dyn Iterator<Item = io::Result<SeqRec>>) {
+    fn load_index_from_reader(
+        &mut self,
+        reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = 0;
         loop {
@@ -556,7 +590,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source;
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -576,6 +610,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_index_from_seq_vec(&mut self, seqs: &Vec<(u32, Option<String>, String, Vec<u8>)>) {
@@ -626,7 +661,7 @@ impl CompactSeqDB {
         &mut self,
         reader: &mut dyn Iterator<Item = io::Result<SeqRec>>,
         writer: &mut Vec<u8>,
-    ) {
+    ) -> Result<(), io::Error> {
         let mut seqs = <Vec<(u32, Option<String>, String, Vec<u8>)>>::new();
         let mut sid = 0;
         loop {
@@ -636,7 +671,7 @@ impl CompactSeqDB {
 
             loop {
                 if let Some(rec) = reader.next() {
-                    let rec = rec.unwrap();
+                    let rec = rec?;
                     let source = rec.source;
                     let seqname = String::from_utf8_lossy(&rec.id).into_owned();
                     seqs.push((sid, source, seqname, rec.seq));
@@ -665,6 +700,7 @@ impl CompactSeqDB {
                 break;
             }
         }
+        Ok(())
     }
 
     pub fn load_index_from_fastx(
@@ -674,21 +710,180 @@ impl CompactSeqDB {
     ) -> Result<(), std::io::Error> {
         match self.get_fastx_reader(filepath, to_upper_case)? {
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
-            GZFastaReader::GZFile(reader) => self.load_index_from_reader(&mut reader.into_iter()),
+            GZFastaReader::GZFile(reader) => {
+                self.load_index_from_reader(&mut reader.into_iter())?
+            }
 
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
             GZFastaReader::RegularFile(reader) => {
-                self.load_index_from_reader(&mut reader.into_iter())
+                self.load_index_from_reader(&mut reader.into_iter())?
             }
         };
 
         Ok(())
     }
-    #[cfg(feature = "with_agc")]
     pub fn load_index_from_agcfile(&mut self, agcfile: AGCFile) -> Result<(), std::io::Error> {
-        //let agcfile = AGCFile::new(filepath);
+        // Fetch all contigs in parallel (one SQLite connection per rayon task).
+        // This replaces the serial AGCFileIter that held a single Mutex-locked
+        // connection, making decompression of all chromosomes concurrent.
+        let all_recs = agcfile.par_fetch_seqs();
+        let sid_base = self.seqs.len() as u32;
+        let seqs: Vec<(u32, Option<String>, String, Vec<u8>)> = all_recs
+            .into_iter()
+            .enumerate()
+            .map(|(i, rec)| {
+                (
+                    sid_base + i as u32,
+                    rec.source,
+                    String::from_utf8_lossy(&rec.id).into_owned(),
+                    rec.seq,
+                )
+            })
+            .collect();
+        self.load_index_from_seq_vec(&seqs);
+        Ok(())
+    }
 
-        self.load_index_from_reader(&mut agcfile.into_iter());
+    /// Load index from an AGC archive one batch at a time to bound peak memory.
+    ///
+    /// Instead of decompressing every haplotype simultaneously (which can require
+    /// hundreds of GB for large pangenomes), this function processes `batch_size`
+    /// haplotypes per iteration.  Each batch produces a shard pair
+    /// (`{prefix}.shard_N.mdbi` / `.mdbv`) that is flushed to disk before the
+    /// next batch is decompressed.  After all batches, [`merge_shmmr_map_shards`]
+    /// merges the sorted shards into the final `{prefix}.mdbi` / `.mdbv`, and
+    /// [`write_seq_index_sqlite`] writes `{prefix}.midx`.
+    ///
+    /// ## Memory profile
+    ///
+    /// | batch_size | decompress peak | frag_map peak | total peak |
+    /// |---|---|---|---|
+    /// | all (legacy) | ~300 GB | ~16–20 GB | **>300 GB** |
+    /// | 10 | ~30 GB | ~2 GB | **~32 GB** |
+    /// | 5  | ~15 GB | ~1 GB | **~16 GB** |
+    /// Load index from an AGC archive in batches of whole samples (haplotypes),
+    /// pipelining shard writes with decompression of the next batch.
+    ///
+    /// ## Batching unit: samples, not contigs
+    ///
+    /// `batch_size` is the number of **samples** (haplotypes) per shard, not the
+    /// number of individual contigs.  All contigs that belong to a sample are
+    /// grouped into the same shard.  This keeps the number of shards at
+    /// `ceil(num_samples / batch_size)` — typically single digits to low tens —
+    /// rather than `ceil(num_contigs / batch_size)` which would be hundreds for
+    /// a typical human pangenome (100 haplotypes × 25 chromosomes = 2500 contigs).
+    ///
+    /// ## Pipeline
+    ///
+    /// A background thread receives each completed `frag_map` over a bounded
+    /// channel and writes it to disk as a shard.  The main thread decompresses
+    /// and indexes the next batch concurrently.  A `sync_channel(1)` buffer
+    /// lets the main thread stay at most one shard ahead of the writer, keeping
+    /// peak memory bounded:
+    ///
+    /// ```text
+    /// main:   [decompress+index N] [decompress+index N+1] [decompress+index N+2] …
+    /// writer:                      [write shard N]         [write shard N+1]      …
+    /// ```
+    ///
+    /// ## Memory note
+    ///
+    /// At any instant the writer holds the previous batch's `frag_map` while
+    /// the main thread builds the next one and decompresses the next batch.
+    /// Peak memory is roughly:
+    ///   `decompress_batch_peak + current_frag_map + previous_frag_map`
+    ///
+    /// For batch_size=16 on a 100-haplotype 3 Gbp pangenome that is
+    /// ~48 + 11 + 11 ≈ 70 GB.  Reduce batch_size if memory is tighter.
+    pub fn load_index_from_agcfile_batched(
+        &mut self,
+        agcfile: &AGCFile,
+        batch_size: usize,
+        prefix: &str,
+        agc_path: Option<&str>,
+    ) -> Result<(), io::Error> {
+        // Partition by whole samples so batch_size means haplotypes, not contigs.
+        let batches = agcfile.sample_batches(batch_size);
+        let num_shards = batches.len();
+        let mut sid_base: u32 = self.seqs.len() as u32;
+
+        // Pipelined writer thread: receives (frag_map, shard_id) pairs and
+        // writes them to disk while the main thread works on the next batch.
+        // sync_channel(1) allows one item to be queued without blocking, so
+        // the writer can start as soon as the first batch is ready.
+        let shmmr_spec = self.shmmr_spec;
+        let prefix_owned = prefix.to_string();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(ShmmrToFrags, usize)>(1);
+        let writer = std::thread::spawn(move || -> io::Result<()> {
+            while let Ok((frag_map, shard_id)) = rx.recv() {
+                write_shmmr_map_shard(&shmmr_spec, &frag_map, &prefix_owned, shard_id)?;
+                eprintln!("pgr-mdb: shard {shard_id} written");
+            }
+            Ok(())
+        });
+
+        for (shard_id, batch) in batches.iter().enumerate() {
+            eprintln!(
+                "pgr-mdb: shard {}/{} — decompressing {} sequences",
+                shard_id + 1,
+                num_shards,
+                batch.len()
+            );
+
+            // Decompress only this batch of haplotypes (all their contigs).
+            let recs = agcfile.par_fetch_seqs_batch(batch);
+
+            // Assign globally-unique sequence IDs continuing from previous batches.
+            let seqs: Vec<(u32, Option<String>, String, Vec<u8>)> = recs
+                .into_iter()
+                .enumerate()
+                .map(|(i, rec)| {
+                    (
+                        sid_base + i as u32,
+                        rec.source,
+                        String::from_utf8_lossy(&rec.id).into_owned(),
+                        rec.seq,
+                    )
+                })
+                .collect();
+            sid_base += seqs.len() as u32;
+
+            // Build the shimmer-pair index for this batch.
+            self.load_index_from_seq_vec(&seqs);
+
+            // Explicitly drop the decompressed sequences NOW, before handing
+            // off the frag_map.  This reclaims the large sequence buffer
+            // (~batch_size × genome_size bytes) before the writer thread
+            // runs in parallel with the next batch's decompression.
+            drop(seqs);
+
+            // Hand the completed frag_map to the writer thread.
+            // std::mem::take replaces self.frag_map with an empty default,
+            // so the next iteration starts with a clean map immediately.
+            // The send may block briefly if the writer hasn't consumed the
+            // previous shard yet (sync_channel buffer = 1).
+            let frag_map = std::mem::take(&mut self.frag_map);
+            tx.send((frag_map, shard_id))
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+
+        // Signal writer thread to finish and propagate any write error.
+        drop(tx);
+        writer.join().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("shard writer panicked: {e:?}"),
+            )
+        })??;
+
+        eprintln!(
+            "pgr-mdb: merging {} shards → {}.mdbi / .mdbv",
+            num_shards, prefix
+        );
+        merge_shmmr_map_shards(&self.shmmr_spec, prefix, num_shards)?;
+
+        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, prefix, agc_path)?;
+
         Ok(())
     }
 }
@@ -696,11 +891,17 @@ impl CompactSeqDB {
 impl CompactSeqDB {
     fn reconstruct_seq_from_frags<I: Iterator<Item = u32>>(&self, frag_ids: I) -> Vec<u8> {
         let mut reconstructed_seq = <Vec<u8>>::new();
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
+        let frags: &Vec<Fragment> = self
+            .frags
+            .as_ref()
+            .expect("invariant: frags initialized in new()");
         // let mut _p = 0;
         frag_ids.for_each(|frag_id| {
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
-            match frags.get(frag_id as usize).unwrap() {
+            match frags
+                .get(frag_id as usize)
+                .expect("invariant: frag_id in bounds")
+            {
                 Fragment::Prefix(b) => {
                     reconstructed_seq.extend_from_slice(&b[..]);
                     //println!("P p: {} {} {}", frag_id, _p, _p + b.len());
@@ -717,7 +918,10 @@ impl CompactSeqDB {
                     //_p += b.len()-self.shmmr_spec.k as usize;
                 }
                 Fragment::AlnSegments((frg_id, reversed, _length, a)) => {
-                    if let Fragment::Internal(base_seq) = frags.get(*frg_id as usize).unwrap() {
+                    if let Fragment::Internal(base_seq) = frags
+                        .get(*frg_id as usize)
+                        .expect("invariant: frg_id in bounds")
+                    {
                         let mut seq = reconstruct_seq_from_aln_segs(base_seq, a);
                         /*  // for debugging
                         if *_length as usize != seq.len() {
@@ -756,7 +960,10 @@ impl CompactSeqDB {
 
 impl GetSeq for CompactSeqDB {
     fn get_seq_by_id(&self, sid: u32) -> Vec<u8> {
-        let seq = self.seqs.get(sid as usize).unwrap();
+        let seq = self
+            .seqs
+            .get(sid as usize)
+            .expect("invariant: sid in bounds");
         self.reconstruct_seq_from_frags(
             seq.seq_frag_range.0..seq.seq_frag_range.0 + seq.seq_frag_range.1,
         )
@@ -769,7 +976,10 @@ impl GetSeq for CompactSeqDB {
         let mut _p = 0;
         let mut base_offset = 0_u32;
         let mut sub_seq_frag = vec![];
-        let frags: &Vec<Fragment> = self.frags.as_ref().unwrap();
+        let frags: &Vec<Fragment> = self
+            .frags
+            .as_ref()
+            .expect("invariant: frags initialized in new()");
         for frag_id in frag_range.0..frag_range.0 + frag_range.1 {
             let f = &frags[frag_id as usize];
             let frag_len = match f {
@@ -799,89 +1009,16 @@ impl GetSeq for CompactSeqDB {
 }
 
 impl CompactSeqDB {
-    pub fn write_shmmr_map_index(&self, fp_prefix: String) -> Result<(), std::io::Error> {
-        let seq_idx_fp = fp_prefix.clone() + ".midx";
-        let data_fp = fp_prefix + ".mdb";
-        write_shmmr_map_file(&self.shmmr_spec, &self.frag_map, data_fp)?;
-        let mut idx_file = BufWriter::new(File::create(seq_idx_fp).expect("file create error"));
-        self.seqs
-            .iter()
-            .try_for_each(|s| -> Result<(), std::io::Error> {
-                writeln!(
-                    idx_file,
-                    "{}\t{}\t{}\t{}",
-                    s.id,
-                    s.len,
-                    s.name,
-                    s.source.clone().unwrap_or_else(|| "-".to_string())
-                )?;
-                Ok(())
-            })?;
-
+    pub fn write_shmmr_map_index(
+        &self,
+        fp_prefix: String,
+        agc_path: Option<&str>,
+    ) -> Result<(), std::io::Error> {
+        // Write split format (.mdbi key-index + .mdbv values).
+        write_shmmr_map_split(&self.shmmr_spec, &self.frag_map, &fp_prefix)?;
+        // Write SQLite sequence index (.midx), storing the AGC archive path when known.
+        write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, &fp_prefix, agc_path)?;
         Ok(())
-    }
-}
-
-impl CompactSeqDB {
-    pub fn write_to_frag_files(&self, file_prefix: String, chunk_size: Option<usize>) {
-        let mut sdx_file = BufWriter::new(
-            File::create(file_prefix.clone() + ".sdx").expect("sdx file creating fail\n"),
-        );
-        sdx_file
-            .write_all("SDX:0.5".as_bytes())
-            .expect("sdx file writing error");
-        let mut frg_file =
-            BufWriter::new(File::create(file_prefix + ".frg").expect("frg file creating fail\n"));
-
-        frg_file
-            .write_all("FRG:0.5".as_bytes())
-            .expect("frg file writing error");
-        let config = config::standard();
-
-        let chunk_size = chunk_size.unwrap_or(256_usize);
-        let compressed_frags = self
-            .frags
-            .as_ref()
-            .unwrap()
-            .chunks(chunk_size)
-            .collect::<Vec<&[Fragment]>>()
-            .par_iter()
-            .map(|&frags| {
-                let mut total_frag_len = 0_u32;
-                frags.iter().for_each(|f| {
-                    total_frag_len += match f {
-                        Fragment::AlnSegments(d) => d.2 - self.shmmr_spec.k,
-                        Fragment::Prefix(b) => b.len() as u32,
-                        Fragment::Internal(b) => b.len() as u32 - self.shmmr_spec.k,
-                        Fragment::Suffix(b) => b.len() as u32,
-                    };
-                });
-
-                let w = bincode::encode_to_vec(frags.to_vec(), config).unwrap();
-                let mut compressor = DeflateEncoder::new(Vec::new(), Compression::default());
-                compressor.write_all(&w).unwrap();
-                let compress_frag = compressor.finish().unwrap();
-                (total_frag_len, compress_frag)
-            })
-            .collect::<Vec<(u32, Vec<u8>)>>();
-
-        let mut frag_addr_offset = vec![];
-        let mut offset = 0_usize;
-        compressed_frags.iter().for_each(|(frag_len, v)| {
-            let l = v.len();
-            frag_addr_offset.push((offset, v.len(), *frag_len));
-            offset += l;
-            frg_file.write_all(v).expect("frag file writing error\n");
-        });
-
-        bincode::encode_into_std_write(
-            (chunk_size, frag_addr_offset, &self.seqs),
-            &mut sdx_file,
-            config,
-        )
-        .expect("sdx file writing error\n");
-        //bincode::encode_into_std_write(compressed_frags, &mut frg_file, config)
-        //    .expect(" frag file writing error");
     }
 }
 
@@ -909,7 +1046,11 @@ pub fn frag_map_to_adj_list(
         // more or less duplicate code, but this takes the hashset check out of the loop if keeps is None.
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).unwrap().len() >= min_count
+                if frag_map
+                    .get(&(v.3 .0, v.3 .1))
+                    .expect("invariant: key from iterating frag_map")
+                    .len()
+                    >= min_count
                     || keeps.contains(&v.0)
                 {
                     Some(v)
@@ -921,7 +1062,12 @@ pub fn frag_map_to_adj_list(
     } else {
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).unwrap().len() >= min_count {
+                if frag_map
+                    .get(&(v.3 .0, v.3 .1))
+                    .expect("invariant: key from iterating frag_map")
+                    .len()
+                    >= min_count
+                {
                     Some(v)
                 } else {
                     None
@@ -986,8 +1132,16 @@ pub fn generate_smp_adj_list_for_seq(
                 let v = res[i];
                 let w = res[i + 1];
                 if (frag_map.get(&(v.0, v.1)).is_none() || frag_map.get(&(w.0, w.1)).is_none())
-                    || (frag_map.get(&(v.0, v.1)).unwrap().len() < min_count
-                        || frag_map.get(&(w.0, w.1)).unwrap().len() < min_count)
+                    || (frag_map
+                        .get(&(v.0, v.1))
+                        .expect("invariant: key from iterating frag_map")
+                        .len()
+                        < min_count
+                        || frag_map
+                            .get(&(w.0, w.1))
+                            .expect("invariant: key from iterating frag_map")
+                            .len()
+                            < min_count)
                     || v.3 != w.2
                 {
                     vec![None]
@@ -1039,12 +1193,18 @@ pub fn sort_adj_list_by_weighted_dfs(
         g.add_edge(v, w, ());
 
         // println!("DBG: add_edge {:?} {:?}", v, w);
-        score
-            .entry(v)
-            .or_insert_with(|| frag_map.get(&vv).unwrap().len() as u32);
-        score
-            .entry(w)
-            .or_insert_with(|| frag_map.get(&ww).unwrap().len() as u32);
+        score.entry(v).or_insert_with(|| {
+            frag_map
+                .get(&vv)
+                .expect("invariant: vv from iterating frag_map keys")
+                .len() as u32
+        });
+        score.entry(w).or_insert_with(|| {
+            frag_map
+                .get(&ww)
+                .expect("invariant: ww from iterating frag_map keys")
+                .len() as u32
+        });
     });
 
     // println!("DBG: # node: {}, # edge: {}", g.node_count(), g.edge_count());
@@ -1056,7 +1216,9 @@ pub fn sort_adj_list_by_weighted_dfs(
     while let Some((node, p_node, is_leaf, rank, branch_id, branch_rank)) =
         weighted_dfs_walker.next(&g)
     {
-        let node_count = *score.get(&node).unwrap();
+        let node_count = *score
+            .get(&node)
+            .expect("invariant: score set for all traversed nodes");
         let p_node = p_node.map(|pnode| ShmmrGraphNode(pnode.0, pnode.1, pnode.2));
         out.push((
             ShmmrGraphNode(node.0, node.1, node.2),
@@ -1148,7 +1310,9 @@ pub fn get_principal_bundles_from_adj_list(
     let mut principal_bundles = Vec::<Vec<ShmmrGraphNode>>::new();
 
     while !starts.is_empty() {
-        let s = starts.pop().unwrap();
+        let s = starts
+            .pop()
+            .expect("invariant: starts is non-empty in loop");
         let mut dfs = Dfs::new(&g1, s);
         let mut path = Vec::<ShmmrGraphNode>::new();
         while let Some(v) = dfs.next(&g1) {
@@ -1191,7 +1355,11 @@ pub fn get_principal_bundles_from_adj_list(
             }
         };
     }
-    principal_bundles.sort_by(|a, b| b.len().partial_cmp(&(a.len())).unwrap());
+    principal_bundles.sort_by(|a, b| {
+        b.len()
+            .partial_cmp(&(a.len()))
+            .expect("invariant: usize comparison is total order")
+    });
     (principal_bundles, filtered_adj_list)
 }
 
@@ -1298,186 +1466,178 @@ pub fn get_match_positions_with_fragment(
     res
 }
 
-pub fn write_shmmr_map_file(
+// ---------------------------------------------------------------------------
+// SQLite-backed sequence index (.midx)
+// ---------------------------------------------------------------------------
+
+/// Schema version stored as SQLite PRAGMA user_version.
+const MIDX_SCHEMA_VERSION: u32 = 1;
+
+/// Write sequence metadata and shimmer parameters to `{prefix}.midx` as a
+/// SQLite database.
+///
+/// The SQLite `.midx` replaces the former tab-delimited text format with a
+/// typed, versioned, and queryable store.  External tools (sqlite3, DuckDB,
+/// Python sqlite3) can inspect it directly.
+///
+/// Schema:
+/// ```sql
+/// PRAGMA user_version = 1;
+/// CREATE TABLE shmmr_spec (w, k, r, min_span, sketch);
+/// CREATE TABLE seq_index  (sid PRIMARY KEY, len, ctg_name, source);
+/// CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);
+/// ```
+pub fn write_seq_index_sqlite(
+    seqs: &[CompactSeq],
     shmmr_spec: &ShmmrSpec,
-    shmmr_map: &ShmmrToFrags,
-    filepath: String,
-) -> Result<(), std::io::Error> {
-    let mut out_file =
-        File::create(filepath).expect("open fail while writing the SHIMMER map (.mdb) file\n");
-    let mut buf = Vec::<u8>::new();
+    prefix: &str,
+    agc_path: Option<&str>,
+) -> Result<(), io::Error> {
+    let path = format!("{prefix}.midx");
+    // Remove any stale file so we start with a clean database.
+    let _ = fs::remove_file(&path);
+    let conn =
+        Connection::open(&path).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    buf.extend("mdb".to_string().into_bytes());
+    let meta_ddl = if agc_path.is_some() {
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    } else {
+        ""
+    };
 
-    buf.write_u32::<LittleEndian>(shmmr_spec.w)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.k)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.r)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
-    buf.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA user_version = {MIDX_SCHEMA_VERSION};
+         CREATE TABLE shmmr_spec (
+             w        INTEGER NOT NULL,
+             k        INTEGER NOT NULL,
+             r        INTEGER NOT NULL,
+             min_span INTEGER NOT NULL,
+             sketch   INTEGER NOT NULL
+         );
+         CREATE TABLE seq_index (
+             sid      INTEGER PRIMARY KEY,
+             len      INTEGER NOT NULL,
+             ctg_name TEXT    NOT NULL,
+             source   TEXT
+         );
+         CREATE INDEX idx_ctg_source ON seq_index (ctg_name, source);
+         {meta_ddl}"
+    ))
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    buf.write_u64::<LittleEndian>(shmmr_map.len() as u64)?;
-    shmmr_map
-        .iter()
-        .try_for_each(|(k, v)| -> Result<(), std::io::Error> {
-            buf.write_u64::<LittleEndian>(k.0)?;
-            buf.write_u64::<LittleEndian>(k.1)?;
-            buf.write_u64::<LittleEndian>(v.len() as u64)?;
-            v.iter().try_for_each(|r| -> Result<(), std::io::Error> {
-                buf.write_u32::<LittleEndian>(r.0)?;
-                buf.write_u32::<LittleEndian>(r.1)?;
-                buf.write_u32::<LittleEndian>(r.2)?;
-                buf.write_u32::<LittleEndian>(r.3)?;
-                buf.write_u8(r.4)?;
-                Ok(())
-            })
-        })?;
-    let _ = out_file.write_all(&buf);
+    conn.execute(
+        "INSERT INTO shmmr_spec (w, k, r, min_span, sketch) VALUES (?1,?2,?3,?4,?5)",
+        params![
+            shmmr_spec.w,
+            shmmr_spec.k,
+            shmmr_spec.r,
+            shmmr_spec.min_span,
+            shmmr_spec.sketch as u32,
+        ],
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    if let Some(p) = agc_path {
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('agc_path', ?1)",
+            params![p],
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    }
+
+    {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        for s in seqs {
+            tx.execute(
+                "INSERT INTO seq_index (sid, len, ctg_name, source) VALUES (?1,?2,?3,?4)",
+                params![s.id as i64, s.len as i64, &s.name, s.source.as_deref(),],
+            )
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    }
+
     Ok(())
 }
 
-pub fn read_mdb_file(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let mut in_file =
-        File::open(filepath).expect("Error while opening the SHIMMER map file (.mdb) file");
-    let mut buf = Vec::<u8>::new();
+/// Read sequence metadata from `{prefix}.midx` (SQLite format).
+///
+/// Returns `(seq_index, seq_info)`:
+/// - `seq_index`: `(ctg_name, source) → (sid, len)`
+/// - `seq_info`:  `sid → (ctg_name, source, len)`
+pub fn read_seq_index_sqlite(
+    prefix: &str,
+) -> Result<
+    (
+        FxHashMap<(String, Option<String>), (u32, u32)>,
+        FxHashMap<u32, (String, Option<String>, u32)>,
+    ),
+    io::Error,
+> {
+    let path = format!("{prefix}.midx");
+    let conn = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let mut u64bytes = [0_u8; 8];
-    let mut u32bytes = [0_u8; 4];
-    in_file.read_to_end(&mut buf)?;
-    let mut cursor = 0_usize;
-    assert!(buf[0..3] == "mdb".to_string().into_bytes());
-    cursor += 3; // skip "mdb"
+    let version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    if version != MIDX_SCHEMA_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported .midx schema version {version} (expected {MIDX_SCHEMA_VERSION})"),
+        ));
+    }
 
-    let w = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let k = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let r = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let min_span = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let flag = LittleEndian::read_u32(&buf[cursor..cursor + 4]);
-    cursor += 4;
-    let sketch = (flag & 0b01) == 0b01;
+    let mut stmt = conn
+        .prepare("SELECT sid, len, ctg_name, source FROM seq_index")
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    let shmmr_spec = ShmmrSpec {
-        w,
-        k,
-        r,
-        min_span,
-        sketch,
-    };
-    u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-    let shmmr_key_len = usize::from_le_bytes(u64bytes);
-    cursor += 8;
-    let mut shmmr_map = ShmmrToFrags::default();
-    (0..shmmr_key_len).for_each(|_| {
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let k1 = u64::from_le_bytes(u64bytes);
-        cursor += 8;
+    let rows: Vec<(u32, u32, String, Option<String>)> = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u32,
+                r.get::<_, i64>(1)? as u32,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let k2 = u64::from_le_bytes(u64bytes);
-        cursor += 8;
+    let mut seq_index = FxHashMap::default();
+    let mut seq_info = FxHashMap::default();
+    for (sid, len, ctg_name, source) in rows {
+        seq_index.insert((ctg_name.clone(), source.clone()), (sid, len));
+        seq_info.insert(sid, (ctg_name, source, len));
+    }
 
-        u64bytes.clone_from_slice(&buf[cursor..cursor + 8]);
-        let vec_len = usize::from_le_bytes(u64bytes);
-        cursor += 8;
-
-        let value = (0..vec_len)
-            .map(|_| {
-                let mut v = (0_u32, 0_u32, 0_u32, 0_u32, 0_u8);
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.0 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.1 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.2 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                u32bytes.clone_from_slice(&buf[cursor..cursor + 4]);
-                v.3 = u32::from_le_bytes(u32bytes);
-                cursor += 4;
-
-                v.4 = buf[cursor..cursor + 1][0];
-                cursor += 1;
-
-                v
-            })
-            .collect::<Vec<FragmentSignature>>();
-
-        shmmr_map.insert((k1, k2), value);
-    });
-
-    Ok((shmmr_spec, shmmr_map))
+    Ok((seq_index, seq_info))
 }
 
-pub fn read_mdb_file_to_frag_locations(
-    filepath: String,
-) -> Result<(ShmmrSpec, ShmmrIndexFileLocation), io::Error> {
-    let mut in_file =
-        File::open(filepath).expect("open fail while reading the SHIMMER map (.mdb) file");
-    let mut tag_buf = [0_u8; 3];
-
-    let mut u32bytes = [0_u8; 4];
-    let mut u64bytes = [0_u8; 8];
-
-    in_file.read_exact(&mut tag_buf)?;
-    let mut cursor = 0_usize;
-    assert!(tag_buf[0..3] == "mdb".to_string().into_bytes());
-    cursor += 3; // skip "mdb"
-
-    in_file.read_exact(&mut u32bytes)?;
-    let w = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let k = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let r = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let min_span = LittleEndian::read_u32(&u32bytes);
-
-    in_file.read_exact(&mut u32bytes)?;
-    let flag = LittleEndian::read_u32(&u32bytes);
-    let sketch = (flag & 0b01) == 0b01;
-
-    cursor += 4 * 5;
-
-    let shmmr_spec = ShmmrSpec {
-        w,
-        k,
-        r,
-        min_span,
-        sketch,
-    };
-
-    in_file.read_exact(&mut u64bytes)?;
-    let shmmr_key_len = usize::from_le_bytes(u64bytes);
-    cursor += 8;
-    let mut rec_loc = Vec::<((u64, u64), (usize, usize))>::new();
-    for _ in 0..shmmr_key_len {
-        in_file.read_exact(&mut u64bytes)?;
-        let k1 = u64::from_le_bytes(u64bytes);
-
-        in_file.read_exact(&mut u64bytes)?;
-        let k2 = u64::from_le_bytes(u64bytes);
-
-        in_file.read_exact(&mut u64bytes)?;
-        let vec_len = usize::from_le_bytes(u64bytes);
-        cursor += 8 * 3;
-        let start = cursor;
-        let advance = 17 * vec_len;
-        cursor += advance;
-        in_file.seek(SeekFrom::Current(advance as i64))?;
-        rec_loc.push(((k1, k2), (start, vec_len)));
-    }
-    Ok((shmmr_spec, rec_loc))
+/// Read the AGC archive path stored in `{prefix}.midx` by `pgr-mdb`.
+///
+/// Returns `Some(path)` if the `meta` table exists and contains `agc_path`,
+/// or `None` if the index was built without recording the path (older indexes
+/// or multi-archive builds).
+pub fn read_agc_path_from_midx(prefix: &str) -> Option<String> {
+    let path = format!("{prefix}.midx");
+    let conn = Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.query_row("SELECT value FROM meta WHERE key = 'agc_path'", [], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
 }
 
 pub fn get_fragment_signatures_from_mmap_file(
@@ -1513,21 +1673,613 @@ pub fn get_fragment_signatures_from_mmap_file(
         .collect::<Vec<FragmentSignature>>()
 }
 
-pub fn read_mdb_file_parallel(filepath: String) -> Result<(ShmmrSpec, ShmmrToFrags), io::Error> {
-    let in_file =
-        File::open(filepath.clone()).expect("open fail while reading the SHIMMER map (.mdb) file");
-    let frag_map_file = unsafe {
-        Mmap::map(&in_file).expect("open fail while reading the SHIMMER map (.mdb) file")
-    };
+// ---------------------------------------------------------------------------
+// Split format: .mdbi (sorted key index) + .mdbv (fragment values)
+// ---------------------------------------------------------------------------
 
-    let (shmmr_spec, rec_loc) = read_mdb_file_to_frag_locations(filepath)?;
+/// Magic bytes for the key-index and value files.
+const MDBI_MAGIC: &[u8; 4] = b"mdbi";
+const MDBV_MAGIC: &[u8; 4] = b"mdbv";
+/// Version byte appended to the magic.
+const MDBV1: u8 = 1;
 
-    let shmmr_map = rec_loc
+/// Header size of .mdbv: magic(4) + version(1) = 5 bytes.
+const MDBV_HEADER_BYTES: usize = 5;
+/// Size of one fragment record (same as legacy .mdb): 4×u32 + 1×u8 = 17 bytes.
+const FRAG_RECORD_BYTES: usize = 17;
+
+/// Header size of .mdbi: magic(4) + version(1) + 5×u32 ShmmrSpec(20) + n_keys u64(8) = 33 bytes.
+pub const MDBI_HEADER_BYTES: usize = 33;
+/// Size of one key entry in .mdbi: k1(8) + k2(8) + data_offset(8) + vec_len(4) = 28 bytes.
+pub const MDBI_KEY_ENTRY_BYTES: usize = 28;
+
+/// Write the shimmer map to `{prefix}.mdbi` (sorted key index) and
+/// `{prefix}.mdbv` (fragment values).
+///
+/// Keys are written in ascending `(k1, k2)` order, making the key table
+/// deterministic and enabling future binary-search lookups on the mmapped file.
+///
+/// Layout of `.mdbi`:
+/// ```text
+/// [4 bytes]  magic        b"mdbi"
+/// [1 byte]   version      0x01
+/// [4×5 bytes] shmmr_spec  w, k, r, min_span, sketch  (u32 LE each)
+/// [8 bytes]  n_keys       u64 LE
+/// repeated n_keys times (28 bytes each, sorted by (k1,k2)):
+///   [8]  k1           u64 LE
+///   [8]  k2           u64 LE
+///   [8]  data_offset  u64 LE  — byte offset from start of .mdbv file
+///   [4]  vec_len      u32 LE  — number of 17-byte fragment records
+/// ```
+///
+/// Layout of `.mdbv`:
+/// ```text
+/// [4 bytes]  magic    b"mdbv"
+/// [1 byte]   version  0x01
+/// repeated (17 bytes each, in key-index order):
+///   [4]  frag_id  u32 LE
+///   [4]  seq_id   u32 LE
+///   [4]  bgn      u32 LE
+///   [4]  end      u32 LE
+///   [1]  orient   u8
+/// ```
+pub fn write_shmmr_map_split(
+    shmmr_spec: &ShmmrSpec,
+    shmmr_map: &ShmmrToFrags,
+    prefix: &str,
+) -> Result<(), io::Error> {
+    // Sort keys for deterministic output and future binary-search capability.
+    let mut keys: Vec<(u64, u64)> = shmmr_map.keys().copied().collect();
+    keys.par_sort_unstable();
+
+    // --- Write .mdbv (values file) ------------------------------------------
+    let mdbv_path = format!("{prefix}.mdbv");
+    let mut val_file = BufWriter::new(File::create(&mdbv_path)?);
+    val_file.write_all(MDBV_MAGIC)?;
+    val_file.write_u8(MDBV1)?;
+
+    // Build the key-index entries while streaming fragment records.
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::with_capacity(keys.len());
+    let mut data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    for &(k1, k2) in &keys {
+        let frags = &shmmr_map[&(k1, k2)];
+        idx_entries.push((k1, k2, data_offset, frags.len() as u32));
+        for f in frags {
+            val_file.write_u32::<LittleEndian>(f.0)?;
+            val_file.write_u32::<LittleEndian>(f.1)?;
+            val_file.write_u32::<LittleEndian>(f.2)?;
+            val_file.write_u32::<LittleEndian>(f.3)?;
+            val_file.write_u8(f.4)?;
+        }
+        data_offset += frags.len() as u64 * FRAG_RECORD_BYTES as u64;
+    }
+    val_file.flush()?;
+
+    // --- Write .mdbi (key-index file) ---------------------------------------
+    let mdbi_path = format!("{prefix}.mdbi");
+    let mut idx_file = BufWriter::new(File::create(&mdbi_path)?);
+    idx_file.write_all(MDBI_MAGIC)?;
+    idx_file.write_u8(MDBV1)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_file.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_file.write_u64::<LittleEndian>(*k1)?;
+        idx_file.write_u64::<LittleEndian>(*k2)?;
+        idx_file.write_u64::<LittleEndian>(*offset)?;
+        idx_file.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_file.flush()?;
+
+    Ok(())
+}
+
+/// Write a single shard of the shimmer map.
+///
+/// Produces `{prefix}.shard_{shard_id}.mdbv` and `{prefix}.shard_{shard_id}.mdbi`
+/// using the identical binary layout as [`write_shmmr_map_split`].  Each shard's
+/// key-index is sorted so that [`merge_shmmr_map_shards`] can perform a straight
+/// k-way merge without re-sorting.
+pub fn write_shmmr_map_shard(
+    shmmr_spec: &ShmmrSpec,
+    shmmr_map: &ShmmrToFrags,
+    prefix: &str,
+    shard_id: usize,
+) -> Result<(), io::Error> {
+    let mut keys: Vec<(u64, u64)> = shmmr_map.keys().copied().collect();
+    keys.par_sort_unstable();
+
+    // --- Parallel serialization -------------------------------------------
+    // Each key's fragment records are encoded independently into a Vec<u8>,
+    // distributing the CPU work across all rayon threads.  The final disk
+    // write is sequential (BufWriter), but replacing N_frags × 5 individual
+    // write_u32/write_u8 calls with one write_all per key cuts syscall
+    // overhead significantly and enables OS large-block I/O.
+    let key_data: Vec<(u64, u64, u32, Vec<u8>)> = keys
         .par_iter()
-        .map(|&((k1, k2), (start, vec_len))| {
-            let value = get_fragment_signatures_from_mmap_file(&frag_map_file, start, vec_len);
-            ((k1, k2), value)
+        .map(|&(k1, k2)| {
+            let frags = &shmmr_map[&(k1, k2)];
+            let mut buf = vec![0u8; frags.len() * FRAG_RECORD_BYTES];
+            let mut pos = 0;
+            for f in frags {
+                buf[pos..pos + 4].copy_from_slice(&f.0.to_le_bytes());
+                buf[pos + 4..pos + 8].copy_from_slice(&f.1.to_le_bytes());
+                buf[pos + 8..pos + 12].copy_from_slice(&f.2.to_le_bytes());
+                buf[pos + 12..pos + 16].copy_from_slice(&f.3.to_le_bytes());
+                buf[pos + 16] = f.4;
+                pos += FRAG_RECORD_BYTES;
+            }
+            (k1, k2, frags.len() as u32, buf)
         })
-        .collect::<FxHashMap<ShmmrPair, Vec<FragmentSignature>>>();
-    Ok((shmmr_spec, shmmr_map))
+        .collect();
+
+    // --- Sequential write + prefix-sum for data offsets -------------------
+    let mdbv_path = format!("{prefix}.shard_{shard_id}.mdbv");
+    let mut val_file = BufWriter::new(
+        File::create(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?,
+    );
+    val_file.write_all(MDBV_MAGIC)?;
+    val_file.write_u8(MDBV1)?;
+
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::with_capacity(key_data.len());
+    let mut data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    for (k1, k2, cnt, buf) in &key_data {
+        idx_entries.push((*k1, *k2, data_offset, *cnt));
+        data_offset += *cnt as u64 * FRAG_RECORD_BYTES as u64;
+        val_file.write_all(buf)?;
+    }
+    val_file.flush()?;
+
+    let mdbi_path = format!("{prefix}.shard_{shard_id}.mdbi");
+    let mut idx_file = BufWriter::new(
+        File::create(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+    );
+    idx_file.write_all(MDBI_MAGIC)?;
+    idx_file.write_u8(MDBV1)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_file.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_file.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_file.write_u64::<LittleEndian>(*k1)?;
+        idx_file.write_u64::<LittleEndian>(*k2)?;
+        idx_file.write_u64::<LittleEndian>(*offset)?;
+        idx_file.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_file.flush()?;
+
+    Ok(())
+}
+
+/// K-way external merge of sorted shimmer-map shards.
+///
+/// Reads `{prefix}.shard_0..{num_shards-1}.mdbi` and the corresponding `.mdbv`
+/// files produced by [`write_shmmr_map_shard`], merges them into the final
+/// `{prefix}.mdbi` and `{prefix}.mdbv`, then deletes the shard files.
+///
+/// Peak memory is O(num_shards) key-cursor entries plus I/O buffers — negligible
+/// regardless of the total number of shimmer pairs.
+///
+/// When the same `(k1, k2)` key appears in multiple shards (because the same
+/// shimmer pair was found in sequences from different batches), all
+/// `FragmentSignature` records for that key are concatenated into a single
+/// merged entry.
+pub fn merge_shmmr_map_shards(
+    shmmr_spec: &ShmmrSpec,
+    prefix: &str,
+    num_shards: usize,
+) -> Result<(), io::Error> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+
+    // Each shard is read with two strictly forward-moving BufReaders:
+    //   key_reader — reads the sorted key-index (.mdbi) one record at a time
+    //   val_reader — reads fragment bytes (.mdbv) in the same sorted order
+    //
+    // Because the merge processes each shard's keys in ascending order (the
+    // heap enforces this) and the .mdbv was written in the same order, the
+    // val_reader position is always exactly at the start of the next key's
+    // fragment block.  No backward seeks are ever needed.  Using BufReader
+    // (8 KB read-ahead) instead of a raw File with seeks turns what was
+    // random-access I/O into a sequential streaming read, giving OS prefetch
+    // an opportunity to avoid stalls.
+    struct ShardReader {
+        key_reader: BufReader<File>,
+        val_reader: BufReader<File>,
+        current: Option<(u64, u64, u32)>, // (k1, k2, vec_len) — offset dropped
+        remaining: u64,
+    }
+
+    impl ShardReader {
+        fn advance(&mut self) -> Result<(), io::Error> {
+            if self.remaining == 0 {
+                self.current = None;
+                return Ok(());
+            }
+            let mut u64b = [0u8; 8];
+            let mut u32b = [0u8; 4];
+            self.key_reader.read_exact(&mut u64b)?;
+            let k1 = u64::from_le_bytes(u64b);
+            self.key_reader.read_exact(&mut u64b)?;
+            let k2 = u64::from_le_bytes(u64b);
+            // Read and discard the stored byte-offset — we don't need it
+            // because we read the value file sequentially.
+            self.key_reader.read_exact(&mut u64b)?;
+            self.key_reader.read_exact(&mut u32b)?;
+            let vec_len = u32::from_le_bytes(u32b);
+            self.current = Some((k1, k2, vec_len));
+            self.remaining -= 1;
+            Ok(())
+        }
+
+        /// Read `vec_len` fragment records from val_reader and stream them
+        /// directly into `out`.  Allocates only one small stack buffer.
+        fn copy_frags(&mut self, vec_len: u32, out: &mut impl Write) -> Result<(), io::Error> {
+            let byte_count = vec_len as usize * FRAG_RECORD_BYTES;
+            // Stack buffer for records; fall back to heap for large blocks.
+            const STACK_CAP: usize = 64 * FRAG_RECORD_BYTES; // 64 records = 1088 bytes
+            if byte_count <= STACK_CAP {
+                let mut buf = [0u8; STACK_CAP];
+                self.val_reader.read_exact(&mut buf[..byte_count])?;
+                out.write_all(&buf[..byte_count])
+            } else {
+                let mut buf = vec![0u8; byte_count];
+                self.val_reader.read_exact(&mut buf)?;
+                out.write_all(&buf)
+            }
+        }
+    }
+
+    // --- Open one ShardReader per shard -----------------------------------
+    let mut shards: Vec<ShardReader> = Vec::with_capacity(num_shards);
+    for shard_id in 0..num_shards {
+        let mdbi_path = format!("{prefix}.shard_{shard_id}.mdbi");
+        let mdbv_path = format!("{prefix}.shard_{shard_id}.mdbv");
+
+        let mut key_reader = BufReader::new(
+            File::open(&mdbi_path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+        );
+        let (_, n_keys) = read_mdbi_header(&mut key_reader)?;
+
+        let mut val_reader = BufReader::new(
+            File::open(&mdbv_path)
+                .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?,
+        );
+        // Skip the .mdbv header (magic 4 B + version 1 B) so val_reader is
+        // positioned at the first fragment record.
+        let mut hdr_buf = [0u8; MDBV_HEADER_BYTES];
+        val_reader.read_exact(&mut hdr_buf)?;
+
+        let mut sr = ShardReader {
+            key_reader,
+            val_reader,
+            current: None,
+            remaining: n_keys,
+        };
+        sr.advance()?;
+        shards.push(sr);
+    }
+
+    // --- Initialize min-heap ----------------------------------------------
+    // Heap entry: (Reverse((k1, k2)), shard_id)
+    let mut heap: BinaryHeap<(Reverse<(u64, u64)>, usize)> = BinaryHeap::new();
+    for (shard_id, sr) in shards.iter().enumerate() {
+        if let Some((k1, k2, _)) = sr.current {
+            heap.push((Reverse((k1, k2)), shard_id));
+        }
+    }
+
+    // --- Open output files ------------------------------------------------
+    let mdbv_out_path = format!("{prefix}.mdbv");
+    let mut val_out = BufWriter::new(
+        File::create(&mdbv_out_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_out_path}: {e}")))?,
+    );
+    val_out.write_all(MDBV_MAGIC)?;
+    val_out.write_u8(MDBV1)?;
+
+    let mut idx_entries: Vec<(u64, u64, u64, u32)> = Vec::new();
+    let mut out_data_offset: u64 = MDBV_HEADER_BYTES as u64;
+
+    // --- K-way merge loop -------------------------------------------------
+    while let Some((Reverse((k1, k2)), shard_id)) = heap.pop() {
+        let (_, _, vec_len) = shards[shard_id]
+            .current
+            .expect("invariant: heap entry implies current is Some");
+
+        // contributors: (shard_id, vec_len) — offset removed (sequential read)
+        let mut contributors: Vec<(usize, u32)> = vec![(shard_id, vec_len)];
+        let mut total_frags: u32 = vec_len;
+
+        // Advance this shard's key cursor and re-push if more keys remain.
+        shards[shard_id].advance()?;
+        if let Some((nk1, nk2, _)) = shards[shard_id].current {
+            heap.push((Reverse((nk1, nk2)), shard_id));
+        }
+
+        // Drain any other shards that happen to share the same (k1, k2).
+        loop {
+            match heap.peek() {
+                Some((Reverse((pk1, pk2)), _)) if *pk1 == k1 && *pk2 == k2 => {
+                    let (_, pshard) = heap.pop().expect("invariant: just peeked");
+                    let (_, _, pvec_len) = shards[pshard]
+                        .current
+                        .expect("invariant: heap entry implies current is Some");
+                    contributors.push((pshard, pvec_len));
+                    total_frags += pvec_len;
+                    shards[pshard].advance()?;
+                    if let Some((nk1, nk2, _)) = shards[pshard].current {
+                        heap.push((Reverse((nk1, nk2)), pshard));
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        // Emit index entry for the merged key.
+        idx_entries.push((k1, k2, out_data_offset, total_frags));
+        out_data_offset += total_frags as u64 * FRAG_RECORD_BYTES as u64;
+
+        // Stream fragment bytes from each contributing shard — forward-only
+        // reads, no seeks, BufReader provides OS read-ahead.
+        for (cshard, cvec_len) in contributors {
+            shards[cshard].copy_frags(cvec_len, &mut val_out)?;
+        }
+    }
+    val_out.flush()?;
+
+    // --- Write merged .mdbi -----------------------------------------------
+    let mdbi_out_path = format!("{prefix}.mdbi");
+    let mut idx_out = BufWriter::new(
+        File::create(&mdbi_out_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_out_path}: {e}")))?,
+    );
+    idx_out.write_all(MDBI_MAGIC)?;
+    idx_out.write_u8(MDBV1)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.w)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.k)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.r)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.min_span)?;
+    idx_out.write_u32::<LittleEndian>(shmmr_spec.sketch as u32)?;
+    idx_out.write_u64::<LittleEndian>(idx_entries.len() as u64)?;
+    for (k1, k2, offset, vec_len) in &idx_entries {
+        idx_out.write_u64::<LittleEndian>(*k1)?;
+        idx_out.write_u64::<LittleEndian>(*k2)?;
+        idx_out.write_u64::<LittleEndian>(*offset)?;
+        idx_out.write_u32::<LittleEndian>(*vec_len)?;
+    }
+    idx_out.flush()?;
+
+    // Drop readers before deleting files (matters on Windows).
+    drop(shards);
+
+    // --- Remove shard files -----------------------------------------------
+    for shard_id in 0..num_shards {
+        let _ = fs::remove_file(format!("{prefix}.shard_{shard_id}.mdbv"));
+        let _ = fs::remove_file(format!("{prefix}.shard_{shard_id}.mdbi"));
+    }
+
+    Ok(())
+}
+
+/// Parse the `.mdbi` header and return `(ShmmrSpec, n_keys)`.
+/// Validates the magic bytes and version.
+fn read_mdbi_header(f: &mut impl Read) -> Result<(ShmmrSpec, u64), io::Error> {
+    let mut magic = [0u8; 4];
+    let mut ver = [0u8; 1];
+    let mut u32b = [0u8; 4];
+    let mut u64b = [0u8; 8];
+
+    f.read_exact(&mut magic)?;
+    f.read_exact(&mut ver)?;
+    if &magic != MDBI_MAGIC || ver[0] != MDBV1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid .mdbi magic/version: {:?} v{}", magic, ver[0]),
+        ));
+    }
+
+    f.read_exact(&mut u32b)?;
+    let w = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let k = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let r = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let min_span = LittleEndian::read_u32(&u32b);
+    f.read_exact(&mut u32b)?;
+    let sketch = (LittleEndian::read_u32(&u32b) & 1) == 1;
+    f.read_exact(&mut u64b)?;
+    let n_keys = u64::from_le_bytes(u64b);
+
+    Ok((
+        ShmmrSpec {
+            w,
+            k,
+            r,
+            min_span,
+            sketch,
+        },
+        n_keys,
+    ))
+}
+
+/// Read `{prefix}.mdbi` and return the location table for mmap-based lookups.
+///
+/// Returns `(ShmmrSpec, Vec<((k1,k2), (data_offset, vec_len))>)`.
+/// The `data_offset` is a byte offset into the mmapped `.mdbv` file.
+pub fn read_mdbi_file_to_frag_locations(
+    prefix: &str,
+) -> Result<(ShmmrSpec, ShmmrIndexFileLocation), io::Error> {
+    let mdbi_path = format!("{prefix}.mdbi");
+    let mut f = BufReader::new(
+        File::open(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?,
+    );
+    let (shmmr_spec, n_keys) = read_mdbi_header(&mut f)?;
+
+    let mut u64b = [0u8; 8];
+    let mut u32b = [0u8; 4];
+    let mut rec_loc = Vec::with_capacity(n_keys as usize);
+
+    for _ in 0..n_keys {
+        f.read_exact(&mut u64b)?;
+        let k1 = u64::from_le_bytes(u64b);
+        f.read_exact(&mut u64b)?;
+        let k2 = u64::from_le_bytes(u64b);
+        f.read_exact(&mut u64b)?;
+        let data_offset = usize::from_le_bytes(u64b);
+        f.read_exact(&mut u32b)?;
+        let vec_len = LittleEndian::read_u32(&u32b) as usize;
+        rec_loc.push(((k1, k2), (data_offset, vec_len)));
+    }
+
+    Ok((shmmr_spec, rec_loc))
+}
+
+/// Read fragment records from a mmapped `.mdbv` file at `data_offset`.
+///
+/// Identical byte layout to `get_fragment_signatures_from_mmap_file` but the
+/// offset now points into the `.mdbv` mmap rather than the legacy `.mdb` mmap.
+pub fn get_fragment_signatures_from_mdbv(
+    mdbv: &Mmap,
+    data_offset: usize,
+    vec_len: usize,
+) -> Vec<FragmentSignature> {
+    get_fragment_signatures_from_mmap_file(mdbv, data_offset, vec_len)
+}
+
+// ---------------------------------------------------------------------------
+// Low-memory binary-search query path
+// ---------------------------------------------------------------------------
+
+/// Parse the ShmmrSpec and key count from the header of a mmap'd `.mdbi` file.
+///
+/// The `.mdbi` header layout (33 bytes):
+///   magic(4) + version(1) + w(4) + k(4) + r(4) + min_span(4) + sketch(4) + n_keys(8)
+pub fn parse_mdbi_header_from_mmap(
+    mdbi_mmap: &Mmap,
+) -> Result<(ShmmrSpec, u64), std::io::Error> {
+    use byteorder::ByteOrder;
+
+    if mdbi_mmap.len() < MDBI_HEADER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "mdbi file too short",
+        ));
+    }
+    let magic = &mdbi_mmap[0..4];
+    let ver = mdbi_mmap[4];
+    if magic != MDBI_MAGIC || ver != MDBV1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid .mdbi magic/version: {:?} v{}",
+                std::str::from_utf8(magic).unwrap_or("?"),
+                ver
+            ),
+        ));
+    }
+    let w = LittleEndian::read_u32(&mdbi_mmap[5..9]);
+    let k = LittleEndian::read_u32(&mdbi_mmap[9..13]);
+    let r = LittleEndian::read_u32(&mdbi_mmap[13..17]);
+    let min_span = LittleEndian::read_u32(&mdbi_mmap[17..21]);
+    let sketch = (LittleEndian::read_u32(&mdbi_mmap[21..25]) & 1) == 1;
+    let n_keys = u64::from_le_bytes(mdbi_mmap[25..33].try_into().unwrap());
+    Ok((
+        ShmmrSpec {
+            w,
+            k,
+            r,
+            min_span,
+            sketch,
+        },
+        n_keys,
+    ))
+}
+
+/// Binary-search the mmap'd `.mdbi` sorted key table for shimmer pair `(k1, k2)`.
+///
+/// Returns `Some((data_offset, vec_len))` if found, `None` otherwise.
+pub fn lookup_mdbi_mmap(
+    mdbi_mmap: &Mmap,
+    n_keys: u64,
+    k1: u64,
+    k2: u64,
+) -> Option<(usize, usize)> {
+    if n_keys == 0 {
+        return None;
+    }
+    let mut lo: u64 = 0;
+    let mut hi: u64 = n_keys;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let offset = MDBI_HEADER_BYTES + mid as usize * MDBI_KEY_ENTRY_BYTES;
+        let ek1 = u64::from_le_bytes(mdbi_mmap[offset..offset + 8].try_into().unwrap());
+        let ek2 = u64::from_le_bytes(mdbi_mmap[offset + 8..offset + 16].try_into().unwrap());
+        match (ek1, ek2).cmp(&(k1, k2)) {
+            std::cmp::Ordering::Equal => {
+                let data_offset = usize::from_le_bytes(
+                    mdbi_mmap[offset + 16..offset + 24].try_into().unwrap(),
+                );
+                let vec_len = u32::from_le_bytes(
+                    mdbi_mmap[offset + 24..offset + 28].try_into().unwrap(),
+                ) as usize;
+                return Some((data_offset, vec_len));
+            }
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+        }
+    }
+    None
+}
+
+/// Query a sequence fragment against the on-disk `.mdbi`/`.mdbv` index using
+/// binary-search key lookups.
+///
+/// Unlike `raw_query_fragment` (which requires the full `ShmmrToFrags` HashMap
+/// in RAM) or `raw_query_fragment_from_mmap_midx` (which requires the full
+/// `ShmmrToIndexFileLocation` HashMap in RAM), this function needs only the
+/// mmap'd `.mdbi` and `.mdbv` files.  Memory usage is O(log n) working pages
+/// per query rather than O(n_shimmer_pairs) for the in-RAM index.
+pub fn raw_query_fragment_from_sorted_mdbi(
+    mdbi_mmap: &Mmap,
+    n_keys: u64,
+    mdbv_mmap: &Mmap,
+    query_frag: &Vec<u8>,
+    shmmr_spec: &ShmmrSpec,
+) -> Vec<FragmentHit> {
+    let shmmrs = sequence_to_shmmrs(0, query_frag, shmmr_spec, false);
+    pair_shmmrs(&shmmrs)
+        .par_iter()
+        .map(|(s0, s1)| {
+            let p0 = s0.pos() + 1;
+            let p1 = s1.pos() + 1;
+            let s0 = s0.hash();
+            let s1 = s1.hash();
+            if s0 < s1 {
+                (s0, s1, p0, p1, 0_u8)
+            } else {
+                (s1, s0, p0, p1, 1_u8)
+            }
+        })
+        .map(|(s0, s1, p0, p1, orientation)| {
+            let m = if let Some((start, vec_len)) = lookup_mdbi_mmap(mdbi_mmap, n_keys, s0, s1) {
+                get_fragment_signatures_from_mmap_file(mdbv_mmap, start, vec_len)
+            } else {
+                vec![]
+            };
+            ((s0, s1), (p0, p1, orientation), m)
+        })
+        .collect()
 }

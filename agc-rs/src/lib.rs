@@ -5,4 +5,5 @@ pub mod error;
 pub mod fasta_io;
 pub mod kmer;
 pub mod lz_diff;
+pub mod merge;
 pub mod segment;

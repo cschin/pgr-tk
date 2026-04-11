@@ -1,5 +1,30 @@
+use std::cell::RefCell;
+
 use crate::error::{AgcError, Result};
 use crate::lz_diff::{LzDiff, LzVersion};
+
+// ---------------------------------------------------------------------------
+// Thread-local ZSTD compressor — one context per rayon worker thread.
+//
+// Allocating a fresh ZSTD_CCtx (~1–8 MB) per `encode_all` call at level 19
+// was triggering hundreds of millions of minor page faults when 50 000+
+// segments were compressed concurrently (reference path).  Re-using a single
+// context per thread cuts allocator pressure to O(n_threads) instead of
+// O(n_segments).
+//
+// Compression level 9 gives a good size/speed tradeoff and matches the level
+// commonly used in C++ AGC.  Level 19 has diminishing size returns but is
+// orders of magnitude slower.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static ZSTD_CTX: RefCell<zstd::bulk::Compressor<'static>> = RefCell::new(
+        zstd::bulk::Compressor::new(9).expect("zstd compressor init"),
+    );
+    static ZSTD_DCTX: RefCell<zstd::bulk::Decompressor<'static>> = RefCell::new(
+        zstd::bulk::Decompressor::new().expect("zstd decompressor init"),
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Compression parameters
@@ -11,6 +36,8 @@ pub struct Params {
     pub min_match_len: u32,
     /// Target segment size in bases (default 60 000).
     pub segment_size: u32,
+    /// K-mer length used to find splitter boundaries (AGC strategy, default 31).
+    pub splitter_k: u32,
     /// LZ-diff encoding version (default V1).
     pub lz_version: LzVersion,
 }
@@ -20,6 +47,7 @@ impl Default for Params {
         Self {
             min_match_len: 18,
             segment_size: 60_000,
+            splitter_k: 31,
             lz_version: LzVersion::V1,
         }
     }
@@ -32,35 +60,77 @@ impl Default for Params {
 /// ZSTD-compress a 2-bit encoded reference sequence for storage in the
 /// `segment_group.ref_data` column.
 ///
-/// Compression level 13 is used for a good size/speed tradeoff.
+/// Uses a thread-local compressor context (level 9) so that each rayon
+/// worker thread reuses one ZSTD_CCtx across all segments it processes,
+/// avoiding the per-call context allocation overhead that causes page-fault
+/// pressure when tens of thousands of segments are compressed in parallel.
 pub fn compress_reference(reference: &[u8]) -> Result<Vec<u8>> {
-    zstd::encode_all(reference, 13).map_err(|e| AgcError::Zstd(e.to_string()))
+    ZSTD_CTX.with(|ctx| {
+        ctx.borrow_mut()
+            .compress(reference)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 /// Decompress a `ref_data` BLOB back to its 2-bit encoded sequence.
+///
+/// Uses a thread-local decompressor context so that parallel calls in
+/// `build_fallback_index` (one per segment group) do not each allocate a
+/// new ZSTD_DCtx.  `bulk::Compressor` stores the content size in the frame
+/// header, so we read the exact capacity from the frame rather than guessing.
 pub fn decompress_reference(blob: &[u8]) -> Result<Vec<u8>> {
-    zstd::decode_all(blob).map_err(|e| AgcError::Zstd(e.to_string()))
+    let capacity = zstd::zstd_safe::get_frame_content_size(blob)
+        .ok()
+        .flatten()
+        .unwrap_or(blob.len() as u64 * 20) as usize;
+    ZSTD_DCTX.with(|ctx| {
+        ctx.borrow_mut()
+            .decompress(blob, capacity)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 // ---------------------------------------------------------------------------
-// Delta compression
+// Delta encoding (raw — no ZSTD at this layer)
 // ---------------------------------------------------------------------------
 
 /// Encode `query` as an LZ-diff delta against the reference already loaded
-/// into `lz` (i.e. `lz.prepare()` must have been called beforehand), then
-/// ZSTD-compress the resulting byte stream.
+/// into `lz` and return the raw byte stream.
 ///
-/// Returns the BLOB suitable for the `segment.delta_data` column.
-pub fn compress_delta(lz: &mut LzDiff, query: &[u8]) -> Result<Vec<u8>> {
-    let encoded = lz.encode(query);
-    zstd::encode_all(encoded.as_slice(), 13).map_err(|e| AgcError::Zstd(e.to_string()))
+/// Compress the result with [`compress_delta_data`] before storing in
+/// `segment.delta_data`.
+pub fn compress_delta(lz: &LzDiff, query: &[u8]) -> Result<Vec<u8>> {
+    Ok(lz.encode(query))
 }
 
-/// Decompress a `delta_data` BLOB and decode the LZ-diff stream against the
-/// reference stored in `lz`.
-pub fn decompress_delta(lz: &LzDiff, blob: &[u8]) -> Result<Vec<u8>> {
-    let encoded = zstd::decode_all(blob).map_err(|e| AgcError::Zstd(e.to_string()))?;
-    lz.decode(&encoded)
+/// Decode a raw LZ-diff byte stream against the reference stored in `lz`.
+pub fn decompress_delta(lz: &LzDiff, raw: &[u8]) -> Result<Vec<u8>> {
+    lz.decode(raw)
+}
+
+/// ZSTD-compress a single raw LZ-diff delta for storage in `segment.delta_data`.
+///
+/// Uses the thread-local compressor so that parallel calls within the append
+/// path do not each allocate a new ZSTD_CCtx.
+pub fn compress_delta_data(raw: &[u8]) -> Result<Vec<u8>> {
+    ZSTD_CTX.with(|ctx| {
+        ctx.borrow_mut()
+            .compress(raw)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
+}
+
+/// Decompress a `segment.delta_data` BLOB back to the raw LZ-diff bytes.
+pub fn decompress_delta_data(blob: &[u8]) -> Result<Vec<u8>> {
+    let capacity = zstd::zstd_safe::get_frame_content_size(blob)
+        .ok()
+        .flatten()
+        .unwrap_or(blob.len() as u64 * 20) as usize;
+    ZSTD_DCTX.with(|ctx| {
+        ctx.borrow_mut()
+            .decompress(blob, capacity)
+            .map_err(|e| AgcError::Zstd(e.to_string()))
+    })
 }
 
 // ---------------------------------------------------------------------------
