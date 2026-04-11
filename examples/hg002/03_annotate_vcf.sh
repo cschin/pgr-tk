@@ -100,7 +100,7 @@ bcftools query \
     -f '%CHROM\t%POS\t%REF\t%ALT\t%INFO/CLNSIG\t%INFO/CLNDN\n' \
     -i 'INFO/CLNSIG!="."' \
     "$OUT/hg002.annotated.sorted.clinvar.vcf.gz" \
-    | head -20
+    | head -20 || true
 
 echo
 echo "Output: $OUT/hg002.annotated.sorted.clinvar.vcf.gz"
