@@ -11,6 +11,7 @@ use svg::node::{element, Node};
 use svg::Document;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct CtgMapRec {
     t_name: String,
     ts: u32,
