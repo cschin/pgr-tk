@@ -1688,6 +1688,11 @@ const MDBV_HEADER_BYTES: usize = 5;
 /// Size of one fragment record (same as legacy .mdb): 4×u32 + 1×u8 = 17 bytes.
 const FRAG_RECORD_BYTES: usize = 17;
 
+/// Header size of .mdbi: magic(4) + version(1) + 5×u32 ShmmrSpec(20) + n_keys u64(8) = 33 bytes.
+pub const MDBI_HEADER_BYTES: usize = 33;
+/// Size of one key entry in .mdbi: k1(8) + k2(8) + data_offset(8) + vec_len(4) = 28 bytes.
+pub const MDBI_KEY_ENTRY_BYTES: usize = 28;
+
 /// Write the shimmer map to `{prefix}.mdbi` (sorted key index) and
 /// `{prefix}.mdbv` (fragment values).
 ///
@@ -2152,4 +2157,129 @@ pub fn get_fragment_signatures_from_mdbv(
     vec_len: usize,
 ) -> Vec<FragmentSignature> {
     get_fragment_signatures_from_mmap_file(mdbv, data_offset, vec_len)
+}
+
+// ---------------------------------------------------------------------------
+// Low-memory binary-search query path
+// ---------------------------------------------------------------------------
+
+/// Parse the ShmmrSpec and key count from the header of a mmap'd `.mdbi` file.
+///
+/// The `.mdbi` header layout (33 bytes):
+///   magic(4) + version(1) + w(4) + k(4) + r(4) + min_span(4) + sketch(4) + n_keys(8)
+pub fn parse_mdbi_header_from_mmap(
+    mdbi_mmap: &Mmap,
+) -> Result<(ShmmrSpec, u64), std::io::Error> {
+    use byteorder::ByteOrder;
+
+    if mdbi_mmap.len() < MDBI_HEADER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "mdbi file too short",
+        ));
+    }
+    let magic = &mdbi_mmap[0..4];
+    let ver = mdbi_mmap[4];
+    if magic != MDBI_MAGIC || ver != MDBV1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid .mdbi magic/version: {:?} v{}",
+                std::str::from_utf8(magic).unwrap_or("?"),
+                ver
+            ),
+        ));
+    }
+    let w = LittleEndian::read_u32(&mdbi_mmap[5..9]);
+    let k = LittleEndian::read_u32(&mdbi_mmap[9..13]);
+    let r = LittleEndian::read_u32(&mdbi_mmap[13..17]);
+    let min_span = LittleEndian::read_u32(&mdbi_mmap[17..21]);
+    let sketch = (LittleEndian::read_u32(&mdbi_mmap[21..25]) & 1) == 1;
+    let n_keys = u64::from_le_bytes(mdbi_mmap[25..33].try_into().unwrap());
+    Ok((
+        ShmmrSpec {
+            w,
+            k,
+            r,
+            min_span,
+            sketch,
+        },
+        n_keys,
+    ))
+}
+
+/// Binary-search the mmap'd `.mdbi` sorted key table for shimmer pair `(k1, k2)`.
+///
+/// Returns `Some((data_offset, vec_len))` if found, `None` otherwise.
+pub fn lookup_mdbi_mmap(
+    mdbi_mmap: &Mmap,
+    n_keys: u64,
+    k1: u64,
+    k2: u64,
+) -> Option<(usize, usize)> {
+    if n_keys == 0 {
+        return None;
+    }
+    let mut lo: u64 = 0;
+    let mut hi: u64 = n_keys;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let offset = MDBI_HEADER_BYTES + mid as usize * MDBI_KEY_ENTRY_BYTES;
+        let ek1 = u64::from_le_bytes(mdbi_mmap[offset..offset + 8].try_into().unwrap());
+        let ek2 = u64::from_le_bytes(mdbi_mmap[offset + 8..offset + 16].try_into().unwrap());
+        match (ek1, ek2).cmp(&(k1, k2)) {
+            std::cmp::Ordering::Equal => {
+                let data_offset = usize::from_le_bytes(
+                    mdbi_mmap[offset + 16..offset + 24].try_into().unwrap(),
+                );
+                let vec_len = u32::from_le_bytes(
+                    mdbi_mmap[offset + 24..offset + 28].try_into().unwrap(),
+                ) as usize;
+                return Some((data_offset, vec_len));
+            }
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+        }
+    }
+    None
+}
+
+/// Query a sequence fragment against the on-disk `.mdbi`/`.mdbv` index using
+/// binary-search key lookups.
+///
+/// Unlike `raw_query_fragment` (which requires the full `ShmmrToFrags` HashMap
+/// in RAM) or `raw_query_fragment_from_mmap_midx` (which requires the full
+/// `ShmmrToIndexFileLocation` HashMap in RAM), this function needs only the
+/// mmap'd `.mdbi` and `.mdbv` files.  Memory usage is O(log n) working pages
+/// per query rather than O(n_shimmer_pairs) for the in-RAM index.
+pub fn raw_query_fragment_from_sorted_mdbi(
+    mdbi_mmap: &Mmap,
+    n_keys: u64,
+    mdbv_mmap: &Mmap,
+    query_frag: &Vec<u8>,
+    shmmr_spec: &ShmmrSpec,
+) -> Vec<FragmentHit> {
+    let shmmrs = sequence_to_shmmrs(0, query_frag, shmmr_spec, false);
+    pair_shmmrs(&shmmrs)
+        .iter()
+        .map(|(s0, s1)| {
+            let p0 = s0.pos() + 1;
+            let p1 = s1.pos() + 1;
+            let s0 = s0.hash();
+            let s1 = s1.hash();
+            if s0 < s1 {
+                (s0, s1, p0, p1, 0_u8)
+            } else {
+                (s1, s0, p0, p1, 1_u8)
+            }
+        })
+        .map(|(s0, s1, p0, p1, orientation)| {
+            let m = if let Some((start, vec_len)) = lookup_mdbi_mmap(mdbi_mmap, n_keys, s0, s1) {
+                get_fragment_signatures_from_mmap_file(mdbv_mmap, start, vec_len)
+            } else {
+                vec![]
+            };
+            ((s0, s1), (p0, p1, orientation), m)
+        })
+        .collect()
 }

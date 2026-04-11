@@ -6,7 +6,11 @@ use crate::aln;
 use crate::fasta_io::FastaReader;
 use crate::graph_utils::{AdjList, ShmmrGraphNode};
 pub use crate::seq_db::pair_shmmrs;
-use crate::seq_db::{self, raw_query_fragment, raw_query_fragment_from_mmap_midx, GetSeq};
+use crate::seq_db::{
+    self, get_fragment_signatures_from_mmap_file, parse_mdbi_header_from_mmap,
+    raw_query_fragment, raw_query_fragment_from_mmap_midx, raw_query_fragment_from_sorted_mdbi,
+    GetSeq,
+};
 pub use crate::shmmrutils::{sequence_to_shmmrs, ShmmrSpec};
 
 use crate::agc_io::{self, AGCSeqDB};
@@ -37,6 +41,19 @@ pub enum Backend {
     UNKNOWN,
 }
 
+/// AGC-backed index for low-memory operation.
+///
+/// Avoids loading the large `frag_location_map` HashMap into RAM.  Instead,
+/// both `.mdbi` (sorted key table) and `.mdbv` (fragment values) are kept as
+/// memory maps, and shimmer-pair lookups use binary search on the sorted
+/// `.mdbi` — O(log n) accessed pages per lookup rather than an in-RAM HashMap.
+pub struct LowMemAGCSeqDB {
+    pub agc_file: agc_io::AGCFile,
+    pub mdbi_mmap: Mmap,
+    pub mdbi_n_keys: u64,
+    pub mdbv_mmap: Mmap,
+}
+
 pub struct SeqIndexDB {
     /// Rust internal: store the specification of the shmmr_spec
     pub shmmr_spec: Option<ShmmrSpec>,
@@ -44,6 +61,8 @@ pub struct SeqIndexDB {
     pub seq_db: Option<seq_db::CompactSeqDB>,
     /// Rust internal: store the agc file and the index
     pub agc_db: Option<AGCSeqDB>,
+    /// Low-memory AGC backend: binary-search on mmap'd .mdbi, no HashMap.
+    pub low_mem_agc_db: Option<LowMemAGCSeqDB>,
     /// a dictionary maps (ctg_name, source) -> (id, len)
     #[allow(clippy::type_complexity)]
     pub seq_index: Option<FxHashMap<(String, Option<String>), (u32, u32)>>,
@@ -51,6 +70,10 @@ pub struct SeqIndexDB {
     #[allow(clippy::type_complexity)]
     pub seq_info: Option<FxHashMap<u32, (String, Option<String>, u32)>>,
     pub backend: Backend,
+    /// Optional fully in-RAM shimmer index, loaded via `load_index_to_memory()`.
+    /// When populated, `query_fragment_to_hps_from_mmap_file` uses this map
+    /// instead of page-faulting through the mmap, trading RAM for lower latency.
+    pub mem_frag_map: Option<seq_db::ShmmrToFrags>,
 }
 
 impl Default for SeqIndexDB {
@@ -64,10 +87,12 @@ impl SeqIndexDB {
         SeqIndexDB {
             seq_db: None,
             agc_db: None,
+            low_mem_agc_db: None,
             shmmr_spec: None,
             seq_index: None,
             seq_info: None,
             backend: Backend::UNKNOWN,
+            mem_frag_map: None,
         }
     }
 
@@ -90,6 +115,75 @@ impl SeqIndexDB {
             agc_file,
             frag_location_map,
             frag_map_file,
+        });
+        self.backend = Backend::AGC;
+        self.shmmr_spec = Some(shmmr_spec);
+
+        let (seq_index, seq_info) = seq_db::read_seq_index_sqlite(&prefix)?;
+        self.seq_index = Some(seq_index);
+        self.seq_info = Some(seq_info);
+        Ok(())
+    }
+
+    /// Load the shimmer index from the mmap'd `.mdbv` file fully into RAM.
+    ///
+    /// After calling this, `query_fragment_to_hps_from_mmap_file` will perform
+    /// all lookups against the in-memory `ShmmrToFrags` map rather than
+    /// page-faulting through the mmap.  Sequence data continues to be fetched
+    /// from the AGC archive on demand.
+    ///
+    /// This trades a one-time upfront allocation (proportional to the `.mdbv`
+    /// file size) for lower per-query latency once the data is resident.
+    pub fn load_index_to_memory(&mut self) -> Result<(), std::io::Error> {
+        let agc_db = self.agc_db.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "load_index_to_memory requires an AGC index loaded via load_from_agc_index",
+            )
+        })?;
+
+        let mut frag_map = seq_db::ShmmrToFrags::default();
+        for (&shmmr_pair, &(start, vec_len)) in &agc_db.frag_location_map {
+            let sigs =
+                get_fragment_signatures_from_mmap_file(&agc_db.frag_map_file, start, vec_len);
+            frag_map.insert(shmmr_pair, sigs);
+        }
+        self.mem_frag_map = Some(frag_map);
+        Ok(())
+    }
+
+    /// Load the AGC-backed shimmer index in low-memory mode.
+    ///
+    /// Unlike `load_from_agc_index`, this does **not** build the
+    /// `frag_location_map` HashMap in RAM.  Instead it memory-maps both the
+    /// `.mdbi` (sorted key table) and `.mdbv` (fragment values) files directly.
+    /// Shimmer-pair lookups during queries use binary search on the mmap'd
+    /// `.mdbi`, accessing only O(log n) pages per lookup.
+    ///
+    /// Use this on machines where the in-RAM HashMap would exceed available
+    /// memory.  Queries will be somewhat slower than the default (HashMap O(1)
+    /// vs binary-search O(log n)) but use far less resident memory.
+    pub fn load_from_agc_index_low_memory(&mut self, prefix: String) -> Result<(), std::io::Error> {
+        let mdbi_path = format!("{prefix}.mdbi");
+        let mdbi_file = File::open(&mdbi_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?;
+        let mdbi_mmap = unsafe { Mmap::map(&mdbi_file)? };
+        let (shmmr_spec, mdbi_n_keys) = parse_mdbi_header_from_mmap(&mdbi_mmap)?;
+
+        let mdbv_path = format!("{prefix}.mdbv");
+        let mdbv_file = File::open(&mdbv_path)
+            .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
+        let mdbv_mmap = unsafe { Mmap::map(&mdbv_file)? };
+
+        let agc_path =
+            seq_db::read_agc_path_from_midx(&prefix).unwrap_or_else(|| format!("{prefix}.agcrs"));
+        let agc_file = agc_io::AGCFile::new(agc_path)?;
+
+        self.low_mem_agc_db = Some(LowMemAGCSeqDB {
+            agc_file,
+            mdbi_mmap,
+            mdbi_n_keys,
+            mdbv_mmap,
         });
         self.backend = Backend::AGC;
         self.shmmr_spec = Some(shmmr_spec);
@@ -261,6 +355,25 @@ impl SeqIndexDB {
     ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
         let shmmr_spec = self.shmmr_spec.as_ref()?;
 
+        // If the caller pre-loaded the index into RAM via load_index_to_memory(),
+        // use the in-memory map directly and skip all mmap page faults.
+        if let Some(frag_map) = &self.mem_frag_map {
+            let raw_query_hits = raw_query_fragment(frag_map, seq, shmmr_spec);
+            let res = aln::query_fragment_to_hps(
+                raw_query_hits,
+                seq,
+                shmmr_spec,
+                penalty,
+                max_count,
+                max_count_query,
+                max_count_target,
+                max_aln_span,
+                max_gap,
+                oriented,
+            );
+            return Some(res);
+        }
+
         let (frag_location_map, frag_map_file) = if self.backend == Backend::AGC {
             let db = self
                 .agc_db
@@ -288,6 +401,48 @@ impl SeqIndexDB {
         Some(res)
     }
 
+    /// Query a fragment using the low-memory backend (binary search on mmap'd `.mdbi`).
+    ///
+    /// Requires the DB to have been loaded via `load_from_agc_index_low_memory`.
+    #[allow(clippy::type_complexity)]
+    pub fn query_fragment_to_hps_low_memory(
+        &self,
+        seq: &Vec<u8>,
+        penalty: f32,
+        max_count: Option<u32>,
+        max_count_query: Option<u32>,
+        max_count_target: Option<u32>,
+        max_aln_span: Option<u32>,
+        max_gap: Option<u32>,
+        oriented: bool,
+    ) -> Option<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
+        let shmmr_spec = self.shmmr_spec.as_ref()?;
+        let db = self
+            .low_mem_agc_db
+            .as_ref()
+            .expect("low_mem_agc_db not loaded; call load_from_agc_index_low_memory first");
+        let raw_query_hits = raw_query_fragment_from_sorted_mdbi(
+            &db.mdbi_mmap,
+            db.mdbi_n_keys,
+            &db.mdbv_mmap,
+            seq,
+            shmmr_spec,
+        );
+        let res = aln::query_fragment_to_hps(
+            raw_query_hits,
+            seq,
+            shmmr_spec,
+            penalty,
+            max_count,
+            max_count_query,
+            max_count_target,
+            max_aln_span,
+            max_gap,
+            oriented,
+        );
+        Some(res)
+    }
+
     pub fn get_sub_seq(
         &self,
         sample_name: String,
@@ -297,10 +452,8 @@ impl SeqIndexDB {
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
             Backend::AGC => Ok(self
-                .agc_db
-                .as_ref()
-                .expect("invariant: agc_db set when backend is AGC")
-                .agc_file
+                .agc_file_ref()
+                .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                 .get_sub_seq(sample_name, ctg_name, bgn, end)),
             Backend::MEMORY | Backend::FASTX => {
                 let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
@@ -330,10 +483,8 @@ impl SeqIndexDB {
     ) -> Result<Vec<u8>, std::io::Error> {
         match self.backend {
             Backend::AGC => Ok(self
-                .agc_db
-                .as_ref()
-                .expect("invariant: agc_db set when backend is AGC")
-                .agc_file
+                .agc_file_ref()
+                .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                 .get_seq(sample_name, ctg_name)),
             Backend::MEMORY | Backend::FASTX => {
                 let not_found = format!("contig '{ctg_name}' not found in sample '{sample_name}'");
@@ -376,10 +527,8 @@ impl SeqIndexDB {
                     .expect("invariant: sample_name set in seq_info")
                     .clone();
                 Ok(self
-                    .agc_db
-                    .as_ref()
-                    .expect("invariant: agc_db set when backend is AGC")
-                    .agc_file
+                    .agc_file_ref()
+                    .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                     .get_seq(sample_name, ctg_name))
             }
             Backend::MEMORY | Backend::FASTX => Ok(self
@@ -419,10 +568,8 @@ impl SeqIndexDB {
                     .expect("invariant: sample_name set in seq_info")
                     .clone();
                 Ok(self
-                    .agc_db
-                    .as_ref()
-                    .expect("invariant: agc_db set when backend is AGC")
-                    .agc_file
+                    .agc_file_ref()
+                    .expect("invariant: agc_db or low_mem_agc_db set when backend is AGC")
                     .get_sub_seq(sample_name, ctg_name, bgn, end))
             }
             Backend::MEMORY | Backend::FASTX => Ok(self
@@ -962,6 +1109,16 @@ impl SeqIndexDB {
 }
 
 impl SeqIndexDB {
+    /// Return a reference to the AGC file regardless of whether the normal or
+    /// low-memory AGC backend is active.
+    fn agc_file_ref(&self) -> Option<&agc_io::AGCFile> {
+        if let Some(db) = &self.agc_db {
+            Some(&db.agc_file)
+        } else {
+            self.low_mem_agc_db.as_ref().map(|db| &db.agc_file)
+        }
+    }
+
     // depending on the storage type, return the corresponded index
     pub fn get_shmmr_map_internal(&self) -> Option<&seq_db::ShmmrToFrags> {
         match self.backend {

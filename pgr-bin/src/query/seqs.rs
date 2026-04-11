@@ -1,4 +1,4 @@
-use clap::{self, Parser};
+use clap::{self, Parser, ValueEnum};
 use pgr_db::ext::{get_fastx_reader, GZFastaReader, SeqIndexDB};
 use pgr_db::fasta_io::SeqRec;
 use rayon::prelude::*;
@@ -6,6 +6,25 @@ use rustc_hash::FxHashMap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+
+/// Controls how much RAM the shimmer index occupies during queries.
+///
+///   moderate  (default) — frag_location_map HashMap in RAM + mmap'd .mdbv.
+///             Balanced: fast O(1) shimmer lookups, OS manages .mdbv page cache.
+///
+///   high      — entire ShmmrToFrags index loaded into RAM up front.
+///             Highest memory use; eliminates all mmap page faults after loading.
+///             Best throughput on machines with abundant RAM.
+///
+///   low       — no HashMap in RAM; both .mdbi and .mdbv are kept as mmaps.
+///             Shimmer lookups use binary search on the sorted .mdbi (O(log n)).
+///             Lowest resident memory; useful when the HashMap alone would OOM.
+#[derive(Debug, Clone, ValueEnum, PartialEq, Eq)]
+pub enum MemoryMode {
+    Moderate,
+    High,
+    Low,
+}
 
 /// Query a PGR-TK pangenome sequence database,
 /// output the hit summary and generate fasta files from the target sequences
@@ -76,6 +95,13 @@ pub struct Args {
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
     #[clap(long, default_value_t = 0)]
     pub number_of_thread: usize,
+
+    /// shimmer-index memory strategy (AGC backend only):
+    ///   moderate — HashMap in RAM + mmap .mdbv (default, balanced);
+    ///   high     — full index loaded into RAM, no page faults after load;
+    ///   low      — no HashMap, binary-search on mmap'd .mdbi (lowest RAM use).
+    #[clap(long, value_enum, default_value_t = MemoryMode::Moderate)]
+    pub memory_mode: MemoryMode,
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
@@ -119,8 +145,25 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     } else {
         let stderr = io::stderr();
         let mut handle = stderr.lock();
-        let _ = handle.write_all(b"Read the input as a AGC backed index database files.\n");
-        seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
+        match args.memory_mode {
+            MemoryMode::Low => {
+                let _ = handle.write_all(
+                    b"memory-mode=low: loading AGC index via binary-search (no HashMap).\n",
+                );
+                seq_index_db.load_from_agc_index_low_memory(args.pgr_db_prefix)?;
+            }
+            MemoryMode::High => {
+                let _ = handle
+                    .write_all(b"memory-mode=high: loading AGC index + full shimmer index into RAM.\n");
+                seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
+                seq_index_db.load_index_to_memory()?;
+            }
+            MemoryMode::Moderate => {
+                let _ = handle
+                    .write_all(b"memory-mode=moderate: loading AGC index with HashMap + mmap.\n");
+                seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
+            }
+        }
     }
     let prefix = Path::new(&args.output_prefix);
 
@@ -132,7 +175,18 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             let query_seq = seq_rec.seq;
             let q_len = query_seq.len();
 
-            let query_results = if !args.fastx_file {
+            let query_results = if args.memory_mode == MemoryMode::Low {
+                seq_index_db.query_fragment_to_hps_low_memory(
+                    &query_seq,
+                    args.gap_penalty_factor,
+                    Some(args.max_count),
+                    Some(args.max_query_count),
+                    Some(args.max_target_count),
+                    Some(args.max_aln_chain_span),
+                    None,
+                    false,
+                )
+            } else if !args.fastx_file {
                 seq_index_db.query_fragment_to_hps_from_mmap_file(
                     &query_seq,
                     args.gap_penalty_factor,
