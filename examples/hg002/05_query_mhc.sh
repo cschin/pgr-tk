@@ -160,6 +160,11 @@ with opener(sys.argv[1], 'rt') as fh:
     echo "    Hap0:      $HAP0_SAMPLE"
     echo "    Hap1:      $HAP1_SAMPLE"
 
+    # Force distinct sample names: hap0 = maternal, hap1 = paternal
+    HAP0_SAMPLE="${HAP0_SAMPLE}_mat"
+    HAP1_SAMPLE="${HAP1_SAMPLE}_pat"
+    echo "    (using sample names: $REF_SAMPLE / $HAP0_SAMPLE / $HAP1_SAMPLE)"
+
     rm -f "$ARCHIVE" "$ARCHIVE-wal" "$ARCHIVE-shm"
     "$AGC_RS" create --output "$ARCHIVE" --sample "$REF_SAMPLE"  "$REF_INPUT"
     "$AGC_RS" append "$ARCHIVE"          --sample "$HAP0_SAMPLE" "$HAP0_INPUT"
