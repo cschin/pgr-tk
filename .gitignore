@@ -14,3 +14,9 @@ docker/github-build
 pgr-web/dist/*
 examples/*/example_output/
 examples/*/downloads/
+.DS_Store
+AlnMapTechReport/*.aux
+AlnMapTechReport/*.log
+AlnMapTechReport/*.out
+AlnMapTechReport/*.toc
+AlnMapTechReport/*.pdf
