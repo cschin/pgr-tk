@@ -39,9 +39,15 @@ MHC_FA="$OUT/mhc_query.fa"
 OUT_PREFIX="$OUT/mhc_hits"
 
 # ---------------------------------------------------------------------------
-# 1. Build 2-sample archive (skip if already built)
+# 1. Build 2-sample archive (skip if already built and contains all 3 samples)
 # ---------------------------------------------------------------------------
-if [[ ! -f "$ARCHIVE" ]]; then
+_archive_ok=false
+if [[ -f "$ARCHIVE" ]]; then
+    _sample_count=$("$AGC_RS" list "$ARCHIVE" 2>/dev/null | wc -l || echo 0)
+    [[ "$_sample_count" -ge 3 ]] && _archive_ok=true
+fi
+
+if ! $_archive_ok; then
     echo "=== [1] Building pangenome archive: $ARCHIVE ==="
 
     # Extract GRCh38 PanSN sample name from the FASTA header
@@ -80,13 +86,18 @@ with gzip.open(sys.argv[1], 'rt') as fh:
     "$AGC_RS" append "$ARCHIVE" --sample "$HAP1_SAMPLE" "$HAP1_FA"
     "$AGC_RS" info "$ARCHIVE"
 else
-    echo "[SKIP] $ARCHIVE already exists"
+    echo "[SKIP] $ARCHIVE already exists (3 samples verified)"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Build shimmer index (skip if already built)
+# 2. Build shimmer index (skip if already built and non-empty)
 # ---------------------------------------------------------------------------
-if [[ ! -f "${DB_PREFIX}.mdbi" ]]; then
+_index_ok=false
+if [[ -f "${DB_PREFIX}.mdbi" && -s "${DB_PREFIX}.mdbi" && -f "${DB_PREFIX}.mdbv" && -s "${DB_PREFIX}.mdbv" ]]; then
+    _index_ok=true
+fi
+
+if ! $_index_ok; then
     echo
     echo "=== [2] Building shimmer index: $DB_PREFIX ==="
     "$PGR" index mdb \
