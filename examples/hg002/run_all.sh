@@ -10,6 +10,7 @@
 #   03  VCF annotation          → example_output/hg002.annotated.sorted.clinvar.vcf.gz
 #   04  GTF liftover + report   → example_output/liftover_report.html
 #   05  MHC pangenome query     → example_output/mhc_hits.000.hit
+#   06  Final e2e report        → example_output/e2e_report.html
 #
 # Run 00_download.sh first if you haven't already downloaded the input data.
 #
@@ -89,6 +90,11 @@ run_step "04 liftover gtf + report" \
 run_step "05 MHC pangenome query" \
     05_query_mhc.sh \
     "$OUT/mhc_hits.000.hit"
+
+run_step "06 final e2e report" \
+    06_generate_report.sh \
+    "$OUT/e2e_report.html" \
+    "$OUT/e2e_report_lite.html"
 
 echo
 echo "=== All steps complete ==="
