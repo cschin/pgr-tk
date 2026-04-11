@@ -1,6 +1,6 @@
 use flate2::bufread::MultiGzDecoder;
 
-use memmap2::Mmap;
+use memmap2::{Advice, Mmap};
 
 use crate::aln;
 use crate::fasta_io::FastaReader;
@@ -104,6 +104,8 @@ impl SeqIndexDB {
         let f = File::open(&mdbv_path)
             .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
         let frag_map_file = unsafe { Mmap::map(&f)? };
+        // Queries access .mdbv at random offsets; hint the OS not to readahead.
+        let _ = frag_map_file.advise(Advice::Random);
         let shmmr_spec = spec;
 
         // Use the AGC archive path recorded in the index; fall back to the
@@ -168,12 +170,15 @@ impl SeqIndexDB {
         let mdbi_file = File::open(&mdbi_path)
             .map_err(|e| io::Error::new(e.kind(), format!("{mdbi_path}: {e}")))?;
         let mdbi_mmap = unsafe { Mmap::map(&mdbi_file)? };
+        // Binary search accesses .mdbi at random offsets; suppress sequential readahead.
+        let _ = mdbi_mmap.advise(Advice::Random);
         let (shmmr_spec, mdbi_n_keys) = parse_mdbi_header_from_mmap(&mdbi_mmap)?;
 
         let mdbv_path = format!("{prefix}.mdbv");
         let mdbv_file = File::open(&mdbv_path)
             .map_err(|e| io::Error::new(e.kind(), format!("{mdbv_path}: {e}")))?;
         let mdbv_mmap = unsafe { Mmap::map(&mdbv_file)? };
+        let _ = mdbv_mmap.advise(Advice::Random);
 
         let agc_path =
             seq_db::read_agc_path_from_midx(&prefix).unwrap_or_else(|| format!("{prefix}.agcrs"));

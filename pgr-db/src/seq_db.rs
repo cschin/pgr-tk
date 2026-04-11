@@ -2261,7 +2261,7 @@ pub fn raw_query_fragment_from_sorted_mdbi(
 ) -> Vec<FragmentHit> {
     let shmmrs = sequence_to_shmmrs(0, query_frag, shmmr_spec, false);
     pair_shmmrs(&shmmrs)
-        .iter()
+        .par_iter()
         .map(|(s0, s1)| {
             let p0 = s0.pos() + 1;
             let p1 = s1.pos() + 1;
