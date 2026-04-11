@@ -1,4 +1,9 @@
-rustup default stable
+# Use the native toolchain for the current architecture
+if [[ "$(uname -m)" == "arm64" ]]; then
+    rustup default stable-aarch64-apple-darwin
+else
+    rustup default stable
+fi
 
 ## if necessary, install maturin with `cargo install --locked maturin`
 # cargo install --locked maturin
