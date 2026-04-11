@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pgrtk"
+version = "0.8.0"
+description = "PGR-TK: Pan-genome Reference Toolkit — Python bindings"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.0",
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+]
+
+[tool.maturin]
+python-source = "."
+module-name = "pgrtk.pgrtk"
+features = ["pyo3/extension-module"]
+
+[tool.uv]
+dev-dependencies = [
+    "maturin>=1.7",
+    "pytest>=8",
+]

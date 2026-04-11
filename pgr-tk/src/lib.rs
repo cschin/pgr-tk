@@ -12,7 +12,6 @@ use pgr_db::fasta_io;
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
-use pyo3::Python;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -77,6 +76,8 @@ impl SeqIndexDB {
             db_internal: pgr_db::ext::SeqIndexDB {
                 seq_db: None,
                 agc_db: None,
+                low_mem_agc_db: None,
+                mem_frag_map: None,
                 shmmr_spec: None,
                 seq_index: None,
                 seq_info: None,
@@ -1972,7 +1973,7 @@ pub fn shmmr_sparse_aln_consensus(
 /// into `pgrtk.*` scope to avoid using the verbose
 /// `pgrtk.pgrtk.*`.
 #[pymodule]
-fn pgrtk(_: Python, m: &PyModule) -> PyResult<()> {
+fn pgrtk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SeqIndexDB>()?;
     m.add_class::<AGCFile>()?;
     m.add_function(wrap_pyfunction!(sparse_aln, m)?)?;
