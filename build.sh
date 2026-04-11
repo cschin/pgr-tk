@@ -15,6 +15,15 @@ cargo build -p pgr-bin --release
 cargo install --path pgr-bin
 
 pushd pgr-tk/
-maturin build --release
-maturin build --release --skip-auditwheel
+# Set up a uv-managed venv with Python 3.13 if not already present
+if [ ! -f .venv/bin/python ]; then
+    uv venv --python 3.13
+    uv pip install --python .venv/bin/python maturin numpy
+fi
+# Build with the venv Python, ignoring any active conda environment
+env -u CONDA_PREFIX \
+    VIRTUAL_ENV="$(pwd)/.venv" \
+    PYO3_PYTHON="$(pwd)/.venv/bin/python" \
+    PYTHON_SYS_EXECUTABLE="$(pwd)/.venv/bin/python" \
+    .venv/bin/maturin build --release
 popd
