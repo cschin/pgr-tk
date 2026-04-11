@@ -6,6 +6,14 @@ REPORT="e2e_report.html"
 TIMELOG="e2e_timings.tsv"
 GTIME_FMT="%e\t%U\t%S\t%M\t%P"
 
+# On macOS use gtime (GNU time from brew coreutils); on Linux alias to /usr/bin/time
+if [[ "$(uname)" == "Darwin" ]]; then
+    : # gtime is already on PATH via brew install coreutils
+else
+    gtime() { /usr/bin/time "$@"; }
+    export -f gtime
+fi
+
 > "$TIMELOG"
 
 # Always generate the HTML report on exit (even on failure)
