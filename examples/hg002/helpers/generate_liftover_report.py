@@ -81,15 +81,17 @@ def subsample_scatter_html(html_str, max_pts, seed=42):
     return subsampled
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--timelog", default=os.path.join(script_dir, "e2e_timings.tsv"))
-ap.add_argument("--out",     default=os.path.join(script_dir, "e2e_report.html"))
+ap.add_argument("--base-dir", default=script_dir,
+                help="Directory containing input files (default: script directory)")
+ap.add_argument("--timelog", default=None)
+ap.add_argument("--out",     default=None)
 ap.add_argument("--lite-pts", metavar="N", type=int, default=5000,
                 help="Max scatter points in the lite report (default: 5000)")
 args = ap.parse_args()
 
-tsv_path  = args.timelog
-html_path = args.out
-base_dir  = script_dir
+base_dir  = os.path.abspath(args.base_dir)
+tsv_path  = args.timelog if args.timelog else os.path.join(base_dir, "e2e_timings.tsv")
+html_path = args.out     if args.out     else os.path.join(base_dir, "e2e_report.html")
 
 # ── Step timings ──────────────────────────────────────────────────────────────
 rows = []

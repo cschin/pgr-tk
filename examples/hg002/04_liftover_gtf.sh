@@ -57,9 +57,8 @@ echo
 # ---------------------------------------------------------------------------
 echo "=== Generating $OUT/liftover_report.html ==="
 python3 helpers/generate_liftover_report.py \
-    "$OUT/hg002_hap0_liftover.db" \
-    "$OUT/hg002_hap1_liftover.db" \
-    "$OUT/liftover_report.html"
+    --base-dir "$OUT" \
+    --out "$OUT/liftover_report.html"
 
 echo "Report: $OUT/liftover_report.html"
 echo
