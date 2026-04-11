@@ -105,26 +105,35 @@ if os.path.exists(tsv_path):
             if len(parts) == 6:
                 rows.append(parts)
 
-max_wall   = max((float(r[1]) for r in rows), default=1)
-total_wall = sum(float(r[1]) for r in rows)
-peak_rss   = max((float(r[4]) for r in rows), default=0)
+def _f(s):
+    """Parse a timing field to float, returning 0.0 on any non-numeric value."""
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return 0.0
+
+max_wall   = max((_f(r[1]) for r in rows), default=1) or 1
+total_wall = sum(_f(r[1]) for r in rows)
+peak_rss   = max((_f(r[4]) for r in rows), default=0)
 
 timing_rows = ""
 for r in rows:
     name, wall, user, sys_, rss, cpu = r
-    pct = min(100, float(wall) / max_wall * 100)
-    try:
-        rss_mb = f"{float(rss)/1024:.1f}"
-    except ValueError:
-        rss_mb = rss
+    wall_f = _f(wall)
+    pct = min(100, wall_f / max_wall * 100)
+    wall_s  = f"{wall_f:.1f}s"   if wall_f  else wall
+    user_s  = f"{_f(user):.1f}s" if _f(user) or user == "0" else user
+    sys_s   = f"{_f(sys_):.1f}s" if _f(sys_) or sys_ == "0" else sys_
+    rss_f   = _f(rss)
+    rss_s   = f"{rss_f/1024:.1f} MB" if rss_f else rss
     timing_rows += f"""
       <tr>
         <td class="name">{html.escape(name)}</td>
         <td class="bar-cell"><div class="bar" style="width:{pct:.1f}%"></div></td>
-        <td class="num">{float(wall):.1f}s</td>
-        <td class="num">{float(user):.1f}s</td>
-        <td class="num">{float(sys_):.1f}s</td>
-        <td class="num">{rss_mb} MB</td>
+        <td class="num">{html.escape(wall_s)}</td>
+        <td class="num">{html.escape(user_s)}</td>
+        <td class="num">{html.escape(sys_s)}</td>
+        <td class="num">{html.escape(rss_s)}</td>
         <td class="num">{html.escape(cpu)}</td>
       </tr>"""
 
