@@ -15,12 +15,12 @@ set -euo pipefail
 DB_PREFIX="${1:?usage: $0 <db_prefix> <output_prefix>}"
 OUT_PREFIX="${2:?usage: $0 <db_prefix> <output_prefix>}"
 
-PGR_QUERY="${PGR_QUERY:-$(dirname "$0")/../target/release/pgr-query}"
-if [[ ! -x "$PGR_QUERY" ]]; then
-    PGR_QUERY="$(dirname "$0")/../target/debug/pgr-query"
+PGR="${PGR:-$(dirname "$0")/../target/release/pgr}"
+if [[ ! -x "$PGR" ]]; then
+    PGR="$(dirname "$0")/../target/debug/pgr"
 fi
-if [[ ! -x "$PGR_QUERY" ]]; then
-    echo "ERROR: pgr-query binary not found. Build with: cargo build -p pgr-bin --bin pgr-query" >&2
+if [[ ! -x "$PGR" ]]; then
+    echo "ERROR: pgr binary not found. Build with: cargo build -p pgr-bin --bin pgr" >&2
     exit 1
 fi
 
@@ -50,13 +50,13 @@ for i in range(0, len(seq), 80):
 echo "    Written: $MHC_FA  ($(wc -c < "$MHC_FA") bytes)"
 
 # ---------------------------------------------------------------------------
-# 2. Run pgr-query
+# 2. Run pgr query seqs
 # ---------------------------------------------------------------------------
-echo "[2] Running pgr-query ..."
-"$PGR_QUERY" \
-    "$DB_PREFIX" \
-    "$MHC_FA" \
-    "$OUT_PREFIX" \
+echo "[2] Running pgr query seqs ..."
+"$PGR" query seqs \
+    --pgr-db-prefix "$DB_PREFIX" \
+    --query-fastx-path "$MHC_FA" \
+    --output-prefix "$OUT_PREFIX" \
     --merge-range-tol 100000 \
     --max-count 128 \
     --max-query-count 128 \

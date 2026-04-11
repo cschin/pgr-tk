@@ -26,45 +26,47 @@ run_step() {
     rm "$t_file"
 }
 
+PGR=../target/release/pgr
+
 # ---------------------------------------------------------------------------
 # Step 1 — alignment map
 # ---------------------------------------------------------------------------
-run_step "pgr-alnmap hap0" \
-    ../target/release/pgr-alnmap \
-        GCA_000001405.15_GRCh38_no_alt_analysis_set.PanSN.b.fa.gz \
-        hg002v1.1.mat_MT.PanSN.b.fa.gz \
-        hg002_hap0 \
+run_step "pgr align alnmap hap0" \
+    "$PGR" align alnmap \
+        --reference-fasta-path GCA_000001405.15_GRCh38_no_alt_analysis_set.PanSN.b.fa.gz \
+        --assembly-contig-path hg002v1.1.mat_MT.PanSN.b.fa.gz \
+        --output-prefix hg002_hap0 \
         --preset default
 
-run_step "pgr-alnmap hap1" \
-    ../target/release/pgr-alnmap \
-        GCA_000001405.15_GRCh38_no_alt_analysis_set.PanSN.b.fa.gz \
-        hg002v1.1.pat.PanSN.b.fa.gz \
-        hg002_hap1 \
+run_step "pgr align alnmap hap1" \
+    "$PGR" align alnmap \
+        --reference-fasta-path GCA_000001405.15_GRCh38_no_alt_analysis_set.PanSN.b.fa.gz \
+        --assembly-contig-path hg002v1.1.pat.PanSN.b.fa.gz \
+        --output-prefix hg002_hap1 \
         --preset default
 
 # ---------------------------------------------------------------------------
 # Step 2 — generate diploid VCF
 # ---------------------------------------------------------------------------
-run_step "pgr-generate-diploid-vcf" \
-    ../target/release/pgr-generate-diploid-vcf \
-        hg002_hap0.alndb \
-        hg002_hap1.alndb \
-        hg002 \
+run_step "pgr variant diploid-vcf" \
+    "$PGR" variant diploid-vcf \
+        --hap0-path hg002_hap0.alndb \
+        --hap1-path hg002_hap1.alndb \
+        --output-prefix hg002 \
         --sample-name hg002
 
 # ---------------------------------------------------------------------------
 # Step 2b — whole genome alignment plots
 # ---------------------------------------------------------------------------
-run_step "pgr-generate-chr-aln-plot hap0" \
-    ../target/release/pgr-generate-chr-aln-plot \
-        hg002_hap0.alndb \
-        hg002_hap0_aln_plot
+run_step "pgr plot chr-aln hap0" \
+    "$PGR" plot chr-aln \
+        --ctgmap-json-path hg002_hap0.ctgmap.json \
+        --output-prefix hg002_hap0_aln_plot
 
-run_step "pgr-generate-chr-aln-plot hap1" \
-    ../target/release/pgr-generate-chr-aln-plot \
-        hg002_hap1.alndb \
-        hg002_hap1_aln_plot
+run_step "pgr plot chr-aln hap1" \
+    "$PGR" plot chr-aln \
+        --ctgmap-json-path hg002_hap1.ctgmap.json \
+        --output-prefix hg002_hap1_aln_plot
 
 # ---------------------------------------------------------------------------
 # Step 3a — strip PanSN prefix (GRCh38#0#) from CHROM column
@@ -76,11 +78,11 @@ grep -v "^#" hg002.vcf | sed 's/^[^#]*#[^#]*#//' >> hg002.stripped.vcf
 # ---------------------------------------------------------------------------
 # Step 3b — annotate VCF with GTF
 # ---------------------------------------------------------------------------
-run_step "pgr-annotate-vcf-file" \
-    ../target/release/pgr-annotate-vcf-file \
-        hg002.stripped.vcf \
-        hg38.ncbiRefSeq.gtf.gz \
-        hg002.annotated.vcf
+run_step "pgr variant annotate-vcf" \
+    "$PGR" variant annotate-vcf \
+        --vcf-path hg002.stripped.vcf \
+        --annotation-path hg38.ncbiRefSeq.gtf.gz \
+        --output-path hg002.annotated.vcf
 
 # ---------------------------------------------------------------------------
 # Step 3c — bgzip and tabix index the annotated VCF

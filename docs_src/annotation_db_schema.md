@@ -2,13 +2,13 @@
 
 **Date:** 2026-04-07  
 **Branch:** `aln_map_improvment`  
-**Tools covered:** `pgr-alnmap`, `pgr-liftover-gtf`, `generate_e2e_report.py`, `get_tx_seqs.sh`
+**Tools covered:** `pgr align alnmap`, `pgr align liftover-gtf`, `generate_e2e_report.py`, `get_tx_seqs.sh`
 
 ---
 
 ## 1. Alignment Database (`.alndb`)
 
-Produced by **`pgr-alnmap`**.  One `.alndb` per haplotype (e.g., `hg002_hap0.alndb`).
+Produced by **`pgr align alnmap`**.  One `.alndb` per haplotype (e.g., `hg002_hap0.alndb`).
 
 ### `run_params`
 | Column | Type | Description |
@@ -184,7 +184,7 @@ Reference and query sequences flanking each SV candidate.
 
 ## 2. Liftover Database (`_liftover.db`)
 
-Produced by **`pgr-liftover-gtf`**.  One database per haplotype.
+Produced by **`pgr align liftover-gtf`**.  One database per haplotype.
 
 ---
 
@@ -349,13 +349,13 @@ The report script annotates each SV candidate against the gene/exon index loaded
 
 | File | Produced by | Description |
 |------|-------------|-------------|
-| `hg002_hap{0,1}.alndb`              | `pgr-alnmap`         | Alignment database |
-| `hg002_hap{0,1}.svcnd.bed`          | `pgr-alnmap`         | SV candidates, ref coordinates |
-| `hg002_hap{0,1}.ctgsv.bed`          | `pgr-alnmap`         | SV candidates, contig coordinates |
-| `hg002_hap{0,1}_liftover.db`        | `pgr-liftover-gtf`   | Transcript liftover database |
-| `hg002_hap{0,1}.hq.gtf`             | `pgr-liftover-gtf`   | High-quality transcript annotations |
-| `hg002_hap{0,1}_ref_tx.fa`          | `pgr-liftover-gtf`   | Reference transcript FASTA |
-| `hg002_hap{0,1}_hq_contig_tx.fa`    | `pgr-liftover-gtf`   | HQ contig-mapped transcript FASTA |
+| `hg002_hap{0,1}.alndb`              | `pgr align alnmap`         | Alignment database |
+| `hg002_hap{0,1}.svcnd.bed`          | `pgr align alnmap`         | SV candidates, ref coordinates |
+| `hg002_hap{0,1}.ctgsv.bed`          | `pgr align alnmap`         | SV candidates, contig coordinates |
+| `hg002_hap{0,1}_liftover.db`        | `pgr align liftover-gtf`   | Transcript liftover database |
+| `hg002_hap{0,1}.hq.gtf`             | `pgr align liftover-gtf`   | High-quality transcript annotations |
+| `hg002_hap{0,1}_ref_tx.fa`          | `pgr align liftover-gtf`   | Reference transcript FASTA |
+| `hg002_hap{0,1}_hq_contig_tx.fa`    | `pgr align liftover-gtf`   | HQ contig-mapped transcript FASTA |
 | `hg002.annotated.sorted.clinvar.vcf.gz` | bcftools pipeline | VCF with ClinVar annotations |
 | `liftover_report.html`              | `get_tx_seqs.sh`     | Transcript liftover HTML report |
 | `e2e_report.html`                   | `generate_e2e_report.py` | Full end-to-end HTML report |
@@ -367,10 +367,10 @@ The report script annotates each SV candidate against the gene/exon index loaded
 
 ### Steps
 
-1. **`pgr-alnmap`** — produces `hg002_hap{0,1}.alndb`
-2. **`pgr-generate-diploid-vcf`** — merges hap0/hap1 alndb into `hg002.vcf`
+1. **`pgr align alnmap`** — produces `hg002_hap{0,1}.alndb`
+2. **`pgr variant diploid-vcf`** — merges hap0/hap1 alndb into `hg002.vcf`
 3. Strip PanSN prefix from CHROM column (`GRCh38#0#chr1` → `chr1`)
-4. **`pgr-annotate-vcf-file`** — annotates with `hg38.ncbiRefSeq.gtf.gz` → `hg002.annotated.vcf`
+4. **`pgr variant annotate-vcf`** — annotates with `hg38.ncbiRefSeq.gtf.gz` → `hg002.annotated.vcf`
 5. **bgzip / tabix** — compress and index
 6. **bcftools sort + rename** — sort, strip `chr` prefix for ClinVar matching → `hg002.nochr.vcf.gz`
 7. **bcftools annotate** — add `CLNSIG`, `CLNDN`, `CLNREVSTAT` from `clinvar.vcf.gz` → `hg002.annotated.sorted.clinvar.vcf.gz`

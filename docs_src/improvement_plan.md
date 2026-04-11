@@ -89,7 +89,7 @@ let (ctg_name, sample_name, _) = seq_info.get(&sid)
 
 #### 1c. Harden the GFF/annotation parsers
 
-`gff_db.rs` and `pgr-annotate-vcf-file.rs` should skip or log malformed lines rather than
+`gff_db.rs` and `pgr variant annotate-vcf.rs` should skip or log malformed lines rather than
 panic. The existing `TODO: need a proper parser` comment (annotate-vcf-file.rs lines 89–92)
 should be resolved.
 
@@ -143,7 +143,7 @@ The `.alnmap` text format (see `docs_src/alnmap_formap.md`) has variable column 
 record type, no random access, and no compression. At whole-genome scale this is a
 significant bottleneck.
 
-**Proposal:** Add an optional binary output mode to `pgr-alnmap` using Apache Arrow IPC
+**Proposal:** Add an optional binary output mode to `pgr align alnmap` using Apache Arrow IPC
 (via the `arrow2` or `arrow-rs` crate). Three separate Arrow record-batch streams would
 replace the interleaved text:
 
@@ -198,7 +198,7 @@ pub struct ShmmrSpec {
 
 ### 2d. Resolve the `Mmap` clone limitation
 
-`pgr-pbundle-decomp.rs` line 259 has a `TODO: fix this` comment explaining that the
+`pgr bundle decomp.rs` line 259 has a `TODO: fix this` comment explaining that the
 database must be rebuilt because `Mmap` is not `Clone`. The workaround is a full re-read
 of the file, which is expensive.
 
@@ -241,7 +241,7 @@ impl SequenceStore for FrgDB { ... }
 ### 2f. Parallelize principal bundle computation
 
 The Dijkstra + DFS in `graph_utils.rs` runs sequentially. For large pangenomes the bundle
-decomposition step (`pgr-pbundle-decomp`) becomes the bottleneck.
+decomposition step (`pgr bundle decomp`) becomes the bottleneck.
 
 **Proposal:** Partition the MAP-graph by connected component and process each component in
 parallel via `rayon::par_iter()`. Components are independent by definition, so no
@@ -316,7 +316,7 @@ be given real input/output test cases or removed.
 
 ### 3e. Add integration tests for CLI tools
 
-There are no end-to-end tests for `pgr-alnmap`, `pgr-generate-diploid-vcf`, or any other
+There are no end-to-end tests for `pgr align alnmap`, `pgr variant diploid-vcf`, or any other
 binary. A minimal integration test suite should:
 
 1. Use a small synthetic reference + query FASTA (< 10 kb each).
@@ -365,18 +365,18 @@ instead of backtraces.
 3. Add `Copy` to `ShmmrSpec`
 4. Fix the four test stubs in `aln.rs`
 5. Resolve `type_complexity` suppressions with named aliases
-6. Add a minimal integration test suite for `pgr-alnmap` and `pgr-generate-diploid-vcf`
+6. Add a minimal integration test suite for `pgr align alnmap` and `pgr variant diploid-vcf`
 
 **Outcome:** Fewer silent surprises, more maintainable codebase.
 
 ### Phase 3 — Architecture (longer term, design before implementing)
 
-1. `Arc<Mmap>` fix for `pgr-pbundle-decomp` (quick win, 1 day)
+1. `Arc<Mmap>` fix for `pgr bundle decomp` (quick win, 1 day)
 2. Shimmer hit-count cap (`max_occ` in `ShmmrSpec`) (1 week)
 3. Sequence cache in `SeqIndexDB` (1 week)
 4. Trait-based backend abstraction (`SequenceStore`) (2 weeks)
 5. Parallel principal bundle computation (1 week)
-6. Arrow IPC binary output for `pgr-alnmap` (2–3 weeks)
+6. Arrow IPC binary output for `pgr align alnmap` (2–3 weeks)
 
 **Outcome:** Better performance at large scale, cleaner extension points for new storage
 backends and output formats.
@@ -387,7 +387,7 @@ backends and output formats.
 
 These can be done in an hour or less each, independently of the larger phases:
 
-- [ ] `Arc<Mmap>` in `pgr-pbundle-decomp.rs` — removes the `TODO: fix this`
+- [ ] `Arc<Mmap>` in `pgr bundle decomp.rs` — removes the `TODO: fix this`
 - [ ] `#[derive(Copy)]` on `ShmmrSpec` — removes 3 `.clone()` calls
 - [ ] Delete or restore `gff_db.rs` and `seqs2variants.rs`
 - [ ] Replace `GZIP_MAGIC` literal `[0x1F, 0x8B]` with a named constant in all three files

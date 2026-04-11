@@ -1,6 +1,6 @@
-# pgr-alnmap Output Files
+# pgr align alnmap Output Files
 
-The command-line tool `pgr-alnmap` aligns a set of assembled contigs (the *query*) against a
+The command-line tool `pgr align alnmap` aligns a set of assembled contigs (the *query*) against a
 reference genome (the *target*) using SHIMMER (sparse hierarchical minimizer matching) anchoring
 followed by Wavefront Alignment (WFA) or Smith-Waterman (SW) for base-level variant calling.
 
@@ -10,7 +10,7 @@ For each run it writes the following output files:
 |------|-------------|
 | `<prefix>.alnmap` | Alignment chains with match, variant, and SV candidate records |
 | `<prefix>.ctgmap.bed` | Contig-to-reference mapping in BED format |
-| `<prefix>.ctgmap.json` | Contig-to-reference mapping in JSON (input to `pgr-generate-diploid-vcf`) |
+| `<prefix>.ctgmap.json` | Contig-to-reference mapping in JSON (input to `pgr variant diploid-vcf`) |
 | `<prefix>.target_len.json` | Reference sequence lengths in JSON |
 | `<prefix>.query_len.json` | Query contig lengths in JSON |
 | `<prefix>.svcnd.bed` | Structural variant candidate regions in BED format |
@@ -155,7 +155,7 @@ aln_idx  V  target_name  ts  te  query_name  qs  qe  orientation  target_diff  q
 
 Each V record corresponds to a single variant event. A single alignment block may produce
 multiple consecutive V records. These are merged into a single VCF record by
-`pgr-generate-diploid-vcf` when the variants overlap on the reference.
+`pgr variant diploid-vcf` when the variants overlap on the reference.
 
 ---
 
@@ -209,12 +209,12 @@ awk '$2 == "B" {print $3, $5-$4}' sample.alnmap \
 ## Relationship to Other Output Files
 
 - **`.ctgmap.json`** — used as the `target_len_json_path` argument to
-  `pgr-generate-diploid-vcf`; contains contig-to-reference mappings and target sequence
+  `pgr variant diploid-vcf`; contains contig-to-reference mappings and target sequence
   lengths needed to write the VCF header.
 - **`.svcnd.bed`** — BED file of target regions that are SV candidates; can be loaded
   directly into a genome browser alongside the alignment.
 - **`.svcnd.seqs`** — FASTA sequences spanning SV candidate regions; input to
-  `pgr-generate-sv-analysis` for principal-bundle-based structural variant decomposition.
+  `pgr variant sv-analysis` for principal-bundle-based structural variant decomposition.
 
 ---
 
@@ -387,7 +387,7 @@ sv_diff_type:   uint8         (sv_cnd only — 0=FailAln … 4=Unknown)
 **Advantages over Parquet for this use case:**
 
 - Arrow IPC is a streaming format — a writer can append record batches incrementally as
-  `pgr-alnmap` processes each contig, without buffering the entire output in memory first.
+  `pgr align alnmap` processes each contig, without buffering the entire output in memory first.
   Parquet requires knowing the full row group before it can flush.
 - The in-process representation is identical to the on-disk layout, so there is zero
   deserialisation cost when loading into Rust (`arrow2`/`arrow-rs`), Python (`pyarrow`),
@@ -437,5 +437,5 @@ with open("sample.arrow", "rb") as f:
 
 The Parquet approach is the better fit if the primary use case is analytical (joining
 variants against annotation databases, computing statistics across chromosomes). The Arrow
-IPC approach is better if the primary use case is streaming processing or if `pgr-alnmap`
+IPC approach is better if the primary use case is streaming processing or if `pgr align alnmap`
 itself is to be refactored to write binary output incrementally without buffering.

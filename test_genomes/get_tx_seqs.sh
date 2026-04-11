@@ -2,15 +2,15 @@
 # get_tx_seqs.sh — liftover + sequence fetch for hg002 hap0 and hap1, then HTML report
 #
 # Steps:
-#   1. pgr-liftover-gtf (hap0): builds liftover DB, GTF files, anomaly TSVs
-#   2. pgr-liftover-gtf (hap0): adds --ref-fa / --query-fa to write transcript FASTA files
-#   3. pgr-liftover-gtf (hap1): same as above
+#   1. pgr align liftover-gtf (hap0): builds liftover DB, GTF files, anomaly TSVs
+#   2. pgr align liftover-gtf (hap0): adds --ref-fa / --query-fa to write transcript FASTA files
+#   3. pgr align liftover-gtf (hap1): same as above
 #   4. Python: queries both DBs and writes liftover_report.html
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-BIN=../target/release/pgr-liftover-gtf
+BIN="../target/release/pgr align liftover-gtf"
 
 REF_FA=GCA_000001405.15_GRCh38_no_alt_analysis_set.PanSN.fa.gz
 GTF=hg38.ncbiRefSeq.gtf.gz
@@ -20,10 +20,10 @@ REPORT=liftover_report.html
 # Haplotype 0  (maternal + MT)
 # ---------------------------------------------------------------------------
 echo "=== Haplotype 0 liftover ==="
-$BIN \
-    hg002_hap0.alndb \
-    "$GTF" \
-    hg002_hap0_liftover.db \
+../target/release/pgr align liftover-gtf \
+    --alndb-path hg002_hap0.alndb \
+    --gtf-path "$GTF" \
+    --output-db hg002_hap0_liftover.db \
     --target-chr-prefix "GRCh38#0#" \
     --min-coverage 0.5 \
     --full-coverage 0.9 \
@@ -34,10 +34,10 @@ $BIN \
 # Haplotype 1  (paternal)
 # ---------------------------------------------------------------------------
 echo "=== Haplotype 1 liftover ==="
-$BIN \
-    hg002_hap1.alndb \
-    "$GTF" \
-    hg002_hap1_liftover.db \
+../target/release/pgr align liftover-gtf \
+    --alndb-path hg002_hap1.alndb \
+    --gtf-path "$GTF" \
+    --output-db hg002_hap1_liftover.db \
     --target-chr-prefix "GRCh38#0#" \
     --min-coverage 0.5 \
     --full-coverage 0.9 \

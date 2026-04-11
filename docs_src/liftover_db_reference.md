@@ -1,7 +1,7 @@
 # Liftover Database (`_liftover.db`) — Reference Guide
 
 **Date:** 2026-04-07  
-**Produced by:** `pgr-liftover-gtf`  
+**Produced by:** `pgr align liftover-gtf`  
 **Example files:** `hg002_hap0_liftover.db`, `hg002_hap1_liftover.db`  
 **Annotation source:** `hg38.ncbiRefSeq.gtf.gz`
 
@@ -346,7 +346,7 @@ ORDER BY t.ref_chrom;
 
 ---
 
-## Files Written by `pgr-liftover-gtf`
+## Files Written by `pgr align liftover-gtf`
 
 | File | Contents |
 |------|----------|

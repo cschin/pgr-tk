@@ -2,7 +2,7 @@
 
 ## Background
 
-The shimmer database used by `pgr-mdb` and `pgr-query` consists of four files written
+The shimmer database used by `pgr index mdb` and `pgr query seqs` consists of four files written
 by `CompactSeqDB::write_shmmr_map_index` and read back by `SeqIndexDB::load_from_agc_index`
 / `load_from_frg_index`.
 
@@ -99,7 +99,7 @@ for each shimmer pair (order = FxHashMap iteration, non-deterministic):
 
 ---
 
-## How pgr-query Uses the Format
+## How pgr query seqs Uses the Format
 
 Understanding the actual access pattern is essential for evaluating any
 replacement.
@@ -143,7 +143,7 @@ there is no way to jump directly to the key table.  This scan dominates load tim
 ### 2. Key-offset map consumes ~3 GB of RAM
 `frag_location_map` holds one `(u64, u64) → (usize, usize)` entry per unique
 shimmer pair.  For 80 M pairs at ~40 bytes per FxHashMap slot: ~3.2 GB of heap
-allocation that lives for the entire lifetime of `pgr-query`.
+allocation that lives for the entire lifetime of `pgr query seqs`.
 
 ### 3. No schema version
 The 3-byte magic `"mdb"` carries no version number.  An incompatible format
@@ -276,7 +276,7 @@ Expected compression ratio for fragment coordinate arrays: 3–4× (delta-coded
 ## Implementation Plan
 
 All changes are confined to `pgr-db/src/seq_db.rs` and
-`pgr-db/src/frag_file_io.rs`.  No changes to `pgr-query` or `pgr-mdb` binaries
+`pgr-db/src/frag_file_io.rs`.  No changes to `pgr query seqs` or `pgr index mdb` binaries
 are needed beyond updating the prefix constants.
 
 ### Step 1 — Write side (`seq_db.rs`)

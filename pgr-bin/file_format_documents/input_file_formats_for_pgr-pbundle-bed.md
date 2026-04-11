@@ -1,4 +1,4 @@
-# Input File Formats for pgr-pbundle-bed2svg
+# Input File Formats for pgr bundle svg
 
 ## 1. Principal Bundle BED File (Required)
 

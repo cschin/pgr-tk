@@ -1,8 +1,8 @@
-# pgr-mdb Memory Reduction: Partition-and-Merge Plan
+# pgr index mdb Memory Reduction: Partition-and-Merge Plan
 
 ## Problem
 
-`pgr-mdb` consumes >300 GB of RAM when building a minimizer database from an
+`pgr index mdb` consumes >300 GB of RAM when building a minimizer database from an
 AGC archive that contains 100+ haplotypes of a human-scale genome.  Two
 independent memory peaks drive this:
 
@@ -138,7 +138,7 @@ impl CompactSeqDB {
 }
 ```
 
-**`pgr-mdb.rs`**
+**`pgr index mdb.rs`**
 
 ```
 --batch-size <N>    Haplotypes per processing batch [default: 0 = all at once]
@@ -155,7 +155,7 @@ separate `write_shmmr_map_index` call (batched function handles everything).
 2. `seq_db.rs` — `write_shmmr_map_shard` (copy of split writer, different paths)
 3. `seq_db.rs` — `merge_shmmr_map_shards` (streaming k-way merge)
 4. `seq_db.rs` — `load_index_from_agcfile_batched` (orchestrator)
-5. `pgr-mdb.rs` — `--batch-size` flag + call site
+5. `pgr index mdb.rs` — `--batch-size` flag + call site
 
 ---
 

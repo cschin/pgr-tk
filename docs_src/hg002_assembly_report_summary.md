@@ -18,13 +18,13 @@
 Assembly (hap0 + hap1)
        │
        ▼
-pgr-alnmap            →  alignment chains, M-blocks, SV candidates  (.alndb)
+pgr align alnmap            →  alignment chains, M-blocks, SV candidates  (.alndb)
        │
-       ├──► pgr-generate-diploid-vcf  →  diploid VCF
+       ├──► pgr variant diploid-vcf  →  diploid VCF
        │         │
        │         └──► bcftools + ClinVar  →  clinical annotation
        │
-       └──► pgr-liftover-gtf          →  transcript liftover  (_liftover.db)
+       └──► pgr align liftover-gtf          →  transcript liftover  (_liftover.db)
                    │
                    └──► generate_e2e_report.py  →  HTML report
 ```
@@ -63,7 +63,7 @@ pgr-alnmap            →  alignment chains, M-blocks, SV candidates  (.alndb)
 
 ## Slide 3 — Structural Variant Candidates
 
-SV candidates are alignment anomalies flagged by `pgr-alnmap` on two coordinate axes.
+SV candidates are alignment anomalies flagged by `pgr align alnmap` on two coordinate axes.
 
 ### Ref view (`.svcnd.bed`) — anomalies on the reference axis
 

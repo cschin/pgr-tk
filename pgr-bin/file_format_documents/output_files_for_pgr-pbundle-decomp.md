@@ -1,6 +1,6 @@
-# Output Files for pgr-pbundle-decomp
+# Output Files for pgr bundle decomp
 
-The `pgr-pbundle-decomp` tool generates several output files when decomposing principal bundles from sequence data. Each file serves a specific purpose in the analysis pipeline. Below is a comprehensive description of each output file format:
+The `pgr bundle decomp` tool generates several output files when decomposing principal bundles from sequence data. Each file serves a specific purpose in the analysis pipeline. Below is a comprehensive description of each output file format:
 
 ## 1. Principal Bundle BED File (`[prefix].bed`)
 
@@ -83,7 +83,7 @@ This binary file contains the complete principal bundle data, essential for down
 ## Related Documentation
 
 - [Principal Bundle BED File Format](principal_bundle_bed_file.md) - Detailed explanation of the principal bundle BED file format
-- [Input File Formats for pgr-pbundle-bed2svg](input_file_formats_for_pgr-pbundle-bed.md) - Documentation for the input files required by pgr-pbundle-bed2svg
+- [Input File Formats for pgr bundle svg](input_file_formats_for_pgr-pbundle-bed.md) - Documentation for the input files required by pgr bundle svg
 - [GFA Output Format in PGR-TK](gfa_format.md) - Information about the GFA format used in PGR-TK
 - [Contig SV BED Format](ctgsv.bed.md) - Documentation for the contig SV BED format, another important file format in the PGR-TK ecosystem
 

@@ -2,7 +2,7 @@
 
 ## Motivation
 
-`pgr-alnmap` currently writes 8–9 separate files per haplotype run. Downstream tools
+`pgr align alnmap` currently writes 8–9 separate files per haplotype run. Downstream tools
 consume overlapping subsets of those files, requiring fragile multi-argument command lines
 and full linear scans of large text files. This document describes a plan to replace all
 per-run outputs with a single SQLite database file (`.alndb`) and update the downstream
@@ -14,15 +14,15 @@ tools accordingly.
 
 | File | Downstream consumer in pipeline |
 |------|----------------------------------|
-| `<prefix>.alnmap` | `pgr-generate-diploid-vcf` (V and M records) |
-| `<prefix>.target_len.json` | `pgr-generate-diploid-vcf` (VCF header contig lines) |
-| `<prefix>.ctgmap.json` | `pgr-generate-chr-aln-plot` |
+| `<prefix>.alnmap` | `pgr variant diploid-vcf` (V and M records) |
+| `<prefix>.target_len.json` | `pgr variant diploid-vcf` (VCF header contig lines) |
+| `<prefix>.ctgmap.json` | `pgr plot chr-aln` |
 | `<prefix>.vcf` | not used downstream (redundant with diploid VCF) |
 | `<prefix>.ctgmap.bed` | not used in current pipeline |
 | `<prefix>.query_len.json` | not used in current pipeline |
 | `<prefix>.svcnd.bed` | not used in current pipeline (future SV analysis) |
 | `<prefix>.ctgsv.bed` | not used in current pipeline (future SV analysis) |
-| `<prefix>.svcnd.seqs` | `pgr-generate-sv-analysis` (not yet in pipeline) |
+| `<prefix>.svcnd.seqs` | `pgr variant sv-analysis` (not yet in pipeline) |
 
 ---
 
@@ -169,16 +169,16 @@ CREATE TABLE sv_sequences (
   annotate --rename-chrs`) in the pipeline script, not inside any pgr-tk binary. This
   keeps the Rust code free of format-specific post-processing logic and makes the
   normalisation steps explicit and auditable in the shell script.
-- **Indices created after all inserts.** `pgr-alnmap` writes records in contig order.
+- **Indices created after all inserts.** `pgr align alnmap` writes records in contig order.
   Creating indices after the final insert is faster than maintaining them incrementally.
-- **WAL mode enabled.** Allows `pgr-generate-diploid-vcf` to open both `hap0.alndb` and
+- **WAL mode enabled.** Allows `pgr variant diploid-vcf` to open both `hap0.alndb` and
   `hap1.alndb` concurrently without write contention.
 
 ---
 
 ## Changes required per tool
 
-### `pgr-alnmap`
+### `pgr align alnmap`
 
 - Open a `rusqlite::Connection` to `<prefix>.alndb` at startup (WAL mode).
 - Create the schema (DDL above) before processing begins.
@@ -189,7 +189,7 @@ CREATE TABLE sv_sequences (
 - **Retain** `.vcf` as a separate file output (standard format, consumed by bcftools
   and other VCF-aware tools). All other current file outputs are replaced by the DB.
 
-### `pgr-generate-diploid-vcf`
+### `pgr variant diploid-vcf`
 
 - Accept `.alndb` paths instead of `.alnmap` + `.target_len.json`.
 - Replace the full text-scan + in-memory sort with two indexed queries:
@@ -219,7 +219,7 @@ CREATE TABLE sv_sequences (
 - Remove the `target_len_json_path` positional argument; contig lengths come from the
   `sequences` table of either `.alndb` (both haplotypes share the same reference).
 
-### `pgr-generate-chr-aln-plot`
+### `pgr plot chr-aln`
 
 - Accept an `.alndb` path instead of `.ctgmap.json`.
 - Query `ctgmap` and `sequences` tables directly:
@@ -238,13 +238,13 @@ CREATE TABLE sv_sequences (
 ### `run_e2e.sh`
 
 - Step 1 outputs change from 8 files to 1 `.alndb` + 1 `.vcf` per haplotype.
-- Step 2 (`pgr-generate-diploid-vcf`) argument list simplifies:
+- Step 2 (`pgr variant diploid-vcf`) argument list simplifies:
   ```bash
-  pgr-generate-diploid-vcf hg002_hap0.alndb hg002_hap1.alndb hg002 --sample-name hg002
+  pgr variant diploid-vcf hg002_hap0.alndb hg002_hap1.alndb hg002 --sample-name hg002
   ```
-- Step 2b (`pgr-generate-chr-aln-plot`) argument list simplifies:
+- Step 2b (`pgr plot chr-aln`) argument list simplifies:
   ```bash
-  pgr-generate-chr-aln-plot hg002_hap0.alndb hg002_hap0_aln_plot
+  pgr plot chr-aln hg002_hap0.alndb hg002_hap0_aln_plot
   ```
 - Steps 2 and 2b are independent and can run in parallel (both depend only on Step 1).
 - Step 3a (`sed` PanSN strip) is **retained** — PanSN names pass through verbatim from
@@ -259,9 +259,9 @@ CREATE TABLE sv_sequences (
 
 | | Current | After |
 |-|---------|-------|
-| Files produced per haplotype by `pgr-alnmap` | 8–9 | 2 (`.alndb` + `.vcf`) |
-| Arguments to `pgr-generate-diploid-vcf` | 4 positional | 3 positional |
-| Arguments to `pgr-generate-chr-aln-plot` | 2 positional | 2 positional (type changes) |
+| Files produced per haplotype by `pgr align alnmap` | 8–9 | 2 (`.alndb` + `.vcf`) |
+| Arguments to `pgr variant diploid-vcf` | 4 positional | 3 positional |
+| Arguments to `pgr plot chr-aln` | 2 positional | 2 positional (type changes) |
 | Intermediate files in pipeline | 10+ | 4 |
 | sed/awk post-processing steps | 1 | 1 (retained — PanSN strip stays in script) |
 
@@ -333,7 +333,7 @@ CREATE INDEX ctgmap_hap   ON ctgmap(haplotype, target_name, target_start, target
 
 ### Diploid variant table
 
-The merged diploid calls (output of `pgr-generate-diploid-vcf`) are stored back into the
+The merged diploid calls (output of `pgr variant diploid-vcf`) are stored back into the
 sample DB rather than only as a VCF file:
 
 ```sql
@@ -374,7 +374,7 @@ CREATE TABLE annot_clinvar (
 );
 CREATE INDEX annot_clinvar_pos ON annot_clinvar(target_name, target_coord);
 
--- Gene-level variant effect (loaded from pgr-annotate-vcf-file output or VEP/SnpEff)
+-- Gene-level variant effect (loaded from pgr variant annotate-vcf output or VEP/SnpEff)
 CREATE TABLE annot_gene_effect (
     dv_id         INTEGER REFERENCES diploid_variants(dv_id),
     target_name   TEXT NOT NULL,
@@ -440,7 +440,7 @@ or standalone tools:
 |--------|--------|-----------|
 | `clinvar.vcf.gz` | `pgr-load-clinvar` (or Python script via `bcftools query`) | `annot_clinvar` |
 | GTF file | `pgr-load-gtf` | `annot_genes`, `annot_features` |
-| `pgr-annotate-vcf-file` output | `pgr-load-vcf-annot` | `annot_gene_effect` |
+| `pgr variant annotate-vcf` output | `pgr-load-vcf-annot` | `annot_gene_effect` |
 | Any BED file | `pgr-load-bed-track` | `annot_regions` |
 | `diploid_variants` VCF | `pgr-load-diploid-vcf` | `diploid_variants` |
 
@@ -484,15 +484,15 @@ SELECT sc.target_name, sc.target_start, sc.target_end,
 ### Updated pipeline sketch
 
 ```
-pgr-alnmap hap0  ──►  hg002_hap0.alndb
-pgr-alnmap hap1  ──►  hg002_hap1.alndb
+pgr align alnmap hap0  ──►  hg002_hap0.alndb
+pgr align alnmap hap1  ──►  hg002_hap1.alndb
                          │
                    pgr-build-sampledb
                          │
                    hg002.sampledb   ◄── pgr-load-diploid-vcf  (hg002.vcf → diploid_variants)
                          │           ◄── pgr-load-gtf          (hg38.ncbiRefSeq.gtf.gz → annot_genes/features)
                          │           ◄── pgr-load-clinvar      (clinvar.vcf.gz → annot_clinvar)
-                         │           ◄── pgr-load-vcf-annot    (pgr-annotate-vcf-file output → annot_gene_effect)
+                         │           ◄── pgr-load-vcf-annot    (pgr variant annotate-vcf output → annot_gene_effect)
                          │           ◄── pgr-load-bed-track    (any BED → annot_regions)
                          ▼
                single queryable file: all alignments +
@@ -503,7 +503,7 @@ pgr-alnmap hap1  ──►  hg002_hap1.alndb
 
 ### Design principles
 
-- **Append-only annotation.** Alignment tables are written once by `pgr-alnmap` and never
+- **Append-only annotation.** Alignment tables are written once by `pgr align alnmap` and never
   modified. Annotation tables are appended to by separate loaders and can be reloaded
   independently.
 - **No annotation logic in Rust alignment code.** Loaders can be Python scripts, R
@@ -537,15 +537,15 @@ pgr-alnmap hap1  ──►  hg002_hap1.alndb
 
 ### Phase 1 — per-haplotype `.alndb`
 
-1. Add SQLite write to `pgr-alnmap` alongside existing file outputs (no tool breakage).
-2. Add SQLite read to `pgr-generate-diploid-vcf`; keep `.alnmap` read path under a
+1. Add SQLite write to `pgr align alnmap` alongside existing file outputs (no tool breakage).
+2. Add SQLite read to `pgr variant diploid-vcf`; keep `.alnmap` read path under a
    `--legacy` flag during transition. No PanSN logic added to Rust code — the pipeline
    script handles it with `sed` as before.
-3. Add SQLite read to `pgr-generate-chr-aln-plot`; keep `.ctgmap.json` read path under
+3. Add SQLite read to `pgr plot chr-aln`; keep `.ctgmap.json` read path under
    `--legacy` flag.
 4. Update `run_e2e.sh`: new `.alndb` arguments for steps 2 and 2b; `sed` PanSN strip
    and `bcftools rename-chrs` steps unchanged.
-5. Remove legacy file outputs from `pgr-alnmap` and legacy read paths from consumers
+5. Remove legacy file outputs from `pgr align alnmap` and legacy read paths from consumers
    once pipeline is validated end-to-end.
 
 ### Phase 2 — combined `.sampledb`
@@ -557,7 +557,7 @@ pgr-alnmap hap1  ──►  hg002_hap1.alndb
    Designed to write to a shared `reference.annotdb` as well as per-sample.
 9. Implement `pgr-load-clinvar`: reads ClinVar VCF, populates `annot_clinvar`.
    Handles `chr` ↔ bare name mapping in the loader, not in the schema.
-10. Implement `pgr-load-vcf-annot`: reads `pgr-annotate-vcf-file` output, populates
+10. Implement `pgr-load-vcf-annot`: reads `pgr variant annotate-vcf` output, populates
     `annot_gene_effect`.
 11. Implement `pgr-load-bed-track`: generic BED loader for `annot_regions`.
 12. Update `run_e2e.sh` to drive the full Phase 2 pipeline with a single
