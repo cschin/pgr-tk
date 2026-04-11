@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 02_build_index.sh — build a PGR-TK shimmer index from the E. coli archive.
 #
-# Requires: ecoli_demo.agcrs (created by 01_agcrs_basics.sh)
+# Requires: example_output/ecoli_demo.agcrs (created by 01_agcrs_basics.sh)
 #
-# Produces:
+# Produces in example_output/:
 #   ecoli_demo.mdbi   — sorted shimmer-pair → value-file offset index
 #   ecoli_demo.mdbv   — packed fragment-signature values
 #   ecoli_demo.midx   — SQLite sequence metadata (names, lengths, AGC path)
@@ -15,8 +15,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PGR="${PGR:-../../target/release/pgr}"
-ARCHIVE="ecoli_demo.agcrs"
-PREFIX="ecoli_demo"
+OUT="example_output"
+ARCHIVE="$OUT/ecoli_demo.agcrs"
+PREFIX="$OUT/ecoli_demo"
 
 if [[ ! -x "$PGR" ]]; then
     echo "ERROR: pgr binary not found at $PGR" >&2
@@ -28,6 +29,8 @@ if [[ ! -f "$ARCHIVE" ]]; then
     echo "ERROR: $ARCHIVE not found — run 01_agcrs_basics.sh first" >&2
     exit 1
 fi
+
+mkdir -p "$OUT"
 
 echo "=== Building shimmer index from $ARCHIVE ==="
 echo "    Output prefix: $PREFIX"

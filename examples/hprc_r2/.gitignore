@@ -2,7 +2,5 @@
 *.fa.gz
 *.fna.gz
 hprc_r2_work/
-*.agcrs
-*.agcrs-shm
-*.agcrs-wal
 hprc_r2_index.csv
+example_output/

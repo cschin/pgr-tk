@@ -5,8 +5,10 @@
 # Also demonstrates the three --memory-mode values so you can see the
 # tradeoff between RAM use and query speed on a small example.
 #
-# Requires: ecoli_demo.agcrs + ecoli_demo.mdbi/.mdbv/.midx
+# Requires: example_output/ecoli_demo.agcrs + .mdbi/.mdbv/.midx
 #           (created by 01_agcrs_basics.sh and 02_build_index.sh)
+#
+# Output is written to example_output/
 #
 # Usage:
 #   bash examples/ecoli/03_query_seqs.sh
@@ -16,8 +18,9 @@ cd "$(dirname "$0")"
 
 PGR="${PGR:-../../target/release/pgr}"
 TESTDATA="../../test_data/ecoli"
-DB_PREFIX="ecoli_demo"
-QUERY_FA="query_mg1655_50k.fa"
+OUT="example_output"
+DB_PREFIX="$OUT/ecoli_demo"
+QUERY_FA="$OUT/query_mg1655_50k.fa"
 
 if [[ ! -x "$PGR" ]]; then
     echo "ERROR: pgr binary not found at $PGR" >&2
@@ -31,6 +34,8 @@ for f in "${DB_PREFIX}.mdbi" "${DB_PREFIX}.mdbv" "${DB_PREFIX}.midx"; do
         exit 1
     fi
 done
+
+mkdir -p "$OUT"
 
 # ---------------------------------------------------------------------------
 # Extract a 50 kb query window from MG1655 (positions 1,500,000–1,550,000)
@@ -68,7 +73,7 @@ echo
 # ---------------------------------------------------------------------------
 run_query() {
     local mode="$1"
-    local out="query_result_${mode}"
+    local out="$OUT/query_result_${mode}"
     echo "--- memory-mode=${mode} ---"
     "$PGR" query seqs \
         --pgr-db-prefix "$DB_PREFIX" \

@@ -5,6 +5,8 @@
 # Run from the examples/ecoli/ directory or anywhere — the script resolves
 # all paths relative to itself.
 #
+# Output is written to examples/ecoli/example_output/
+#
 # Usage:
 #   bash examples/ecoli/01_agcrs_basics.sh
 
@@ -13,13 +15,16 @@ cd "$(dirname "$0")"
 
 AGC_RS="${AGC_RS:-../../target/release/agc-rs}"
 TESTDATA="../../test_data/ecoli"
-ARCHIVE="ecoli_demo.agcrs"
+OUT="example_output"
+ARCHIVE="$OUT/ecoli_demo.agcrs"
 
 if [[ ! -x "$AGC_RS" ]]; then
     echo "ERROR: agc-rs binary not found at $AGC_RS" >&2
     echo "       Build with: cargo build --release -p agc-rs" >&2
     exit 1
 fi
+
+mkdir -p "$OUT"
 
 # ---- 1. Create archive with MG1655 as the reference sample -----------------
 rm -f "$ARCHIVE" "$ARCHIVE-wal" "$ARCHIVE-shm"

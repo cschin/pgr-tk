@@ -4,13 +4,18 @@
 # Calls steps 01–05 in order.  Run 00_download.sh first if you haven't
 # already downloaded the input data.
 #
+# All output lands in example_output/
+#
 # Usage:
 #   bash examples/hg002/run_all.sh
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-TIMELOG="run_all_timings.tsv"
+OUT="example_output"
+mkdir -p "$OUT"
+
+TIMELOG="$OUT/run_all_timings.tsv"
 > "$TIMELOG"
 
 # Use GNU time (gtime on macOS via brew coreutils, /usr/bin/time on Linux)

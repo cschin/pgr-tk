@@ -13,6 +13,8 @@
 #   .manifest.sh  (from 00_download.sh)
 #   agc-rs, pgr binaries
 #
+# Output is written to example_output/
+#
 # Usage:
 #   bash examples/hg002/05_query_mhc.sh
 
@@ -21,6 +23,7 @@ cd "$(dirname "$0")"
 
 PGR="${PGR:-../../target/release/pgr}"
 AGC_RS="${AGC_RS:-../../target/release/agc-rs}"
+OUT="example_output"
 
 for bin in "$PGR" "$AGC_RS"; do
     [[ -x "$bin" ]] || { echo "ERROR: $bin not found"; exit 1; }
@@ -28,10 +31,12 @@ done
 [[ -f ".manifest.sh" ]] || { echo "ERROR: run 00_download.sh first"; exit 1; }
 source .manifest.sh
 
-ARCHIVE="hg002_pangenome.agcrs"
-DB_PREFIX="hg002_pangenome"
-MHC_FA="mhc_query.fa"
-OUT_PREFIX="mhc_hits"
+mkdir -p "$OUT"
+
+ARCHIVE="$OUT/hg002_pangenome.agcrs"
+DB_PREFIX="$OUT/hg002_pangenome"
+MHC_FA="$OUT/mhc_query.fa"
+OUT_PREFIX="$OUT/mhc_hits"
 
 # ---------------------------------------------------------------------------
 # 1. Build 2-sample archive (skip if already built)

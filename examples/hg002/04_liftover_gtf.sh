@@ -7,8 +7,10 @@
 #   pass 2 — add --ref-fa / --query-fa to also write transcript FASTA files
 #
 # Requires:
-#   hg002_hap0.alndb, hg002_hap1.alndb  (from 01_align_alnmap.sh)
-#   .manifest.sh                         (from 00_download.sh)
+#   example_output/hg002_hap{0,1}.alndb  (from 01_align_alnmap.sh)
+#   .manifest.sh                          (from 00_download.sh)
+#
+# Output is written to example_output/
 #
 # Usage:
 #   bash examples/hg002/04_liftover_gtf.sh
@@ -17,14 +19,17 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PGR="${PGR:-../../target/release/pgr}"
+OUT="example_output"
 
 if [[ ! -x "$PGR" ]]; then
     echo "ERROR: pgr binary not found at $PGR" >&2; exit 1
 fi
-for f in hg002_hap0.alndb hg002_hap1.alndb .manifest.sh; do
+for f in "$OUT/hg002_hap0.alndb" "$OUT/hg002_hap1.alndb" .manifest.sh; do
     [[ -f "$f" ]] || { echo "ERROR: $f not found"; exit 1; }
 done
 source .manifest.sh
+
+mkdir -p "$OUT"
 
 liftover_hap() {
     local hap="$1" alndb="$2" query_fa="$3" db="$4"
@@ -42,21 +47,21 @@ liftover_hap() {
     echo "    Transcripts: $(sqlite3 "$db" 'SELECT COUNT(*) FROM transcript_summary;')"
 }
 
-liftover_hap 0 hg002_hap0.alndb "$HAP0_FA" hg002_hap0_liftover.db
+liftover_hap 0 "$OUT/hg002_hap0.alndb" "$HAP0_FA" "$OUT/hg002_hap0_liftover.db"
 echo
-liftover_hap 1 hg002_hap1.alndb "$HAP1_FA" hg002_hap1_liftover.db
+liftover_hap 1 "$OUT/hg002_hap1.alndb" "$HAP1_FA" "$OUT/hg002_hap1_liftover.db"
 echo
 
 # ---------------------------------------------------------------------------
 # HTML report (delegates to the helper script)
 # ---------------------------------------------------------------------------
-echo "=== Generating liftover_report.html ==="
+echo "=== Generating $OUT/liftover_report.html ==="
 python3 helpers/generate_liftover_report.py \
-    hg002_hap0_liftover.db \
-    hg002_hap1_liftover.db \
-    liftover_report.html
+    "$OUT/hg002_hap0_liftover.db" \
+    "$OUT/hg002_hap1_liftover.db" \
+    "$OUT/liftover_report.html"
 
-echo "Report: liftover_report.html"
+echo "Report: $OUT/liftover_report.html"
 echo
 echo "See lift_over_examples.md for SQL queries against the liftover databases."
 echo "Next: bash 05_query_mhc.sh"
