@@ -11,8 +11,7 @@
 #
 # Requires:
 #   example_output/hg002.vcf  (from 02_variant_vcf.sh)
-#   hg38.ncbiRefSeq.gtf.gz + clinvar.vcf.gz + clinvar.vcf.gz.tbi
-#                             (from 00_download.sh)
+#   .manifest.sh              (from 00_download.sh — provides $GTF and $CLINVAR)
 #   bgzip, tabix, bcftools (htslib suite)
 #
 # Output is written to example_output/
@@ -32,10 +31,11 @@ fi
 for tool in bgzip tabix bcftools; do
     command -v "$tool" &>/dev/null || { echo "ERROR: $tool not found"; exit 1; }
 done
+[[ -f ".manifest.sh" ]] || { echo "ERROR: .manifest.sh not found — run 00_download.sh first"; exit 1; }
+source .manifest.sh
 [[ -f "$OUT/hg002.vcf" ]] || { echo "ERROR: $OUT/hg002.vcf not found — run 02_variant_vcf.sh first"; exit 1; }
-for f in hg38.ncbiRefSeq.gtf.gz clinvar.vcf.gz; do
-    [[ -f "$f" ]] || { echo "ERROR: $f not found — run 00_download.sh first"; exit 1; }
-done
+[[ -f "$GTF" ]]    || { echo "ERROR: $GTF not found — run 00_download.sh first"; exit 1; }
+[[ -f "$CLINVAR" ]] || { echo "ERROR: $CLINVAR not found — run 00_download.sh first"; exit 1; }
 
 mkdir -p "$OUT"
 
@@ -52,7 +52,7 @@ grep -v "^#" "$OUT/hg002.vcf" | sed 's/^[^#]*#[^#]*#//' >> "$OUT/hg002.stripped.
 echo "=== [2] pgr variant annotate-vcf ==="
 "$PGR" variant annotate-vcf \
     --vcf-path "$OUT/hg002.stripped.vcf" \
-    --annotation-path hg38.ncbiRefSeq.gtf.gz \
+    --annotation-path "$GTF" \
     --output-path "$OUT/hg002.annotated.vcf"
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ bcftools index --tbi "$OUT/hg002.nochr.vcf.gz"
 # ---------------------------------------------------------------------------
 echo "=== [5] bcftools annotate with ClinVar ==="
 bcftools annotate \
-    -a clinvar.vcf.gz \
+    -a "$CLINVAR" \
     -c INFO/CLNSIG,INFO/CLNDN,INFO/CLNREVSTAT \
     "$OUT/hg002.nochr.vcf.gz" \
     -O z -o "$OUT/hg002.annotated.sorted.clinvar.vcf.gz"

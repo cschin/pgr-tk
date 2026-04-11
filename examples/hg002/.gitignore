@@ -1,5 +1,2 @@
-# Downloaded input files (kept out of git; example_output/ ignored via root .gitignore)
-*.fa.gz
-*.fna.gz
-*.gtf.gz
-*.manifest.sh
+# Auto-generated manifest (example_output/ and downloads/ ignored via root .gitignore)
+.manifest.sh

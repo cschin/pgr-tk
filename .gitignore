@@ -13,3 +13,4 @@ docker/github-build
 .gitignore
 pgr-web/dist/*
 examples/*/example_output/
+examples/*/downloads/
