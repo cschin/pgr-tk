@@ -335,6 +335,98 @@ def tx_type_table(rows, label):
 cov_labels_js = json.dumps([str(int(b)) for b, _ in cov_dist])
 cov_values_js = json.dumps([n for _, n in cov_dist])
 
+# ── SV candidates ─────────────────────────────────────────────────────────────
+SV_TYPE_LABEL = {
+    "SV": "Structural variant (size-discordant gap)",
+    "TG": "Ref gap (unaligned region between contigs)",
+    "TD": "Contig duplicate (contained alignment)",
+    "TO": "Contig overlap (partially overlapping)",
+    "QG": "Contig gap (unaligned between ref alignments)",
+    "QD": "Ref duplicate (ref block contained)",
+    "QO": "Ref overlap (ref block partially overlapping)",
+}
+SV_TYPE_COLOR = {
+    "SV": "#e74c3c", "TG": "#e67e22", "TD": "#f39c12", "TO": "#f1c40f",
+    "QG": "#3498db", "QD": "#9b59b6", "QO": "#1abc9c",
+}
+
+def parse_svcnd_bed(path):
+    records = []
+    if not os.path.exists(path):
+        return records
+    with open(path) as fh:
+        for line in fh:
+            if line.startswith('#') or not line.strip():
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 4:
+                continue
+            chrom, start, end = parts[0], int(parts[1]), int(parts[2])
+            sv_type = parts[3][:2]
+            size = end - start
+            records.append((chrom, start, end, sv_type, size))
+    return records
+
+def svcnd_type_rows(records, codes):
+    from collections import Counter
+    total = len(records)
+    counts = Counter(r[3] for r in records)
+    rows = ""
+    for code in codes:
+        n = counts.get(code, 0)
+        color = SV_TYPE_COLOR.get(code, "#95a5a6")
+        label = SV_TYPE_LABEL.get(code, code)
+        pct_v = n / total * 100 if total else 0
+        w = int(pct_v / 100 * 120)
+        rows += (f"<tr><td><b>{html.escape(code)}</b></td>"
+                 f"<td>{html.escape(label)}</td>"
+                 f"<td class='num'>{n:,}</td>"
+                 f"<td><div style='display:inline-block;width:{w}px;height:14px;"
+                 f"background:{color};border-radius:2px;vertical-align:middle'></div>"
+                 f" {pct_v:.1f}%</td></tr>")
+    return rows, total
+
+svcnd0 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap0.svcnd.bed"))
+svcnd1 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap1.svcnd.bed"))
+ctgsv0 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap0.ctgsv.bed"))
+ctgsv1 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap1.ctgsv.bed"))
+
+if svcnd0 or svcnd1:
+    ref_rows0, ref_total0 = svcnd_type_rows(svcnd0, ["SV", "TG", "TD", "TO"])
+    ref_rows1, ref_total1 = svcnd_type_rows(svcnd1, ["SV", "TG", "TD", "TO"])
+    ctg_rows0, ctg_total0 = svcnd_type_rows(ctgsv0, ["QG", "QD", "QO"])
+    ctg_rows1, ctg_total1 = svcnd_type_rows(ctgsv1, ["QG", "QD", "QO"])
+    sv_tab_html = f"""
+<h2>SV Candidate Summary</h2>
+<p class="note">
+  <b>Ref view</b> (.svcnd.bed) — anomalies on the reference axis &nbsp;&middot;&nbsp;
+  <b>Contig view</b> (.ctgsv.bed) — anomalies on the contig axis
+</p>
+<div class="col2">
+  <div>
+    <h3>Hap0 &mdash; Ref view ({ref_total0:,} records)</h3>
+    <table class="data"><thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th></tr></thead>
+    <tbody>{ref_rows0}</tbody></table>
+    <h3>Hap0 &mdash; Contig view ({ctg_total0:,} records)</h3>
+    <table class="data"><thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th></tr></thead>
+    <tbody>{ctg_rows0}</tbody></table>
+  </div>
+  <div>
+    <h3>Hap1 &mdash; Ref view ({ref_total1:,} records)</h3>
+    <table class="data"><thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th></tr></thead>
+    <tbody>{ref_rows1}</tbody></table>
+    <h3>Hap1 &mdash; Contig view ({ctg_total1:,} records)</h3>
+    <table class="data"><thead><tr><th>Code</th><th>Type</th><th>Count</th><th>%</th></tr></thead>
+    <tbody>{ctg_rows1}</tbody></table>
+  </div>
+</div>
+"""
+    sv_tab_button = '<button onclick="showTab(\'svcnd\')" id="btn-svcnd">SV Candidates</button>'
+    sv_tab_panel  = f'<div class="tabpanel" id="tab-svcnd">{sv_tab_html}</div>'
+else:
+    sv_tab_button = ""
+    sv_tab_panel  = ""
+
 # ── Compose page ─────────────────────────────────────────────────────────────
 doc = f"""<!DOCTYPE html>
 <html lang="en">
@@ -388,6 +480,7 @@ doc = f"""<!DOCTYPE html>
   <button onclick="showTab('nmgenes')"  id="btn-nmgenes">NM Genes</button>
   <button onclick="showTab('scatter')"  id="btn-scatter">Scatter Plots</button>
   <button onclick="showTab('perchrom')" id="btn-perchrom">Per-Chromosome</button>
+  {sv_tab_button}
 </div>
 
 <!-- Tab: Summary -->
@@ -482,6 +575,9 @@ doc = f"""<!DOCTYPE html>
     {chr_table(chr1, "Hap1")}
   </div>
 </div>
+
+<!-- Tab: SV Candidates -->
+{sv_tab_panel}
 
 <script>
 const _chartsDone = {{}};
