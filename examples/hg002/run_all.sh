@@ -24,11 +24,13 @@ mkdir -p "$OUT"
 
 TIMELOG="$OUT/run_all_timings.tsv"
 
-# Use GNU time (gtime on macOS via brew coreutils, /usr/bin/time on Linux)
-if [[ "$(uname)" == "Darwin" ]]; then
+# Use GNU time if available; fall back to plain execution (no timing data).
+if [[ "$(uname)" == "Darwin" ]] && command -v gtime &>/dev/null; then
     _time() { gtime -f "%e\t%U\t%S\t%M\t%P" -a -o "$TIMELOG" "$@"; }
-else
+elif command -v /usr/bin/time &>/dev/null && /usr/bin/time --version &>/dev/null 2>&1; then
     _time() { /usr/bin/time -f "%e\t%U\t%S\t%M\t%P" --append -o "$TIMELOG" "$@"; }
+else
+    _time() { "$@"; }
 fi
 
 # run_step NAME SCRIPT SENTINEL...
@@ -52,9 +54,15 @@ run_step() {
     echo
     echo "╔══ $name ══"
     local t0=$SECONDS
-    _time bash "$script" 2>&1 | sed 's/^/│ /'
-    echo "╚══ $name — $((SECONDS - t0))s elapsed"
-    printf "%s\n" "$name" >> "$TIMELOG"
+    local rc=0
+    _time bash "$script" 2>&1 | sed 's/^/│ /' || rc=${PIPESTATUS[0]}
+    local elapsed=$(( SECONDS - t0 ))
+    if [[ $rc -ne 0 ]]; then
+        echo "╚══ $name — FAILED (exit $rc) after ${elapsed}s"
+    else
+        echo "╚══ $name — ${elapsed}s elapsed"
+    fi
+    printf "%s\t%s\n" "$name" "${rc:-0}" >> "$TIMELOG"
 }
 
 run_step "01 align alnmap" \
