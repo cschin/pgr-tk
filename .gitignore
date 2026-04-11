@@ -12,3 +12,4 @@ docker/github-build
 .vscode/settings.json
 .gitignore
 pgr-web/dist/*
+examples/*/example_output/

@@ -1,8 +1,5 @@
-# Downloaded input files
+# Downloaded input files (kept out of git; example_output/ ignored via root .gitignore)
 *.fa.gz
 *.fna.gz
 *.gtf.gz
 *.manifest.sh
-
-# All generated outputs
-example_output/
