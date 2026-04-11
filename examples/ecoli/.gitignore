@@ -1,0 +1,10 @@
+# Generated archive and index files
+*.agcrs
+*.agcrs-shm
+*.agcrs-wal
+*.mdbi
+*.mdbv
+*.midx
+# Query outputs
+*.hit
+*.fa

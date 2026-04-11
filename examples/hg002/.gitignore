@@ -1,0 +1,27 @@
+# Downloaded FASTAs
+*.fa.gz
+*.fna.gz
+# Generated index/alignment files
+*.agcrs
+*.agcrs-shm
+*.agcrs-wal
+*.alndb
+*.alndb-shm
+*.alndb-wal
+*.alnmap
+*.mdbi
+*.mdbv
+*.midx
+# Output files
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.bed
+*.gtf
+*.gtf.gz
+*.html
+*.svg
+*.tsv
+*.json
+*.fa
+*.manifest.sh
