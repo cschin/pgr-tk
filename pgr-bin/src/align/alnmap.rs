@@ -575,6 +575,10 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                 let rtn = target_id_to_mapped_regions
                     .into_iter()
                     .flat_map(|(t_idx, mapped_regions)| {
+                        // Reconstruct the target chromosome once per (query_contig, chromosome)
+                        // pair rather than once per alignment segment — avoids O(n_segments)
+                        // repeated O(n_frags) scans inside the innermost loop.
+                        let ref_seq = ref_seq_index_db.get_seq_by_id(t_idx).unwrap();
                         let mapped_region_aln = mapped_regions
                             .into_iter()
                             .map(|(aln_segs, orientation)| {
@@ -591,12 +595,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                                                                  //let te = te;
                                         let qs = if orientation == 0 { qs - kmer_size } else { qs };
                                         let qe = if orientation == 0 { qe } else { qe + kmer_size };
-                                        // Fetch only the needed subregion instead of the full chromosome.
-                                        // This avoids O(n_query_contigs) full chromosome reconstructions
-                                        // and the associated memory allocation pressure.
-                                        let s0str = ref_seq_index_db
-                                            .get_sub_seq_by_id(t_idx, ts as usize, te as usize)
-                                            .unwrap();
+                                        let s0str = ref_seq[ts as usize..te as usize].to_vec();
                                         let s1str = if orientation == 0 {
                                             query_seq[qs as usize..qe as usize].to_vec()
                                         } else {
