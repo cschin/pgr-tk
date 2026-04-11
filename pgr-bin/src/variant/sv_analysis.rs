@@ -84,6 +84,7 @@ enum AlnDiff {
     Aligned(AlignmentResult),
     FailAln,
     _FailEndMatch,
+    #[allow(dead_code)]
     FailLengthDiff,
     FailShortSeq,
 }

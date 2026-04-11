@@ -12,7 +12,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 #[derive(Clone, Copy, clap::ValueEnum, Default, Debug)]
-enum OptPreset {
+pub enum OptPreset {
     Fast,
     #[default]
     Default,

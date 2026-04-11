@@ -10,6 +10,7 @@ use crate::error::{AgcError, Result};
 // Constants (USE_SPARSE_HT disabled: dense HT matches AGC's default build)
 // ---------------------------------------------------------------------------
 const HASHING_STEP: u32 = 4;
+#[allow(dead_code)]
 const DEFAULT_MIN_MATCH_LEN: u32 = 18;
 const MIN_NRUN_LEN: u32 = 4;
 const N_CODE: u8 = 4;

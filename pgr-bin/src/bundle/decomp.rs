@@ -135,7 +135,7 @@ fn group_smps_by_principle_bundle_id(
     rtn_partitions
 }
 
-pub fn run(args: Args) -> Result<(), std::io::Error> {
+pub fn run(_args: Args) -> Result<(), std::io::Error> {
     let mut args = Args::parse();
     let cmd_string = std::env::args().collect::<Vec<String>>().join(" ");
     let fastx_path = args.fastx_path.clone();
