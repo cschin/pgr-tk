@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# build_hprc_r2_agcrs.sh — incrementally build an agc-rs pangenome archive
-# from the HPRC release-2 assembly table.
+# build_hprc_r2_agcrs.sh — build an agc-rs pangenome archive from the HPRC
+# release-2 assembly table by processing haplotypes in batches, then merging.
 #
-# For each row the script:
-#   1. Derives a sample name:  <sample_id>_mat  or  <sample_id>_pat
-#   2. Skips samples already present in the archive (resume support)
-#   3. Downloads the .fa.gz via HTTPS (public bucket, no credentials needed)
-#   4. Creates or appends to the archive
-#   5. Deletes the local .fa.gz immediately after a successful add
+# Strategy:
+#   - The first haplotype in the work list is the common reference for every
+#     batch sub-archive.  It is downloaded once and kept until the final merge.
+#   - For each batch of BATCH_SIZE haplotypes a sub-archive is created:
+#       1. agc-rs create  (seeds it with the common reference)
+#       2. agc-rs batch-append  (compresses the batch with a shared index,
+#          avoiding N redundant index-build passes)
+#       3. Downloaded FASTAs are deleted immediately after the batch is done.
+#   - All sub-archives are merged into the final output archive.
+#   - Sub-archives and the cached reference FA are removed after a successful
+#     merge (set KEEP_BATCHES=1 to disable cleanup).
+#
+# Disk headroom needed during a batch: BATCH_SIZE × genome_size (e.g. 8 ×
+# 3 GB ≈ 24 GB for human).  Increase BATCH_SIZE if more disk is available
+# (larger batches amortize the shared-index build across more samples).
+#
+# Resume support: if a batch sub-archive already exists it is skipped; if the
+# final archive already exists the script exits immediately after printing info.
 #
 # Usage:
 #   bash scripts/build_hprc_r2_agcrs.sh [--test] <archive.agcrs> [agc-rs-bin] [work-dir]
@@ -16,11 +28,15 @@
 #   --test         Process only the first 10 haplotypes (quick smoke test)
 #
 # Arguments:
-#   archive.agcrs  — output archive path (created on first run, appended thereafter)
+#   archive.agcrs  — final merged output archive path
 #   agc-rs-bin     — path to the agc-rs binary (default: target/release/agc-rs)
-#   work-dir       — scratch directory for downloads (default: ./hprc_r2_downloads)
+#   work-dir       — scratch directory for downloads and sub-archives
+#                    (default: ./hprc_r2_work)
 
 set -euo pipefail
+
+BATCH_SIZE=8
+KEEP_BATCHES="${KEEP_BATCHES:-0}"   # set to 1 to skip cleanup of sub-archives
 
 # ---------------------------------------------------------------------------
 # Arguments
@@ -32,10 +48,9 @@ if [[ "${1:-}" == "--test" ]]; then
 fi
 
 ARCHIVE="${1:?usage: $0 [--test] <archive.agcrs> [agc-rs-binary] [work-dir]}"
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGC_RS="${2:-${SCRIPT_DIR}/../target/release/agc-rs}"
-WORK_DIR="${3:-$(pwd)/hprc_r2_downloads}"
+WORK_DIR="${3:-$(pwd)/hprc_r2_work}"
 
 if [[ ! -x "$AGC_RS" ]]; then
     echo "ERROR: agc-rs binary not found at $AGC_RS" >&2
@@ -44,19 +59,26 @@ if [[ ! -x "$AGC_RS" ]]; then
 fi
 
 if (( TEST_MODE )); then
-    echo "[TEST MODE] limiting to first 10 haplotypes"
+    echo "[INFO] TEST MODE — limiting to first 10 haplotypes"
 fi
 
-# S3 → HTTPS base for the public human-pangenomics bucket
 S3_HTTP_BASE="https://human-pangenomics.s3.us-west-2.amazonaws.com"
-
 CSV_URL="https://raw.githubusercontent.com/human-pangenomics/hprc_intermediate_assembly/main/data_tables/assemblies_release2_v1.0.index.csv"
 CSV_FILE="${WORK_DIR}/assemblies_release2_v1.0.index.csv"
 
 mkdir -p "$WORK_DIR"
 
 # ---------------------------------------------------------------------------
-# Download the assembly index if not already cached
+# Short-circuit: if the final archive already exists, just print info and exit
+# ---------------------------------------------------------------------------
+if [[ -f "$ARCHIVE" ]]; then
+    echo "[INFO] Archive already exists: $ARCHIVE"
+    "$AGC_RS" info "$ARCHIVE"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Download assembly index if not already cached
 # ---------------------------------------------------------------------------
 if [[ ! -f "$CSV_FILE" ]]; then
     echo "[INDEX] Downloading assembly index ..."
@@ -65,8 +87,7 @@ if [[ ! -f "$CSV_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Build a work list: "sample_name\thttps_url" pairs.
-# Sort by sample_id so pat/mat pairs are adjacent (better delta compression).
+# Build work list: "sample_name\thttps_url" pairs, sorted by sample_id/hap
 # ---------------------------------------------------------------------------
 WORK_LIST="${WORK_DIR}/work_list.tsv"
 HAP_LIMIT=$(( TEST_MODE ? 10 : 0 ))
@@ -80,7 +101,7 @@ with open(csv_path, newline="") as f:
     reader = csv.DictReader(f)
     for row in reader:
         name  = row["assembly_name"].strip()
-        s3url = row["assembly"].strip()          # s3://human-pangenomics/...
+        s3url = row["assembly"].strip()
         sid   = row["sample_id"].strip()
 
         if "_mat_" in name:
@@ -92,28 +113,22 @@ with open(csv_path, newline="") as f:
         elif "_hap2_" in name:
             hap = "hap2"
         else:
-            # No mat/pat/hap1/hap2 in assembly name — fall back to haplotype
-            # column (HPRC: 1=pat, 2=mat) but keep the generic label if phasing
-            # is unknown (neither trio nor hic).
-            phasing = row.get("phasing", "").strip()
+            phasing   = row.get("phasing", "").strip()
             haplotype = row["haplotype"].strip()
             if phasing in ("trio", "hic"):
                 hap = "mat" if haplotype == "2" else "pat"
             else:
                 hap = f"hap{haplotype}"
 
-        # Convert s3://bucket/key  →  https://bucket.s3.region.amazonaws.com/key
         s3_prefix = "s3://human-pangenomics/"
         key = s3url[len(s3_prefix):]
         http_url = f"{http_base}/{key}"
 
         rows.append((sid, hap, f"{sid}_{hap}", http_url))
 
-# Sort by sample_id then hap so pat/mat pairs are adjacent
 rows.sort(key=lambda r: (r[0], r[1]))
 
-import sys as _sys
-limit = int(_sys.argv[4]) if len(_sys.argv) > 4 else 0
+limit = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 if limit:
     rows = rows[:limit]
 
@@ -125,58 +140,124 @@ print(f"[INDEX] {len(rows)} assemblies written to work list", flush=True)
 PYEOF
 
 # ---------------------------------------------------------------------------
-# Collect already-present samples (for resume support)
+# Load work list into arrays
 # ---------------------------------------------------------------------------
-EXISTING_SAMPLES_FILE="${WORK_DIR}/existing_samples.txt"
-if [[ -f "$ARCHIVE" ]]; then
-    "$AGC_RS" list "$ARCHIVE" > "$EXISTING_SAMPLES_FILE" 2>/dev/null || true
-    echo "[RESUME] $(wc -l < "$EXISTING_SAMPLES_FILE") samples already in archive"
+mapfile -t SAMPLE_NAMES < <(cut -f1 "$WORK_LIST")
+mapfile -t HTTP_URLS    < <(cut -f2 "$WORK_LIST")
+TOTAL=${#SAMPLE_NAMES[@]}
+
+if (( TOTAL == 0 )); then
+    echo "ERROR: work list is empty" >&2
+    exit 1
+fi
+
+echo "[BUILD] $TOTAL haplotypes to process (batch size: $BATCH_SIZE)"
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Download the common reference (first haplotype), keep it
+# ---------------------------------------------------------------------------
+REF_SAMPLE="${SAMPLE_NAMES[0]}"
+REF_URL="${HTTP_URLS[0]}"
+REF_FA="${WORK_DIR}/$(basename "$REF_URL")"
+
+if [[ ! -f "$REF_FA" ]]; then
+    echo "[REF] Downloading reference: $REF_SAMPLE"
+    curl -fL --retry 3 --retry-delay 5 -o "$REF_FA" "$REF_URL"
+    echo "[REF] Saved: $REF_FA"
 else
-    > "$EXISTING_SAMPLES_FILE"
-    echo "[RESUME] Archive does not exist yet; will create on first sample"
+    echo "[REF] Using cached reference: $REF_FA"
 fi
 
 # ---------------------------------------------------------------------------
-# Process each assembly
+# Phase 2 — Process remaining haplotypes in batches of BATCH_SIZE
 # ---------------------------------------------------------------------------
-TOTAL=$(wc -l < "$WORK_LIST")
-IDX=0
+# Batch 0 covers indices 1 .. BATCH_SIZE   (index 0 = reference, not repeated)
+# Batch 1 covers indices BATCH_SIZE+1 .. 2*BATCH_SIZE
+# ... and so on.
+#
+# Each batch sub-archive is seeded with the common reference so that all
+# sub-archives share the same splitter set and can be merged cleanly.
 
-while IFS=$'\t' read -r SAMPLE_NAME HTTP_URL; do
-    IDX=$((IDX + 1))
-    BASENAME="$(basename "$HTTP_URL")"
-    LOCAL_FA="${WORK_DIR}/${BASENAME}"
+BATCH_ARCHIVES=()
+BATCH_NUM=0
+BATCH_START=1   # index 0 is the reference handled above
 
-    # Skip if already in archive
-    if grep -qx "$SAMPLE_NAME" "$EXISTING_SAMPLES_FILE" 2>/dev/null; then
-        echo "[${IDX}/${TOTAL}] SKIP  $SAMPLE_NAME — already in archive"
+while (( BATCH_START < TOTAL )); do
+    BATCH_END=$(( BATCH_START + BATCH_SIZE ))
+    (( BATCH_END > TOTAL )) && BATCH_END=$TOTAL
+    BATCH_COUNT=$(( BATCH_END - BATCH_START ))
+
+    BATCH_LABEL=$(printf "%04d" "$BATCH_NUM")
+    BATCH_ARCHIVE="${WORK_DIR}/batch_${BATCH_LABEL}.agcrs"
+    BATCH_ARCHIVES+=("$BATCH_ARCHIVE")
+
+    if [[ -f "$BATCH_ARCHIVE" ]]; then
+        echo "[BATCH ${BATCH_LABEL}] sub-archive exists — skipping (hap ${BATCH_START}–$((BATCH_END-1)))"
+        BATCH_NUM=$(( BATCH_NUM + 1 ))
+        BATCH_START=$BATCH_END
         continue
     fi
 
-    echo "[${IDX}/${TOTAL}] ===== $SAMPLE_NAME ====="
+    echo ""
+    echo "[BATCH ${BATCH_LABEL}] === haplotypes $BATCH_START–$((BATCH_END-1)) ($BATCH_COUNT samples) ==="
 
-    # ---- Download -----------------------------------------------------------
-    echo "[${IDX}/${TOTAL}] DL    $HTTP_URL"
-    curl -fL --retry 3 --retry-delay 5 -o "$LOCAL_FA" "$HTTP_URL"
+    # Scratch directory for this batch's FASTAs
+    BATCH_DIR="${WORK_DIR}/batch_${BATCH_LABEL}_fa"
+    mkdir -p "$BATCH_DIR"
 
-    # ---- Create or append ---------------------------------------------------
-    if [[ ! -f "$ARCHIVE" ]]; then
-        echo "[${IDX}/${TOTAL}] CREATE  $ARCHIVE  (first sample: $SAMPLE_NAME)"
-        "$AGC_RS" create "$LOCAL_FA" --output "$ARCHIVE" --sample "$SAMPLE_NAME"
-    else
-        echo "[${IDX}/${TOTAL}] APPEND  $SAMPLE_NAME → $ARCHIVE"
-        "$AGC_RS" append "$ARCHIVE" --sample "$SAMPLE_NAME" "$LOCAL_FA"
-    fi
+    # Seed sub-archive with the common reference
+    echo "[BATCH ${BATCH_LABEL}] Creating sub-archive (reference: $REF_SAMPLE) ..."
+    "$AGC_RS" create --output "$BATCH_ARCHIVE" --sample "$REF_SAMPLE" "$REF_FA"
 
-    # ---- Cleanup ------------------------------------------------------------
-    rm -f "$LOCAL_FA"
-    echo "[${IDX}/${TOTAL}] DONE  $SAMPLE_NAME  (local copy removed)"
+    # Download all FASTAs for this batch
+    echo "[BATCH ${BATCH_LABEL}] Downloading $BATCH_COUNT FASTAs ..."
+    BATCH_INPUT_ARGS=()
+    BATCH_LOCAL_FILES=()
+    for (( i = BATCH_START; i < BATCH_END; i++ )); do
+        SNAME="${SAMPLE_NAMES[$i]}"
+        URL="${HTTP_URLS[$i]}"
+        LOCAL_FA="${BATCH_DIR}/$(basename "$URL")"
+        echo "[BATCH ${BATCH_LABEL}]   DL $(( i - BATCH_START + 1 ))/${BATCH_COUNT}  $SNAME"
+        curl -fL --retry 3 --retry-delay 5 -o "$LOCAL_FA" "$URL"
+        BATCH_INPUT_ARGS+=("${SNAME}:${LOCAL_FA}")
+        BATCH_LOCAL_FILES+=("$LOCAL_FA")
+    done
 
-    # Update cache so resume within the same run works correctly
-    echo "$SAMPLE_NAME" >> "$EXISTING_SAMPLES_FILE"
+    # Compress all batch samples with a single shared index
+    echo "[BATCH ${BATCH_LABEL}] batch-append $BATCH_COUNT samples (shared index) ..."
+    "$AGC_RS" batch-append "$BATCH_ARCHIVE" "${BATCH_INPUT_ARGS[@]}"
 
-done < "$WORK_LIST"
+    # Remove downloaded FASTAs and scratch dir
+    rm -f "${BATCH_LOCAL_FILES[@]}"
+    rmdir "$BATCH_DIR" 2>/dev/null || true
+    echo "[BATCH ${BATCH_LABEL}] DONE  (downloaded FASTAs removed)"
+
+    BATCH_NUM=$(( BATCH_NUM + 1 ))
+    BATCH_START=$BATCH_END
+done
 
 echo ""
-echo "All done.  Archive: $ARCHIVE"
+echo "[BUILD] All ${#BATCH_ARCHIVES[@]} sub-archive(s) complete"
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Merge all sub-archives into the final archive
+# ---------------------------------------------------------------------------
+echo ""
+echo "[MERGE] Merging ${#BATCH_ARCHIVES[@]} sub-archive(s) → $ARCHIVE ..."
+"$AGC_RS" merge --output "$ARCHIVE" "${BATCH_ARCHIVES[@]}"
+
+echo ""
+echo "[DONE] Archive: $ARCHIVE"
 "$AGC_RS" info "$ARCHIVE"
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Cleanup (sub-archives and cached reference FA)
+# ---------------------------------------------------------------------------
+if (( ! KEEP_BATCHES )); then
+    echo "[CLEAN] Removing sub-archives and cached reference FA ..."
+    rm -f "${BATCH_ARCHIVES[@]}"
+    rm -f "$REF_FA"
+    echo "[CLEAN] Done"
+else
+    echo "[CLEAN] KEEP_BATCHES=1 — sub-archives and reference FA kept in $WORK_DIR"
+fi
