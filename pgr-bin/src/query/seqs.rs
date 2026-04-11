@@ -79,7 +79,6 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()

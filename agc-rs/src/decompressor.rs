@@ -38,11 +38,10 @@ impl AgcFile {
 
     /// Return the number of samples in the archive.
     pub fn n_samples(&self) -> Result<usize> {
-        let count: i64 = self.db.conn().query_row(
-            "SELECT COUNT(*) FROM sample",
-            [],
-            |r| r.get(0),
-        )?;
+        let count: i64 = self
+            .db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM sample", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
@@ -59,7 +58,10 @@ impl AgcFile {
 
     /// List all sample names in the archive.
     pub fn list_samples(&self) -> Result<Vec<String>> {
-        let mut stmt = self.db.conn().prepare("SELECT name FROM sample ORDER BY id")?;
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare("SELECT name FROM sample ORDER BY id")?;
         let names = stmt
             .query_map([], |r| r.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
@@ -69,9 +71,10 @@ impl AgcFile {
     /// List the contig names for `sample`.
     pub fn list_contigs(&self, sample: &str) -> Result<Vec<String>> {
         let sample_id = self.sample_id(sample)?;
-        let mut stmt = self.db.conn().prepare(
-            "SELECT name FROM contig WHERE sample_id = ?1 ORDER BY id",
-        )?;
+        let mut stmt = self
+            .db
+            .conn()
+            .prepare("SELECT name FROM contig WHERE sample_id = ?1 ORDER BY id")?;
         let names = stmt
             .query_map(params![sample_id], |r| r.get(0))?
             .collect::<std::result::Result<Vec<String>, _>>()?;
@@ -104,13 +107,7 @@ impl AgcFile {
     /// for `contig` within `sample`.
     ///
     /// Returns the sequence as uppercase ASCII bytes.
-    pub fn contig_seq(
-        &self,
-        sample: &str,
-        contig: &str,
-        start: u64,
-        end: u64,
-    ) -> Result<Vec<u8>> {
+    pub fn contig_seq(&self, sample: &str, contig: &str, start: u64, end: u64) -> Result<Vec<u8>> {
         // 1. Contig metadata.
         let total_len = self.contig_len(sample, contig)?;
         let contig_id = self.contig_id(sample, contig)?;
@@ -165,7 +162,8 @@ impl AgcFile {
 
             if seg_end > start && seg_start < end {
                 // This segment contributes to the output.
-                let seq_bits = self.decompress_segment(seg.group_id, seg.in_group_id, &seg.delta_data)?;
+                let seq_bits =
+                    self.decompress_segment(seg.group_id, seg.in_group_id, &seg.delta_data)?;
 
                 // 6. Handle reverse complement.
                 let seq_bits = if seg.is_rev_comp {
@@ -402,8 +400,7 @@ mod tests {
             params![ref_blob, r#"{"min_match_len":18,"segment_size":60000}"#],
         )
         .expect("insert segment_group");
-        let group_id: i64 = conn
-            .last_insert_rowid();
+        let group_id: i64 = conn.last_insert_rowid();
 
         // segment: in_group_id = 0 means this segment IS the reference;
         // delta_data is NULL.

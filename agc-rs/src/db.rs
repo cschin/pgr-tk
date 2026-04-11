@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 
 use crate::error::{AgcError, Result};
 
@@ -212,10 +212,7 @@ mod tests {
             let db = AgcDb::create(&path).expect("create");
             // Insert a sample to prove the schema is usable.
             db.conn()
-                .execute(
-                    "INSERT INTO sample (name) VALUES (?1)",
-                    params!["sample_A"],
-                )
+                .execute("INSERT INTO sample (name) VALUES (?1)", params!["sample_A"])
                 .expect("insert sample");
         }
 

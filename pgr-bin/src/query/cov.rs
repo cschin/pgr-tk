@@ -1,4 +1,3 @@
-
 //use std::path::PathBuf;
 use clap::{self, Parser};
 
@@ -147,8 +146,15 @@ fn generate_bed_graph_from_fastx_files(args: &Args) {
             .trim()
             .to_string();
         if fid == 0 {
-            sdb0.load_from_fastx(filepath.clone(), args.w, args.k, args.r, args.min_span, true)
-                .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
+            sdb0.load_from_fastx(
+                filepath.clone(),
+                args.w,
+                args.k,
+                args.r,
+                args.min_span,
+                true,
+            )
+            .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
         } else {
             sdb0.append_from_fastx(filepath.clone(), true)
                 .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
@@ -166,8 +172,15 @@ fn generate_bed_graph_from_fastx_files(args: &Args) {
             .trim()
             .to_string();
         if fid == 0 {
-            sdb1.load_from_fastx(filepath.clone(), args.w, args.k, args.r, args.min_span, true)
-                .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
+            sdb1.load_from_fastx(
+                filepath.clone(),
+                args.w,
+                args.k,
+                args.r,
+                args.min_span,
+                true,
+            )
+            .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
         } else {
             sdb1.append_from_fastx(filepath.clone(), true)
                 .unwrap_or_else(|_| panic!("fail to read the fastx file: {}", filepath));
@@ -299,10 +312,18 @@ fn generate_bed_graph_from_fastx_files(args: &Args) {
 
 fn generate_bed_graph_from_sdb(args: &Args) {
     let mut seq_index_db = SeqIndexDB::new();
-    seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
+    seq_index_db
+        .load_from_agc_index(
+            args.agc_idx_prefix
+                .as_ref()
+                .expect("agc_idx_prefix required")
+                .clone(),
+        )
         .expect("failed to load AGC index");
 
-    let shmmr_spec = seq_index_db.shmmr_spec.expect("shmmr_spec set after successful load");
+    let shmmr_spec = seq_index_db
+        .shmmr_spec
+        .expect("shmmr_spec set after successful load");
 
     let mut sample_set0 = FxHashSet::<String>::default();
     let input_files = BufReader::new(

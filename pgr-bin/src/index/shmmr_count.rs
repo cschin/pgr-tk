@@ -84,7 +84,6 @@ fn get_fastx_reader(filepath: String) -> Result<GZFastaReader, std::io::Error> {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     let mut shmmr_count = FxHashMap::<u64, (usize, usize)>::default();
 
     let mut set_shmmr_count = |seq_iter: &mut dyn Iterator<Item = io::Result<SeqRec>>| {

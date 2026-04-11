@@ -8,8 +8,8 @@ use std::path::Path;
 use tempfile::tempdir;
 
 const MG1655: &str = "test_data/ecoli/ecoli_k12_mg1655.fna.gz";
-const W3110:  &str = "test_data/ecoli/ecoli_k12_w3110.fna.gz";
-const SAKAI:  &str = "test_data/ecoli/ecoli_o157h7_sakai.fna.gz";
+const W3110: &str = "test_data/ecoli/ecoli_k12_w3110.fna.gz";
+const SAKAI: &str = "test_data/ecoli/ecoli_o157h7_sakai.fna.gz";
 
 /// Read a FASTA (plain or .gz) file and return a name -> ASCII-sequence map.
 /// Returns an empty map (rather than panicking) if the file does not exist,
@@ -29,11 +29,12 @@ fn load_fasta_as_map(path: &str) -> HashMap<String, Vec<u8>> {
 fn assert_sequences_match(agc: &AgcFile, sample: &str, expected_fasta: &str) {
     let expected = load_fasta_as_map(expected_fasta);
     for (contig, seq) in &expected {
-        let got = agc.full_contig(sample, contig).unwrap_or_else(|e| {
-            panic!("full_contig({sample}/{contig}) failed: {e}")
-        });
+        let got = agc
+            .full_contig(sample, contig)
+            .unwrap_or_else(|e| panic!("full_contig({sample}/{contig}) failed: {e}"));
         assert_eq!(
-            got, *seq,
+            got,
+            *seq,
             "sequence mismatch: {sample}/{contig} (first diff at {:?})",
             got.iter().zip(seq.iter()).position(|(a, b)| a != b)
         );
@@ -43,8 +44,8 @@ fn assert_sequences_match(agc: &AgcFile, sample: &str, expected_fasta: &str) {
 #[test]
 fn ecoli_three_genome_round_trip() {
     let mg1655 = MG1655;
-    let w3110  = W3110;
-    let sakai  = SAKAI;
+    let w3110 = W3110;
+    let sakai = SAKAI;
 
     if !Path::new(mg1655).exists() {
         return;
@@ -114,7 +115,7 @@ fn ecoli_subrange_queries() {
 #[test]
 fn ecoli_append_sample() {
     let mg1655 = MG1655;
-    let w3110  = W3110;
+    let w3110 = W3110;
     if !Path::new(mg1655).exists() {
         return;
     }
@@ -168,14 +169,14 @@ fn batch_append_matches_sequential_append() {
 
     let dir = tempdir().unwrap();
     let sequential = dir.path().join("sequential.agcrs");
-    let batched    = dir.path().join("batched.agcrs");
+    let batched = dir.path().join("batched.agcrs");
 
     // --- sequential reference ------------------------------------------------
     {
         let mut c = Compressor::create(&sequential, Params::default()).unwrap();
         c.add_fasta(Path::new(MG1655), "MG1655").unwrap();
-        c.add_fasta(Path::new(W3110),  "W3110").unwrap();
-        c.add_fasta(Path::new(SAKAI),  "Sakai").unwrap();
+        c.add_fasta(Path::new(W3110), "W3110").unwrap();
+        c.add_fasta(Path::new(SAKAI), "Sakai").unwrap();
         c.finish().unwrap();
     }
 
@@ -187,16 +188,13 @@ fn batch_append_matches_sequential_append() {
     }
     {
         let mut c = Compressor::append(&batched).unwrap();
-        c.add_fasta_batch(&[
-            (Path::new(W3110), "W3110"),
-            (Path::new(SAKAI), "Sakai"),
-        ])
-        .unwrap();
+        c.add_fasta_batch(&[(Path::new(W3110), "W3110"), (Path::new(SAKAI), "Sakai")])
+            .unwrap();
         c.finish().unwrap();
     }
 
     // --- compare -------------------------------------------------------------
-    let ref_agc  = AgcFile::open(&sequential).unwrap();
+    let ref_agc = AgcFile::open(&sequential).unwrap();
     let test_agc = AgcFile::open(&batched).unwrap();
 
     assert_eq!(test_agc.n_samples().unwrap(), ref_agc.n_samples().unwrap());
@@ -206,12 +204,16 @@ fn batch_append_matches_sequential_append() {
         // Also verify against the sequential reference to catch subtle divergence.
         let expected = load_fasta_as_map(path);
         for (contig, seq) in &expected {
-            let from_ref  = ref_agc.full_contig(sample, contig).unwrap();
+            let from_ref = ref_agc.full_contig(sample, contig).unwrap();
             let from_test = test_agc.full_contig(sample, contig).unwrap();
-            assert_eq!(from_ref, from_test,
-                "batch vs sequential mismatch: {sample}/{contig}");
-            assert_eq!(from_test, *seq,
-                "batch vs FASTA mismatch: {sample}/{contig}");
+            assert_eq!(
+                from_ref, from_test,
+                "batch vs sequential mismatch: {sample}/{contig}"
+            );
+            assert_eq!(
+                from_test, *seq,
+                "batch vs FASTA mismatch: {sample}/{contig}"
+            );
         }
     }
 }
@@ -273,13 +275,13 @@ fn merge_two_archives_round_trip() {
     let dir = tempdir().unwrap();
     let archive_a = dir.path().join("a.agcrs");
     let archive_b = dir.path().join("b.agcrs");
-    let merged    = dir.path().join("merged.agcrs");
+    let merged = dir.path().join("merged.agcrs");
 
     // archive_a: MG1655 (ref) + W3110 (delta)
     {
         let mut c = Compressor::create(&archive_a, Params::default()).unwrap();
         c.add_fasta(Path::new(MG1655), "MG1655").unwrap();
-        c.add_fasta(Path::new(W3110),  "W3110").unwrap();
+        c.add_fasta(Path::new(W3110), "W3110").unwrap();
         c.finish().unwrap();
     }
 
@@ -287,7 +289,7 @@ fn merge_two_archives_round_trip() {
     {
         let mut c = Compressor::create(&archive_b, Params::default()).unwrap();
         c.add_fasta(Path::new(MG1655), "MG1655").unwrap();
-        c.add_fasta(Path::new(SAKAI),  "Sakai").unwrap();
+        c.add_fasta(Path::new(SAKAI), "Sakai").unwrap();
         c.finish().unwrap();
     }
 
@@ -303,8 +305,8 @@ fn merge_two_archives_round_trip() {
     assert!(names.contains(&"Sakai".to_string()));
 
     assert_sequences_match(&agc, "MG1655", MG1655);
-    assert_sequences_match(&agc, "W3110",  W3110);
-    assert_sequences_match(&agc, "Sakai",  SAKAI);
+    assert_sequences_match(&agc, "W3110", W3110);
+    assert_sequences_match(&agc, "Sakai", SAKAI);
 }
 
 /// Merging archives built from different references must fail.
@@ -317,7 +319,7 @@ fn merge_different_references_returns_error() {
     let dir = tempdir().unwrap();
     let archive_mg = dir.path().join("mg.agcrs");
     let archive_w3 = dir.path().join("w3.agcrs");
-    let merged     = dir.path().join("bad_merge.agcrs");
+    let merged = dir.path().join("bad_merge.agcrs");
 
     // Two archives with different reference genomes → different splitter sets.
     {
@@ -348,19 +350,19 @@ fn merge_duplicate_sample_names_returns_error() {
     let dir = tempdir().unwrap();
     let archive_a = dir.path().join("a_dup.agcrs");
     let archive_b = dir.path().join("b_dup.agcrs");
-    let merged    = dir.path().join("dup_merge.agcrs");
+    let merged = dir.path().join("dup_merge.agcrs");
 
     // Both archives have the same non-reference sample name "W3110".
     {
         let mut c = Compressor::create(&archive_a, Params::default()).unwrap();
         c.add_fasta(Path::new(MG1655), "MG1655").unwrap();
-        c.add_fasta(Path::new(W3110),  "W3110").unwrap();
+        c.add_fasta(Path::new(W3110), "W3110").unwrap();
         c.finish().unwrap();
     }
     {
         let mut c = Compressor::create(&archive_b, Params::default()).unwrap();
         c.add_fasta(Path::new(MG1655), "MG1655").unwrap();
-        c.add_fasta(Path::new(W3110),  "W3110").unwrap(); // same name
+        c.add_fasta(Path::new(W3110), "W3110").unwrap(); // same name
         c.finish().unwrap();
     }
 

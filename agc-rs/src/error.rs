@@ -25,7 +25,11 @@ pub enum AgcError {
 
     /// A requested range exceeds the actual sequence length.
     #[error("range out of bounds: start={start}, end={end}, sequence length={len}")]
-    RangeOutOfBounds { start: usize, end: usize, len: usize },
+    RangeOutOfBounds {
+        start: usize,
+        end: usize,
+        len: usize,
+    },
 
     /// The on-disk schema version is not supported by this library.
     #[error("unsupported schema version: {0}")]

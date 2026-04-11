@@ -77,8 +77,8 @@ fn parse_fasta<R: BufRead>(reader: R) -> Result<Vec<FastaRecord>> {
 
             // Parse the new header: name is everything after '>' up to the
             // first whitespace character.
-            let header = std::str::from_utf8(&line[1..])
-                .map_err(|e| AgcError::FastaParse(e.to_string()))?;
+            let header =
+                std::str::from_utf8(&line[1..]).map_err(|e| AgcError::FastaParse(e.to_string()))?;
             let name = header.split_whitespace().next().unwrap_or("").to_string();
             current_name = Some(name);
         } else if current_name.is_some() {

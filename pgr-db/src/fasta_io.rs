@@ -259,7 +259,10 @@ impl Iterator for FastaStreamReader {
             };
             t
         } else {
-            self.next_header.as_ref().expect("invariant: next_header is Some in else branch").clone()
+            self.next_header
+                .as_ref()
+                .expect("invariant: next_header is Some in else branch")
+                .clone()
         };
         let header = tmp.trim();
 

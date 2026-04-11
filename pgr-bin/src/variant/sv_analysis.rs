@@ -546,11 +546,7 @@ fn get_aln_block_records(rec: &CandidateRecord, args: &Args) -> Vec<Vec<Record>>
         .iter()
         .map(|v| (v.0, v.2.len()))
         .collect::<FxHashMap<usize, usize>>();
-    let seq_info = sdb
-        .seq_info
-        .unwrap()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let seq_info = sdb.seq_info.unwrap().into_iter().collect::<Vec<_>>();
 
     let bundle_length_cutoff = 0;
     let bundle_merge_distance = 0;
@@ -737,7 +733,6 @@ fn get_aln_block_records(rec: &CandidateRecord, args: &Args) -> Vec<Vec<Record>>
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -788,122 +783,125 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             .expect("can't create the output file"),
     );
 
-    paired_seq_records.into_iter().enumerate().for_each(|(pair_id, rec)| {
-        let aln_block_records = get_aln_block_records(&rec, &args);
+    paired_seq_records
+        .into_iter()
+        .enumerate()
+        .for_each(|(pair_id, rec)| {
+            let aln_block_records = get_aln_block_records(&rec, &args);
 
-        writeln!(
-            outpu_alnmap_file,
-            "## {:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            rec.aln_id,
-            rec.svc_type,
-            rec.target_name,
-            rec.ts,
-            rec.te,
-            rec.query_name,
-            rec.qs,
-            rec.qe,
-            rec.orientation,
-            rec.ctg_orientation,
-            rec.aln_type
-        )
-        .expect("can't write the alnmap output file");
+            writeln!(
+                outpu_alnmap_file,
+                "## {:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                rec.aln_id,
+                rec.svc_type,
+                rec.target_name,
+                rec.ts,
+                rec.te,
+                rec.query_name,
+                rec.qs,
+                rec.qe,
+                rec.orientation,
+                rec.ctg_orientation,
+                rec.aln_type
+            )
+            .expect("can't write the alnmap output file");
 
-        // generate the alnmap records
-        aln_block_records
-            .iter()
-            .enumerate()
-            .for_each(|(sub_block_id, records)| {
-                let block_id = (((pair_id + 1) as u64) << 32) | sub_block_id as u64; 
-                records.iter().for_each(|record| {
-                    let rec_out = match record.clone() {
-                        Record::Match(
-                            (tn, ts, te, qn, qs, qe, orientation),
-                            target_path,
-                            query_path,
-                        ) => {
-                            let match_type = if rec.svc_type.ends_with('D') {
-                                "M_D"
-                            } else if rec.svc_type.ends_with('O') {
-                                "M_O"
-                            } else {
-                                "M"
-                            };
-
-                            Some(format!(
-                                "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                block_id,
-                                match_type,
-                                tn,
-                                ts,
-                                te,
-                                qn,
-                                qs,
-                                qe,
-                                orientation,
+            // generate the alnmap records
+            aln_block_records
+                .iter()
+                .enumerate()
+                .for_each(|(sub_block_id, records)| {
+                    let block_id = (((pair_id + 1) as u64) << 32) | sub_block_id as u64;
+                    records.iter().for_each(|record| {
+                        let rec_out = match record.clone() {
+                            Record::Match(
+                                (tn, ts, te, qn, qs, qe, orientation),
                                 target_path,
-                                query_path
-                            ))
-                        }
-                        Record::SvCnd((
-                            (tn, ts, te, qn, qs, qe, orientation),
-                            diff,
-                            ctg_orientation,
-                            target_path,
-                            query_path,
-                        )) => {
-                            let diff_type = match diff {
-                                AlnDiff::FailAln => 'A',
-                                AlnDiff::_FailEndMatch => 'E',
-                                AlnDiff::FailShortSeq => 'S',
-                                AlnDiff::FailLengthDiff => 'L',
-                                _ => 'U',
-                            };
+                                query_path,
+                            ) => {
+                                let match_type = if rec.svc_type.ends_with('D') {
+                                    "M_D"
+                                } else if rec.svc_type.ends_with('O') {
+                                    "M_O"
+                                } else {
+                                    "M"
+                                };
 
-                            let svc_type = if rec.svc_type.ends_with('D') {
-                                "S_D"
-                            } else if rec.svc_type.ends_with('O') {
-                                "S_O"
-                            } else {
-                                "S"
-                            };
-
-                            Some(format!(
-                                "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                block_id,
-                                svc_type,
-                                tn,
-                                ts,
-                                te,
-                                qn,
-                                qs,
-                                qe,
-                                orientation,
+                                Some(format!(
+                                    "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                    block_id,
+                                    match_type,
+                                    tn,
+                                    ts,
+                                    te,
+                                    qn,
+                                    qs,
+                                    qe,
+                                    orientation,
+                                    target_path,
+                                    query_path
+                                ))
+                            }
+                            Record::SvCnd((
+                                (tn, ts, te, qn, qs, qe, orientation),
+                                diff,
                                 ctg_orientation,
-                                diff_type,
                                 target_path,
-                                query_path
-                            ))
-                        }
-                        Record::Variant(
-                            match_block,
-                            td,
-                            qd,
-                            tc,
-                            vt,
-                            tvs,
-                            qvs,
-                            target_path,
-                            query_path,
-                        ) => {
-                            let (tn, ts, te, qn, qs, qe, orientation) = match_block;
-                            let variant_type = if rec.svc_type.ends_with('D') {
-                                "V_D"
-                            } else if rec.svc_type.ends_with('O') {
-                                "V_O"
-                            } else {
-                                "V"
-                            };
-                            Some(format!(
+                                query_path,
+                            )) => {
+                                let diff_type = match diff {
+                                    AlnDiff::FailAln => 'A',
+                                    AlnDiff::_FailEndMatch => 'E',
+                                    AlnDiff::FailShortSeq => 'S',
+                                    AlnDiff::FailLengthDiff => 'L',
+                                    _ => 'U',
+                                };
+
+                                let svc_type = if rec.svc_type.ends_with('D') {
+                                    "S_D"
+                                } else if rec.svc_type.ends_with('O') {
+                                    "S_O"
+                                } else {
+                                    "S"
+                                };
+
+                                Some(format!(
+                                    "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                    block_id,
+                                    svc_type,
+                                    tn,
+                                    ts,
+                                    te,
+                                    qn,
+                                    qs,
+                                    qe,
+                                    orientation,
+                                    ctg_orientation,
+                                    diff_type,
+                                    target_path,
+                                    query_path
+                                ))
+                            }
+                            Record::Variant(
+                                match_block,
+                                td,
+                                qd,
+                                tc,
+                                vt,
+                                tvs,
+                                qvs,
+                                target_path,
+                                query_path,
+                            ) => {
+                                let (tn, ts, te, qn, qs, qe, orientation) = match_block;
+                                let variant_type = if rec.svc_type.ends_with('D') {
+                                    "V_D"
+                                } else if rec.svc_type.ends_with('O') {
+                                    "V_O"
+                                } else {
+                                    "V"
+                                };
+                                Some(format!(
                         "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         block_id,
                         variant_type,
@@ -923,16 +921,16 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                         target_path,
                         query_path
                     ))
+                            }
+                            _ => None,
+                        };
+                        if let Some(rec_out) = rec_out {
+                            writeln!(outpu_alnmap_file, "{}", rec_out)
+                                .expect("can't write the alnmap output file");
                         }
-                        _ => None,
-                    };
-                    if let Some(rec_out) = rec_out {
-                        writeln!(outpu_alnmap_file, "{}", rec_out)
-                            .expect("can't write the alnmap output file");
-                    }
+                    });
                 });
-            });
-    });
+        });
 
     Ok(())
 }

@@ -51,7 +51,6 @@ struct Opt {
         default_value = "./pgr-tk-HGRP-y1-evaluation-set-v0"
     )]
     data_path_prefix: String,
-
 }
 
 #[tokio::main]
@@ -68,7 +67,9 @@ async fn main() {
 
     let mut seq_db = SeqIndexDB::new();
 
-    seq_db.load_from_agc_index(opt.data_path_prefix).expect("failed to load AGC index");
+    seq_db
+        .load_from_agc_index(opt.data_path_prefix)
+        .expect("failed to load AGC index");
 
     let seq_db = Arc::new(seq_db);
     // build our application with a route

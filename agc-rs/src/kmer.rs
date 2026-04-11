@@ -30,7 +30,11 @@ pub fn base_to_bits(b: u8) -> Option<u64> {
 #[inline]
 fn rev_comp_kmer(kmer: u64, k: u8) -> u64 {
     // Complement: flip all bits, then mask to the relevant 2*k bits.
-    let mask = if k == 32 { u64::MAX } else { (1u64 << (2 * k)) - 1 };
+    let mask = if k == 32 {
+        u64::MAX
+    } else {
+        (1u64 << (2 * k)) - 1
+    };
     let comp = (!kmer) & mask;
 
     // Reverse the order of the k 2-bit pairs.

@@ -1,13 +1,15 @@
 // main.rs
+// rustfmt cannot format Dioxus rsx! macros without leaving trailing whitespace.
+#![rustfmt::skip]
 
 use dioxus::prelude::*;
 use futures_lite::stream::StreamExt;
 use futures_util::sink::SinkExt;
+use itertools::Itertools;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::JsCast;
 use std::collections::HashMap;
-use itertools::Itertools;
+use wasm_bindgen::JsCast;
 use {pharos::*, wasm_bindgen::UnwrapThrowExt, ws_stream_wasm::*};
 //use pgr_db::aln::{self, HitPair};
 //type HitPair = ((u32, u32, u8), (u32, u32, u8)); //(bgn1, end1, orientation1),  (bgn2, end2, orientation2)
@@ -104,7 +106,7 @@ fn app(cx: Scope) -> Element {
         k: 56,
         r: 4,
         min_span: 12,
-        sketch: false,  
+        sketch: false,
         min_cov: 2,
         min_branch_size: 8,
         bundle_length_cutoff: 500,
@@ -122,8 +124,7 @@ fn app(cx: Scope) -> Element {
     //let labels = kvs.iter().map(|(k, _v)| k.clone()).collect::<Vec<_>>();
 
     let selected_label = use_state(cx, || "".to_string());
-    let rois = use_state(cx, || rois );
-
+    let rois = use_state(cx, || rois);
 
     cx.render(
         rsx! {
@@ -201,8 +202,7 @@ fn query_preset<'a>(
             }
             }
         })
-} 
-
+}
 
 #[inline_props]
 fn data_list<'a>(
@@ -210,33 +210,35 @@ fn data_list<'a>(
     rois: &'a UseState<FxHashMap<String, SequenceQuerySpec>>,
 ) -> Element<'a> {
     let rois = rois.to_owned();
-    cx.render(
-        rsx! {div { id: "query_candidates0",
-            datalist { id: "query_candidates",
-                rois.get().iter().map(|(k, _)| k).sorted().map(|k|
-                {
-                    rsx! { 
-                        option {
-                            value: "{k}",
-                            "{k}"
-                        }
+    cx.render(rsx! {div { id: "query_candidates0",
+        datalist { id: "query_candidates",
+            rois.get().iter().map(|(k, _)| k).sorted().map(|k|
+            {
+                rsx! {
+                    option {
+                        value: "{k}",
+                        "{k}"
                     }
-                })
-            }
+                }
+            })
         }
-        }
-    )
-    // cx.render( 
+    }
+    })
+    // cx.render(
     //     rsx! {
     //         rois.get().iter().map(|(k, _)| k).sorted().map(|k| rsx!{ div {p { "{k}"} } })
     //     }
-    // ) 
+    // )
 }
 
-fn get_preset_list<'a, T>(cx: Scope<'a, T>, message: &'a str, rois: &'a UseState<FxHashMap<String, SequenceQuerySpec>>) {
+fn get_preset_list<'a, T>(
+    cx: Scope<'a, T>,
+    message: &'a str,
+    rois: &'a UseState<FxHashMap<String, SequenceQuerySpec>>,
+) {
     let message = message.to_string();
     let rois = rois.to_owned();
-    
+
     cx.spawn(async move {
         let (mut _ws, mut wsio) = WsMeta::connect("ws://omnix:3000/ws", None)
             .await
@@ -252,12 +254,12 @@ fn get_preset_list<'a, T>(cx: Scope<'a, T>, message: &'a str, rois: &'a UseState
             rois.set(serde_json::from_str(&result[..]).unwrap());
         }
 
-        // let window = web_sys::window().expect("global window does not exists");    
-		// let document = window.document().expect("expecting a document on window");
-		// let val = document.get_element_by_id("ROI_selector")
-		// .unwrap()
-		// .dyn_into::<web_sys::HtmlElement>()
-		// .unwrap();
+        // let window = web_sys::window().expect("global window does not exists");
+        // let document = window.document().expect("expecting a document on window");
+        // let val = document.get_element_by_id("ROI_selector")
+        // .unwrap()
+        // .dyn_into::<web_sys::HtmlElement>()
+        // .unwrap();
         // let h = val.offset_height();
         //  log::debug!("WS res: {} {:?}", h, result);
         // . assert_eq!(WsErr::ConnectionNotOpen, res.unwrap_err());

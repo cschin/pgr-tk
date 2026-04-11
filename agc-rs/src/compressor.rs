@@ -162,11 +162,7 @@ fn find_splitters_in_contigs(
 }
 
 /// Convenience wrapper: determine the full splitter set from the reference.
-pub fn determine_splitters(
-    records: &[FastaRecord],
-    k: usize,
-    segment_size: usize,
-) -> HashSet<u64> {
+pub fn determine_splitters(records: &[FastaRecord], k: usize, segment_size: usize) -> HashSet<u64> {
     let singletons = collect_sorted_singletons(records, k);
     find_splitters_in_contigs(records, &singletons, k, segment_size)
 }
@@ -295,7 +291,13 @@ pub fn split_contig(seq: &[u8], splitters: &HashSet<u64>, k: usize) -> Vec<SegIn
                 } else {
                     raw.len()
                 };
-                segs.push(SegInfo { seq: stored, raw_len, kmer_front, kmer_back: can, is_rc });
+                segs.push(SegInfo {
+                    seq: stored,
+                    raw_len,
+                    kmer_front,
+                    kmer_back: can,
+                    is_rc,
+                });
                 // AGC overlap: next segment starts at the beginning of the
                 // splitter k-mer (pos + 1 - k), giving a k-base shared prefix.
                 split_start = pos + 1 - k;
@@ -308,7 +310,11 @@ pub fn split_contig(seq: &[u8], splitters: &HashSet<u64>, k: usize) -> Vec<SegIn
     // Trailing segment: no back splitter, always store forward.
     if split_start < seq.len() {
         let raw = &seq[split_start..];
-        let raw_len = if kmer_front != SENTINEL { raw.len() - k } else { raw.len() };
+        let raw_len = if kmer_front != SENTINEL {
+            raw.len() - k
+        } else {
+            raw.len()
+        };
         segs.push(SegInfo {
             seq: raw.to_vec(),
             raw_len,
@@ -486,7 +492,11 @@ fn build_fallback_index(
     kmer_len: usize,
     sample_rate: u64,
     max_bucket: usize,
-) -> Result<(HashMap<u64, Vec<i64>>, HashMap<i64, Vec<u8>>, HashMap<i64, usize>)> {
+) -> Result<(
+    HashMap<u64, Vec<i64>>,
+    HashMap<i64, Vec<u8>>,
+    HashMap<i64, usize>,
+)> {
     // Serial DB load
     let rows: Vec<(i64, Vec<u8>)> = {
         let mut stmt = conn.prepare("SELECT id, ref_data FROM segment_group")?;
@@ -501,8 +511,7 @@ fn build_fallback_index(
     let processed: Vec<(i64, Vec<u64>, Vec<u8>, usize)> = rows
         .par_iter()
         .map(|(group_id, ref_blob)| {
-            let seq_2bit = segment::decompress_reference(ref_blob)
-                .expect("decompress_reference");
+            let seq_2bit = segment::decompress_reference(ref_blob).expect("decompress_reference");
             let seq_len = seq_2bit.len();
             let kmers = sample_kmers_2bit(&seq_2bit, kmer_len, sample_rate);
             (*group_id, kmers, ref_blob.clone(), seq_len)
@@ -618,7 +627,10 @@ impl DeltaIndex {
         let segment_size = params.segment_size as usize;
         let kmer_len = params.min_match_len as usize;
 
-        eprintln!("[{:7.2}s]   loading index maps ...", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "[{:7.2}s]   loading index maps ...",
+            t0.elapsed().as_secs_f64()
+        );
         let t1 = Instant::now();
 
         let splitters: HashSet<u64> = {
@@ -722,14 +734,13 @@ fn compress_records_with_index(
                 };
 
                 let one_spl_group = if exact_group.is_none() {
-                    let single_kmer =
-                        if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
-                            Some(seg.kmer_front)
-                        } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
-                            Some(seg.kmer_back)
-                        } else {
-                            None
-                        };
+                    let single_kmer = if seg.kmer_front != SENTINEL && seg.kmer_back == SENTINEL {
+                        Some(seg.kmer_front)
+                    } else if seg.kmer_back != SENTINEL && seg.kmer_front == SENTINEL {
+                        Some(seg.kmer_back)
+                    } else {
+                        None
+                    };
                     single_kmer.and_then(|kmer| {
                         find_one_splitter_group(
                             kmer,
@@ -744,12 +755,7 @@ fn compress_records_with_index(
                 };
 
                 let matched_group = exact_group.or(one_spl_group).or_else(|| {
-                    find_best_ref_group(
-                        &seg.seq,
-                        &index.kmer_index,
-                        kmer_len,
-                        index.sample_rate,
-                    )
+                    find_best_ref_group(&seg.seq, &index.kmer_index, kmer_len, index.sample_rate)
                 });
 
                 let chunk = match matched_group {
@@ -774,8 +780,8 @@ fn compress_records_with_index(
                         }
                     }
                     None => {
-                        let ref_blob = segment::compress_reference(&seg.seq)
-                            .expect("compress_reference");
+                        let ref_blob =
+                            segment::compress_reference(&seg.seq).expect("compress_reference");
                         let kf = if seg.kmer_front != SENTINEL {
                             Some(seg.kmer_front as i64)
                         } else {
@@ -842,7 +848,10 @@ fn write_sample_to_db(
     );
 
     let tx = conn.unchecked_transaction()?;
-    tx.execute("INSERT INTO sample (name) VALUES (?1)", params![sample_name])?;
+    tx.execute(
+        "INSERT INTO sample (name) VALUES (?1)",
+        params![sample_name],
+    )?;
     let sample_id: i64 = tx.last_insert_rowid();
 
     for (record, (chunks, local_spl)) in records.iter().zip(compressed.iter()) {
@@ -966,7 +975,11 @@ impl Compressor {
             )));
         }
 
-        eprintln!("[{:7.2}s] reading FASTA: {}", t0.elapsed().as_secs_f64(), path.display());
+        eprintln!(
+            "[{:7.2}s] reading FASTA: {}",
+            t0.elapsed().as_secs_f64(),
+            path.display()
+        );
         let records = fasta_io::read_fasta_gz(path)?;
         if records.is_empty() {
             return Ok(());
@@ -1000,16 +1013,28 @@ impl Compressor {
     // Reference path (first sample)
     // -----------------------------------------------------------------------
 
-    fn add_as_reference(&mut self, records: Vec<FastaRecord>, sample_name: &str, t0: Instant) -> Result<()> {
+    fn add_as_reference(
+        &mut self,
+        records: Vec<FastaRecord>,
+        sample_name: &str,
+        t0: Instant,
+    ) -> Result<()> {
         let segment_size = self.params.segment_size as usize;
         let splitter_k = self.params.splitter_k as usize;
         let params_json = params_json(&self.params);
         let n_contigs = records.len();
 
-        eprintln!("[{:7.2}s] reference path: {} contigs", t0.elapsed().as_secs_f64(), n_contigs);
+        eprintln!(
+            "[{:7.2}s] reference path: {} contigs",
+            t0.elapsed().as_secs_f64(),
+            n_contigs
+        );
 
         // Determine AGC-style splitters from the reference sequences.
-        eprintln!("[{:7.2}s]   collecting singleton k-mers ...", t0.elapsed().as_secs_f64());
+        eprintln!(
+            "[{:7.2}s]   collecting singleton k-mers ...",
+            t0.elapsed().as_secs_f64()
+        );
         let t1 = Instant::now();
         let splitters = determine_splitters(&records, splitter_k, segment_size);
         eprintln!(
@@ -1032,7 +1057,9 @@ impl Compressor {
         let total_segs: usize = splits.iter().map(|s| s.len()).sum();
         eprintln!(
             "[{:7.2}s]   compressing {} segments across {} contigs (parallel) ...",
-            t0.elapsed().as_secs_f64(), total_segs, n_contigs,
+            t0.elapsed().as_secs_f64(),
+            total_segs,
+            n_contigs,
         );
         let t1 = Instant::now();
 
@@ -1044,38 +1071,51 @@ impl Compressor {
             .collect();
 
         let done = AtomicUsize::new(0);
-        let mut compressed_flat: Vec<(usize, usize, Vec<u8>, usize, Option<i64>, Option<i64>, bool)> =
-            flat.par_iter()
-                .map(|(ri, si, seg)| {
-                    let blob = segment::compress_reference(&seg.seq)
-                        .expect("compress_reference failed");
-                    let kf = if seg.kmer_front != SENTINEL {
-                        Some(seg.kmer_front as i64)
-                    } else {
-                        None
-                    };
-                    let kb = if seg.kmer_back != SENTINEL {
-                        Some(seg.kmer_back as i64)
-                    } else {
-                        None
-                    };
-                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n % 5000 == 0 || n == total_segs {
-                        eprintln!(
-                            "[{:7.2}s]   {:6}/{} segments compressed",
-                            t0.elapsed().as_secs_f64(), n, total_segs,
-                        );
-                    }
-                    (*ri, *si, blob, seg.raw_len, kf, kb, seg.is_rc)
-                })
-                .collect();
+        let mut compressed_flat: Vec<(
+            usize,
+            usize,
+            Vec<u8>,
+            usize,
+            Option<i64>,
+            Option<i64>,
+            bool,
+        )> = flat
+            .par_iter()
+            .map(|(ri, si, seg)| {
+                let blob =
+                    segment::compress_reference(&seg.seq).expect("compress_reference failed");
+                let kf = if seg.kmer_front != SENTINEL {
+                    Some(seg.kmer_front as i64)
+                } else {
+                    None
+                };
+                let kb = if seg.kmer_back != SENTINEL {
+                    Some(seg.kmer_back as i64)
+                } else {
+                    None
+                };
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 5000 == 0 || n == total_segs {
+                    eprintln!(
+                        "[{:7.2}s]   {:6}/{} segments compressed",
+                        t0.elapsed().as_secs_f64(),
+                        n,
+                        total_segs,
+                    );
+                }
+                (*ri, *si, blob, seg.raw_len, kf, kb, seg.is_rc)
+            })
+            .collect();
 
         // Restore (ri, si) order — par_iter output order is not guaranteed.
         compressed_flat.par_sort_unstable_by_key(|&(ri, si, ..)| (ri, si));
 
         // Reassemble per-record: segments are now in correct seg_order.
         let mut compressed_per_record: Vec<Vec<(Vec<u8>, usize, Option<i64>, Option<i64>, bool)>> =
-            splits.iter().map(|segs| Vec::with_capacity(segs.len())).collect();
+            splits
+                .iter()
+                .map(|segs| Vec::with_capacity(segs.len()))
+                .collect();
         for (ri, _, blob, raw_len, kf, kb, is_rc) in compressed_flat {
             compressed_per_record[ri].push((blob, raw_len, kf, kb, is_rc));
         }
@@ -1098,7 +1138,10 @@ impl Compressor {
             )?;
         }
 
-        tx.execute("INSERT INTO sample (name) VALUES (?1)", params![sample_name])?;
+        tx.execute(
+            "INSERT INTO sample (name) VALUES (?1)",
+            params![sample_name],
+        )?;
         let sample_id: i64 = tx.last_insert_rowid();
 
         for (record, segs) in records.iter().zip(compressed_per_record.iter()) {
@@ -1144,7 +1187,12 @@ impl Compressor {
     // Delta path (subsequent samples)
     // -----------------------------------------------------------------------
 
-    fn add_as_delta(&mut self, records: Vec<FastaRecord>, sample_name: &str, t0: Instant) -> Result<()> {
+    fn add_as_delta(
+        &mut self,
+        records: Vec<FastaRecord>,
+        sample_name: &str,
+        t0: Instant,
+    ) -> Result<()> {
         eprintln!(
             "[{:7.2}s] delta path: {} contigs",
             t0.elapsed().as_secs_f64(),
@@ -1240,7 +1288,10 @@ impl Compressor {
             );
             let records = fasta_io::read_fasta_gz(path)?;
             if records.is_empty() {
-                eprintln!("[{:7.2}s]   (empty FASTA, skipping)", t0.elapsed().as_secs_f64());
+                eprintln!(
+                    "[{:7.2}s]   (empty FASTA, skipping)",
+                    t0.elapsed().as_secs_f64()
+                );
                 continue;
             }
             let total_bp: usize = records.iter().map(|r| r.seq.len() * 4).sum();
@@ -1329,7 +1380,10 @@ mod tests {
     fn make_records_from_2bit(seqs: Vec<Vec<u8>>) -> Vec<FastaRecord> {
         seqs.into_iter()
             .enumerate()
-            .map(|(i, seq)| FastaRecord { name: format!("ctg{}", i), seq })
+            .map(|(i, seq)| FastaRecord {
+                name: format!("ctg{}", i),
+                seq,
+            })
             .collect()
     }
 

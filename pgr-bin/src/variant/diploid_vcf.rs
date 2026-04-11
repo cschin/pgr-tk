@@ -82,29 +82,30 @@ fn get_variant_recs_from_db(
     }
 
     // Block-level coords from both M blocks and V records contribute to aln_blocks
-    let add_blocks = |stmt_sql: &str,
-                      aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>,
-                      unique_aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>| {
-        let mut stmt = conn.prepare(stmt_sql).expect("prepare blocks query");
-        let mut rows = stmt.query([]).expect("query blocks");
-        while let Some(row) = rows.next().expect("blocks row") {
-            let aln_idx: u64 = row.get::<_, i64>(0).unwrap() as u64;
-            let dup_flag: i32 = row.get(1).unwrap();
-            let ovlp_flag: i32 = row.get(2).unwrap();
-            let t_name: String = row.get(3).unwrap();
-            let ts: u32 = row.get(4).unwrap();
-            let te: u32 = row.get(5).unwrap();
-            let q_name: String = row.get(6).unwrap();
-            let qs: u32 = row.get(7).unwrap();
-            let qe: u32 = row.get(8).unwrap();
-            let orientation: u32 = row.get(9).unwrap();
-            let smb: ShimmerMatchBlock = (t_name, ts, te, q_name, qs, qe, orientation);
-            aln_blocks.entry(aln_idx).or_default().push(smb.clone());
-            if dup_flag == 0 && ovlp_flag == 0 {
-                unique_aln_blocks.entry(aln_idx).or_default().push(smb);
+    let add_blocks =
+        |stmt_sql: &str,
+         aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>,
+         unique_aln_blocks: &mut FxHashMap<u64, Vec<ShimmerMatchBlock>>| {
+            let mut stmt = conn.prepare(stmt_sql).expect("prepare blocks query");
+            let mut rows = stmt.query([]).expect("query blocks");
+            while let Some(row) = rows.next().expect("blocks row") {
+                let aln_idx: u64 = row.get::<_, i64>(0).unwrap() as u64;
+                let dup_flag: i32 = row.get(1).unwrap();
+                let ovlp_flag: i32 = row.get(2).unwrap();
+                let t_name: String = row.get(3).unwrap();
+                let ts: u32 = row.get(4).unwrap();
+                let te: u32 = row.get(5).unwrap();
+                let q_name: String = row.get(6).unwrap();
+                let qs: u32 = row.get(7).unwrap();
+                let qe: u32 = row.get(8).unwrap();
+                let orientation: u32 = row.get(9).unwrap();
+                let smb: ShimmerMatchBlock = (t_name, ts, te, q_name, qs, qe, orientation);
+                aln_blocks.entry(aln_idx).or_default().push(smb.clone());
+                if dup_flag == 0 && ovlp_flag == 0 {
+                    unique_aln_blocks.entry(aln_idx).or_default().push(smb);
+                }
             }
-        }
-    };
+        };
 
     add_blocks(
         "SELECT aln_idx, dup_flag, ovlp_flag, target_name, target_start, target_end,
@@ -204,7 +205,6 @@ fn get_variant_recs_from_alnmap(
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -219,9 +219,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         )
         .expect("can't open hap0 alndb");
         let mut stmt = conn
-            .prepare(
-                "SELECT seq_id, seq_name, length FROM sequences WHERE seq_type='target'",
-            )
+            .prepare("SELECT seq_id, seq_name, length FROM sequences WHERE seq_type='target'")
             .expect("prepare sequences query");
         stmt.query_map([], |row| {
             Ok((
@@ -477,8 +475,9 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     // currrent_vg_end: represent the end coordinate of the current variant group
     let mut current_vg_end = Option::<(String, u32)>::None;
     variant_records.sort();
-    variant_records.into_iter().for_each(
-        |(ref_name, ts, tl, block_id, ht, vts, vqs, rec_type)| {
+    variant_records
+        .into_iter()
+        .for_each(|(ref_name, ts, tl, block_id, ht, vts, vqs, rec_type)| {
             if let Some(current_vg_end) = current_vg_end.clone() {
                 //println!("{} {} {} {} {:?} {}", ref_name, ts, tl, ts + tl ,  current_vg_end, variant_group.len()  );
                 if ref_name == current_vg_end.0 && ts < current_vg_end.1 {
@@ -541,22 +540,12 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     ));
                 }
             } else {
-                variant_group.push((
-                    ref_name.clone(),
-                    ts,
-                    tl,
-                    block_id,
-                    ht,
-                    vts,
-                    vqs,
-                    rec_type,
-                ));
+                variant_group.push((ref_name.clone(), ts, tl, block_id, ht, vts, vqs, rec_type));
                 current_vg_end = Some((ref_name, ts + tl));
                 return;
             }
             current_vg_end = Some((ref_name.clone(), ts + tl));
-        },
-    );
+        });
     if !variant_group.is_empty() {
         // println!("X {} {} {} {}", ref_name, ts, tl, variant_group.len());
         let (vcf_rec_ref_name, ts0, ref_str, query_alleles, gt, g_rec_type) =

@@ -25,7 +25,7 @@ pub struct AGCFile {
     pub samples: Vec<AGCSample>,
     pub ctg_lens: FxHashMap<(String, String), usize>,
     sample_ctg: Vec<(String, String)>,
-    pub prefetching: bool,       // API-compat no-op
+    pub prefetching: bool,         // API-compat no-op
     pub number_iter_thread: usize, // API-compat no-op
 }
 
@@ -121,9 +121,7 @@ impl AGCFile {
             .lock()
             .expect("agc_io mutex poisoned")
             .contig_seq(&sample_name, &ctg_name, bgn as u64, end as u64)
-            .unwrap_or_else(|e| {
-                panic!("get_sub_seq({sample_name}/{ctg_name} {bgn}..{end}): {e}")
-            })
+            .unwrap_or_else(|e| panic!("get_sub_seq({sample_name}/{ctg_name} {bgn}..{end}): {e}"))
     }
 
     /// Return the full sequence of a contig as ASCII bytes.
@@ -199,9 +197,7 @@ impl AGCFile {
                     .unwrap_or_else(|e| panic!("par_fetch_seqs open {filepath}: {e}"));
                 let seq = conn
                     .full_contig(sample_name, ctg_name)
-                    .unwrap_or_else(|e| {
-                        panic!("par_fetch_seqs {sample_name}/{ctg_name}: {e}")
-                    });
+                    .unwrap_or_else(|e| panic!("par_fetch_seqs {sample_name}/{ctg_name}: {e}"));
                 SeqRec {
                     source: Some(sample_name.clone()),
                     id: ctg_name.as_bytes().to_vec(),
@@ -248,9 +244,7 @@ impl<'a> Iterator for AGCFileIter<'a> {
             .full_contig(sample_name, ctg_name)
         {
             Ok(s) => s,
-            Err(e) => {
-                return Some(Err(io::Error::new(io::ErrorKind::Other, e.to_string())))
-            }
+            Err(e) => return Some(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
         };
 
         Some(Ok(SeqRec {

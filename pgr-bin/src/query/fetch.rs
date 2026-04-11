@@ -27,7 +27,6 @@ pub struct Args {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     let mut seq_index_db = SeqIndexDB::new();
 
     seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;

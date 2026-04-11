@@ -1,4 +1,3 @@
-
 //use std::path::PathBuf;
 use clap::{self, Parser};
 
@@ -117,10 +116,18 @@ fn output_cov_bed(
 fn generate_bed_graph_from_sdb(args: &Args) {
     let mut seq_index_db = SeqIndexDB::new();
 
-    seq_index_db.load_from_agc_index(args.agc_idx_prefix.as_ref().expect("agc_idx_prefix required").clone())
+    seq_index_db
+        .load_from_agc_index(
+            args.agc_idx_prefix
+                .as_ref()
+                .expect("agc_idx_prefix required")
+                .clone(),
+        )
         .expect("failed to load AGC index");
 
-    let shmmr_spec = seq_index_db.shmmr_spec.expect("shmmr_spec set after successful load");
+    let shmmr_spec = seq_index_db
+        .shmmr_spec
+        .expect("shmmr_spec set after successful load");
 
     let input_files = BufReader::new(
         File::open(Path::new(&args.input))

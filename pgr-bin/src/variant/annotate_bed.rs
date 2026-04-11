@@ -20,7 +20,7 @@ pub struct Args {
     /// the prefix of the output files
     #[clap(long, short)]
     pub output_path: String,
-    /// type 
+    /// type
     #[clap(long, default_value = "transcript")]
     pub feature: String,
     /// number of threads used in parallel (more memory usage), default to "0" using all CPUs available or the number set by RAYON_NUM_THREADS
@@ -28,7 +28,6 @@ pub struct Args {
     pub number_of_thread: usize,
 }
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -83,18 +82,15 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     let gn = gn.split(' ').collect::<Vec<&str>>();
                     let gn = gn.last().unwrap().to_string();
                     let gn = gn.trim_matches('"');
-                    annotations.insert(gn.to_string()); 
+                    annotations.insert(gn.to_string());
+                }
+                if annotations.is_empty() {
+                    return;
                 };
-                if annotations.is_empty() { return };
-                let gn = annotations.into_iter().collect::<Vec<_>>().join("/"); 
+                let gn = annotations.into_iter().collect::<Vec<_>>().join("/");
 
-                
-                writeln!(
-                    out_bed,
-                    "{}\t{}\t{}\t{}>{}",
-                    chr, bgn, end, annotation, gn
-                )
-                .expect("fail to write the vcf file");
+                writeln!(out_bed, "{}\t{}\t{}\t{}>{}", chr, bgn, end, annotation, gn)
+                    .expect("fail to write the vcf file");
             };
         }
     });

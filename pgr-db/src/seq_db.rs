@@ -197,7 +197,10 @@ impl CompactSeqDB {
         let mut seq_frags = Vec::<u32>::new();
 
         assert!(self.frags.is_some());
-        let frags: &mut Vec<Fragment> = self.frags.as_mut().expect("invariant: frags initialized in new()");
+        let frags: &mut Vec<Fragment> = self
+            .frags
+            .as_mut()
+            .expect("invariant: frags initialized in new()");
 
         let mut frg_id = frags.len() as u32;
         let mut seq_len = 0_usize;
@@ -246,9 +249,14 @@ impl CompactSeqDB {
                 let mut out_frag = None;
 
                 if frg_len > 128 && try_compress && self.frag_map.contains_key(&shmmr_pair) {
-                    let e = self.frag_map.get(&shmmr_pair).expect("invariant: shmmr_pair just inserted into frag_map");
+                    let e = self
+                        .frag_map
+                        .get(&shmmr_pair)
+                        .expect("invariant: shmmr_pair just inserted into frag_map");
                     for t_frg_id in e.iter() {
-                        let base_frg = frags.get(t_frg_id.0 as usize).expect("invariant: t_frg_id in bounds");
+                        let base_frg = frags
+                            .get(t_frg_id.0 as usize)
+                            .expect("invariant: t_frg_id in bounds");
                         if let Fragment::Internal(b) = base_frg {
                             let base_frg = b;
                             //assert!(base_frg.len() > KMERSIZE as usize);
@@ -269,7 +277,9 @@ impl CompactSeqDB {
                             assert!(base_frg.len() < (1 << 32) - 1);
                             let m = match_reads(base_frg, &frg, true, 0.1, 0, 0, 32);
                             if let Some(m) = m {
-                                let deltas: Vec<DeltaPoint> = m.deltas.expect("invariant: deltas populated by match_reads");
+                                let deltas: Vec<DeltaPoint> = m
+                                    .deltas
+                                    .expect("invariant: deltas populated by match_reads");
                                 let aln_segs = deltas_to_aln_segs(
                                     &deltas,
                                     m.end0 as usize,
@@ -328,7 +338,10 @@ impl CompactSeqDB {
                     self.frag_map
                         .insert(*shmmr, Vec::<(u32, u32, u32, u32, u8)>::new());
                 }
-                let e = self.frag_map.get_mut(shmmr).expect("invariant: shmmr just inserted into frag_map");
+                let e = self
+                    .frag_map
+                    .get_mut(shmmr)
+                    .expect("invariant: shmmr just inserted into frag_map");
                 e.push((frg_id, id, *bgn, *end, *orientation));
                 seq_len += (*end - *bgn) as usize;
                 frags.push(frg.clone());
@@ -452,14 +465,22 @@ impl CompactSeqDB {
 
         if is_gzfile {
             drop(std_buf);
-            Ok(GZFastaReader::GZFile(
-                FastaReader::new(gz_buf, &filepath, 1 << 14, true, to_upper_case)?,
-            ))
+            Ok(GZFastaReader::GZFile(FastaReader::new(
+                gz_buf,
+                &filepath,
+                1 << 14,
+                true,
+                to_upper_case,
+            )?))
         } else {
             drop(gz_buf);
-            Ok(GZFastaReader::RegularFile(
-                FastaReader::new(std_buf, &filepath, 1 << 14, true, to_upper_case)?,
-            ))
+            Ok(GZFastaReader::RegularFile(FastaReader::new(
+                std_buf,
+                &filepath,
+                1 << 14,
+                true,
+                to_upper_case,
+            )?))
         }
     }
 
@@ -545,9 +566,7 @@ impl CompactSeqDB {
     ) -> Result<(), std::io::Error> {
         match self.get_fastx_reader(filepath, to_upper_case)? {
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
-            GZFastaReader::GZFile(reader) => {
-                self.load_seq_from_reader(&mut reader.into_iter())?
-            }
+            GZFastaReader::GZFile(reader) => self.load_seq_from_reader(&mut reader.into_iter())?,
 
             #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
             GZFastaReader::RegularFile(reader) => {
@@ -850,13 +869,17 @@ impl CompactSeqDB {
 
         // Signal writer thread to finish and propagate any write error.
         drop(tx);
-        writer
-            .join()
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("shard writer panicked: {e:?}"))
-            })??;
+        writer.join().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("shard writer panicked: {e:?}"),
+            )
+        })??;
 
-        eprintln!("pgr-mdb: merging {} shards → {}.mdbi / .mdbv", num_shards, prefix);
+        eprintln!(
+            "pgr-mdb: merging {} shards → {}.mdbi / .mdbv",
+            num_shards, prefix
+        );
         merge_shmmr_map_shards(&self.shmmr_spec, prefix, num_shards)?;
 
         write_seq_index_sqlite(&self.seqs, &self.shmmr_spec, prefix, agc_path)?;
@@ -868,11 +891,17 @@ impl CompactSeqDB {
 impl CompactSeqDB {
     fn reconstruct_seq_from_frags<I: Iterator<Item = u32>>(&self, frag_ids: I) -> Vec<u8> {
         let mut reconstructed_seq = <Vec<u8>>::new();
-        let frags: &Vec<Fragment> = self.frags.as_ref().expect("invariant: frags initialized in new()");
+        let frags: &Vec<Fragment> = self
+            .frags
+            .as_ref()
+            .expect("invariant: frags initialized in new()");
         // let mut _p = 0;
         frag_ids.for_each(|frag_id| {
             //println!("{}:{}", frg_id, sdb.frags[*frg_id as usize]);
-            match frags.get(frag_id as usize).expect("invariant: frag_id in bounds") {
+            match frags
+                .get(frag_id as usize)
+                .expect("invariant: frag_id in bounds")
+            {
                 Fragment::Prefix(b) => {
                     reconstructed_seq.extend_from_slice(&b[..]);
                     //println!("P p: {} {} {}", frag_id, _p, _p + b.len());
@@ -889,7 +918,10 @@ impl CompactSeqDB {
                     //_p += b.len()-self.shmmr_spec.k as usize;
                 }
                 Fragment::AlnSegments((frg_id, reversed, _length, a)) => {
-                    if let Fragment::Internal(base_seq) = frags.get(*frg_id as usize).expect("invariant: frg_id in bounds") {
+                    if let Fragment::Internal(base_seq) = frags
+                        .get(*frg_id as usize)
+                        .expect("invariant: frg_id in bounds")
+                    {
                         let mut seq = reconstruct_seq_from_aln_segs(base_seq, a);
                         /*  // for debugging
                         if *_length as usize != seq.len() {
@@ -928,7 +960,10 @@ impl CompactSeqDB {
 
 impl GetSeq for CompactSeqDB {
     fn get_seq_by_id(&self, sid: u32) -> Vec<u8> {
-        let seq = self.seqs.get(sid as usize).expect("invariant: sid in bounds");
+        let seq = self
+            .seqs
+            .get(sid as usize)
+            .expect("invariant: sid in bounds");
         self.reconstruct_seq_from_frags(
             seq.seq_frag_range.0..seq.seq_frag_range.0 + seq.seq_frag_range.1,
         )
@@ -941,7 +976,10 @@ impl GetSeq for CompactSeqDB {
         let mut _p = 0;
         let mut base_offset = 0_u32;
         let mut sub_seq_frag = vec![];
-        let frags: &Vec<Fragment> = self.frags.as_ref().expect("invariant: frags initialized in new()");
+        let frags: &Vec<Fragment> = self
+            .frags
+            .as_ref()
+            .expect("invariant: frags initialized in new()");
         for frag_id in frag_range.0..frag_range.0 + frag_range.1 {
             let f = &frags[frag_id as usize];
             let frag_len = match f {
@@ -1008,7 +1046,11 @@ pub fn frag_map_to_adj_list(
         // more or less duplicate code, but this takes the hashset check out of the loop if keeps is None.
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).expect("invariant: key from iterating frag_map").len() >= min_count
+                if frag_map
+                    .get(&(v.3 .0, v.3 .1))
+                    .expect("invariant: key from iterating frag_map")
+                    .len()
+                    >= min_count
                     || keeps.contains(&v.0)
                 {
                     Some(v)
@@ -1020,7 +1062,12 @@ pub fn frag_map_to_adj_list(
     } else {
         out.into_par_iter()
             .map(|v| {
-                if frag_map.get(&(v.3 .0, v.3 .1)).expect("invariant: key from iterating frag_map").len() >= min_count {
+                if frag_map
+                    .get(&(v.3 .0, v.3 .1))
+                    .expect("invariant: key from iterating frag_map")
+                    .len()
+                    >= min_count
+                {
                     Some(v)
                 } else {
                     None
@@ -1085,8 +1132,16 @@ pub fn generate_smp_adj_list_for_seq(
                 let v = res[i];
                 let w = res[i + 1];
                 if (frag_map.get(&(v.0, v.1)).is_none() || frag_map.get(&(w.0, w.1)).is_none())
-                    || (frag_map.get(&(v.0, v.1)).expect("invariant: key from iterating frag_map").len() < min_count
-                        || frag_map.get(&(w.0, w.1)).expect("invariant: key from iterating frag_map").len() < min_count)
+                    || (frag_map
+                        .get(&(v.0, v.1))
+                        .expect("invariant: key from iterating frag_map")
+                        .len()
+                        < min_count
+                        || frag_map
+                            .get(&(w.0, w.1))
+                            .expect("invariant: key from iterating frag_map")
+                            .len()
+                            < min_count)
                     || v.3 != w.2
                 {
                     vec![None]
@@ -1138,12 +1193,18 @@ pub fn sort_adj_list_by_weighted_dfs(
         g.add_edge(v, w, ());
 
         // println!("DBG: add_edge {:?} {:?}", v, w);
-        score
-            .entry(v)
-            .or_insert_with(|| frag_map.get(&vv).expect("invariant: vv from iterating frag_map keys").len() as u32);
-        score
-            .entry(w)
-            .or_insert_with(|| frag_map.get(&ww).expect("invariant: ww from iterating frag_map keys").len() as u32);
+        score.entry(v).or_insert_with(|| {
+            frag_map
+                .get(&vv)
+                .expect("invariant: vv from iterating frag_map keys")
+                .len() as u32
+        });
+        score.entry(w).or_insert_with(|| {
+            frag_map
+                .get(&ww)
+                .expect("invariant: ww from iterating frag_map keys")
+                .len() as u32
+        });
     });
 
     // println!("DBG: # node: {}, # edge: {}", g.node_count(), g.edge_count());
@@ -1155,7 +1216,9 @@ pub fn sort_adj_list_by_weighted_dfs(
     while let Some((node, p_node, is_leaf, rank, branch_id, branch_rank)) =
         weighted_dfs_walker.next(&g)
     {
-        let node_count = *score.get(&node).expect("invariant: score set for all traversed nodes");
+        let node_count = *score
+            .get(&node)
+            .expect("invariant: score set for all traversed nodes");
         let p_node = p_node.map(|pnode| ShmmrGraphNode(pnode.0, pnode.1, pnode.2));
         out.push((
             ShmmrGraphNode(node.0, node.1, node.2),
@@ -1247,7 +1310,9 @@ pub fn get_principal_bundles_from_adj_list(
     let mut principal_bundles = Vec::<Vec<ShmmrGraphNode>>::new();
 
     while !starts.is_empty() {
-        let s = starts.pop().expect("invariant: starts is non-empty in loop");
+        let s = starts
+            .pop()
+            .expect("invariant: starts is non-empty in loop");
         let mut dfs = Dfs::new(&g1, s);
         let mut path = Vec::<ShmmrGraphNode>::new();
         while let Some(v) = dfs.next(&g1) {
@@ -1290,7 +1355,11 @@ pub fn get_principal_bundles_from_adj_list(
             }
         };
     }
-    principal_bundles.sort_by(|a, b| b.len().partial_cmp(&(a.len())).expect("invariant: usize comparison is total order"));
+    principal_bundles.sort_by(|a, b| {
+        b.len()
+            .partial_cmp(&(a.len()))
+            .expect("invariant: usize comparison is total order")
+    });
     (principal_bundles, filtered_adj_list)
 }
 
@@ -1427,8 +1496,8 @@ pub fn write_seq_index_sqlite(
     let path = format!("{prefix}.midx");
     // Remove any stale file so we start with a clean database.
     let _ = fs::remove_file(&path);
-    let conn = Connection::open(&path)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let conn =
+        Connection::open(&path).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
     let meta_ddl = if agc_path.is_some() {
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -1484,12 +1553,7 @@ pub fn write_seq_index_sqlite(
         for s in seqs {
             tx.execute(
                 "INSERT INTO seq_index (sid, len, ctg_name, source) VALUES (?1,?2,?3,?4)",
-                params![
-                    s.id as i64,
-                    s.len as i64,
-                    &s.name,
-                    s.source.as_deref(),
-                ],
+                params![s.id as i64, s.len as i64, &s.name, s.source.as_deref(),],
             )
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         }
@@ -1527,9 +1591,7 @@ pub fn read_seq_index_sqlite(
     if version != MIDX_SCHEMA_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "unsupported .midx schema version {version} (expected {MIDX_SCHEMA_VERSION})"
-            ),
+            format!("unsupported .midx schema version {version} (expected {MIDX_SCHEMA_VERSION})"),
         ));
     }
 
@@ -1572,11 +1634,9 @@ pub fn read_agc_path_from_midx(prefix: &str) -> Option<String> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = 'agc_path'",
-        [],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT value FROM meta WHERE key = 'agc_path'", [], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
 }
 
@@ -1858,11 +1918,7 @@ pub fn merge_shmmr_map_shards(
 
         /// Read `vec_len` fragment records from val_reader and stream them
         /// directly into `out`.  Allocates only one small stack buffer.
-        fn copy_frags(
-            &mut self,
-            vec_len: u32,
-            out: &mut impl Write,
-        ) -> Result<(), io::Error> {
+        fn copy_frags(&mut self, vec_len: u32, out: &mut impl Write) -> Result<(), io::Error> {
             let byte_count = vec_len as usize * FRAG_RECORD_BYTES;
             // Stack buffer for records; fall back to heap for large blocks.
             const STACK_CAP: usize = 64 * FRAG_RECORD_BYTES; // 64 records = 1088 bytes
@@ -1932,7 +1988,8 @@ pub fn merge_shmmr_map_shards(
 
     // --- K-way merge loop -------------------------------------------------
     while let Some((Reverse((k1, k2)), shard_id)) = heap.pop() {
-        let (_, _, vec_len) = shards[shard_id].current
+        let (_, _, vec_len) = shards[shard_id]
+            .current
             .expect("invariant: heap entry implies current is Some");
 
         // contributors: (shard_id, vec_len) — offset removed (sequential read)
@@ -1950,7 +2007,8 @@ pub fn merge_shmmr_map_shards(
             match heap.peek() {
                 Some((Reverse((pk1, pk2)), _)) if *pk1 == k1 && *pk2 == k2 => {
                     let (_, pshard) = heap.pop().expect("invariant: just peeked");
-                    let (_, _, pvec_len) = shards[pshard].current
+                    let (_, _, pvec_len) = shards[pshard]
+                        .current
                         .expect("invariant: heap entry implies current is Some");
                     contributors.push((pshard, pvec_len));
                     total_frags += pvec_len;
@@ -2022,10 +2080,7 @@ fn read_mdbi_header(f: &mut impl Read) -> Result<(ShmmrSpec, u64), io::Error> {
     if &magic != MDBI_MAGIC || ver[0] != MDBV1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "invalid .mdbi magic/version: {:?} v{}",
-                magic, ver[0]
-            ),
+            format!("invalid .mdbi magic/version: {:?} v{}", magic, ver[0]),
         ));
     }
 
@@ -2042,7 +2097,16 @@ fn read_mdbi_header(f: &mut impl Read) -> Result<(ShmmrSpec, u64), io::Error> {
     f.read_exact(&mut u64b)?;
     let n_keys = u64::from_le_bytes(u64b);
 
-    Ok((ShmmrSpec { w, k, r, min_span, sketch }, n_keys))
+    Ok((
+        ShmmrSpec {
+            w,
+            k,
+            r,
+            min_span,
+            sketch,
+        },
+        n_keys,
+    ))
 }
 
 /// Read `{prefix}.mdbi` and return the location table for mmap-based lookups.

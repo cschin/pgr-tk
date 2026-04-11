@@ -48,10 +48,14 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
 
     // --- Validate splitter sets are identical --------------------------------
-    eprintln!("[{:7.2}s]   validating splitter sets ...", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[{:7.2}s]   validating splitter sets ...",
+        t0.elapsed().as_secs_f64()
+    );
     let ref_splitters: Vec<i64> = {
-        let mut stmt =
-            src_dbs[0].conn().prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
+        let mut stmt = src_dbs[0]
+            .conn()
+            .prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
         let collected: Vec<i64> = stmt
             .query_map([], |r| r.get::<_, i64>(0))?
             .filter_map(|r| r.ok())
@@ -60,7 +64,9 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
     };
     for (i, src) in src_dbs.iter().enumerate().skip(1) {
         let splitters: Vec<i64> = {
-            let mut stmt = src.conn().prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
+            let mut stmt = src
+                .conn()
+                .prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
             let collected: Vec<i64> = stmt
                 .query_map([], |r| r.get::<_, i64>(0))?
                 .filter_map(|r| r.ok())
@@ -86,7 +92,10 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
     //   source 0 → all samples
     //   source 1..N → all samples except the first (reference)
     // Report every conflict before bailing so the user sees the full picture.
-    eprintln!("[{:7.2}s]   checking sample name uniqueness ...", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[{:7.2}s]   checking sample name uniqueness ...",
+        t0.elapsed().as_secs_f64()
+    );
     {
         let mut seen: HashMap<String, usize> = HashMap::new(); // name → first source index
         let mut conflicts: Vec<String> = Vec::new();
@@ -126,7 +135,10 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
             )));
         }
     }
-    eprintln!("[{:7.2}s]   sample names are unique", t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[{:7.2}s]   sample names are unique",
+        t0.elapsed().as_secs_f64()
+    );
 
     // --- Create output archive -----------------------------------------------
     let out_db = AgcDb::create(output_path)?;
@@ -135,7 +147,10 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
     {
         let tx = out_db.conn().unchecked_transaction()?;
         for kmer in &ref_splitters {
-            tx.execute("INSERT OR IGNORE INTO splitter (kmer) VALUES (?1)", params![kmer])?;
+            tx.execute(
+                "INSERT OR IGNORE INTO splitter (kmer) VALUES (?1)",
+                params![kmer],
+            )?;
         }
         tx.commit()?;
     }
@@ -194,7 +209,10 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
 
         let tx = out_db.conn().unchecked_transaction()?;
         for (src_sample_id, sample_name) in &samples_to_copy {
-            tx.execute("INSERT INTO sample (name) VALUES (?1)", params![sample_name])?;
+            tx.execute(
+                "INSERT INTO sample (name) VALUES (?1)",
+                params![sample_name],
+            )?;
             let out_sample_id: i64 = tx.last_insert_rowid();
 
             // Copy contigs.
@@ -245,8 +263,7 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
                     collected
                 };
 
-                for (seg_order, src_group_id, in_group_id, is_rc, raw_len, delta_data) in
-                    &segments
+                for (seg_order, src_group_id, in_group_id, is_rc, raw_len, delta_data) in &segments
                 {
                     let out_group_id = src_to_out_group
                         .get(src_group_id)

@@ -24,7 +24,6 @@ pub fn pgr_lib_version() -> PyResult<String> {
     Ok(VERSION_STRING.to_string())
 }
 
-
 type Bundles = Vec<Vec<(u64, u64, u8)>>; // each bundle is a Vec<node>, each node is (hash0, hash1, orientation)
 
 /// A class that stores pangenome indices and sequences with multiple backend storage options (AGC, fasta file, memory)
@@ -65,7 +64,6 @@ struct SeqIndexDB {
     db_internal: pgr_db::ext::SeqIndexDB,
     pub principal_bundles: Option<(usize, usize, Bundles)>,
 }
-
 
 type CtgNameSrcToIdLen = FxHashMap<(String, Option<String>), (u32, u32)>;
 type SeqInfoMap = FxHashMap<u32, (String, Option<String>, u32)>; // seq_id -> (ctg_name ,src, length)
@@ -146,7 +144,7 @@ impl SeqIndexDB {
         k: u32,
         r: u32,
         min_span: u32,
-        to_upper_case: bool
+        to_upper_case: bool,
     ) -> PyResult<()> {
         self.db_internal
             .load_from_fastx(filepath, w, k, r, min_span, to_upper_case)?;
@@ -209,12 +207,9 @@ impl SeqIndexDB {
         Ok(())
     }
 
-
     /// get a dictionary that maps (ctg_name, source) -> (id, len)
     #[getter]
-    pub fn get_seq_index(
-        &self,
-    ) -> PyResult<Option<CtgNameSrcToIdLen>> {
+    pub fn get_seq_index(&self) -> PyResult<Option<CtgNameSrcToIdLen>> {
         Ok(self.db_internal.seq_index.clone())
     }
 
@@ -357,9 +352,13 @@ impl SeqIndexDB {
         max_count_target: Option<u32>,
         max_aln_span: Option<u32>,
         max_gap: Option<u32>,
-        orientated: Option<bool>
+        orientated: Option<bool>,
     ) -> PyResult<Vec<(u32, Vec<(f32, Vec<aln::HitPair>)>)>> {
-        let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
+        let orientated = if let Some(orientated) = orientated {
+            orientated
+        } else {
+            false
+        };
         match self.db_internal.backend {
             Backend::AGC => Ok(self
                 .db_internal
@@ -371,7 +370,7 @@ impl SeqIndexDB {
                     max_count_target,
                     max_aln_span,
                     max_gap,
-                    orientated
+                    orientated,
                 )
                 .unwrap()),
             Backend::MEMORY | Backend::FASTX => Ok(self
@@ -384,7 +383,7 @@ impl SeqIndexDB {
                     max_count_target,
                     max_aln_span,
                     max_gap,
-                    orientated
+                    orientated,
                 )
                 .unwrap()),
             Backend::UNKNOWN => Ok(vec![]),
@@ -450,10 +449,14 @@ impl SeqIndexDB {
         max_count_target: Option<u32>,
         max_aln_span: Option<u32>,
         max_gap: Option<u32>,
-        orientated: Option<bool>
+        orientated: Option<bool>,
     ) -> PyResult<Vec<(u32, (u32, u32, u8), (u32, u32), (u32, u32))>> {
         let shmmr_spec = self.db_internal.shmmr_spec.as_ref().unwrap();
-        let orientated = if let Some(orientated) = orientated {orientated} else {false};
+        let orientated = if let Some(orientated) = orientated {
+            orientated
+        } else {
+            false
+        };
         let mut all_alns = {
             let raw_query_hits = self.query_fragment(seq.clone()).unwrap();
             aln::query_fragment_to_hps(
@@ -466,7 +469,7 @@ impl SeqIndexDB {
                 max_count_target,
                 max_aln_span,
                 max_gap,
-                orientated
+                orientated,
             )
         };
 
@@ -492,7 +495,7 @@ impl SeqIndexDB {
                         }
                     });
                     if let (Some(left_match), Some(right_match)) = (left_match, right_match) {
-                        out.push((*t_id, *score, left_match, right_match)); 
+                        out.push((*t_id, *score, left_match, right_match));
                     };
 
                     pos2hits.entry(pos).or_insert(vec![]).extend(out);
@@ -882,7 +885,6 @@ impl SeqIndexDB {
                 })
                 .collect();
             Ok(out)
-    
         } else {
             Err(exceptions::PyException::new_err(
                 "This method only support FASTX or MEMORY backend.",
@@ -1243,7 +1245,7 @@ impl SeqIndexDB {
                     .iter()
                     .map(|v| {
                         let seg_match = vertex_to_bundle_id_direction_pos.get(&(v.0, v.1)).copied();
-                       
+
                         (*v, seg_match)
                     })
                     .collect::<Vec<((u64, u64, u32, u32, u8), Option<(usize, u8, usize)>)>>();
@@ -1508,11 +1510,17 @@ pub fn sparse_aln(
     max_span: u32,
     penalty: f32,
     max_gap: Option<u32>,
-    orientated: Option<bool>
+    orientated: Option<bool>,
 ) -> PyResult<Vec<(f32, Vec<HitPair>)>> {
     let mut hp = sp_hits.clone();
-    let orientated = if let Some(orientated) = orientated {orientated} else {false}; 
-    Ok(aln::sparse_aln(&mut hp, max_span, penalty, max_gap, orientated))
+    let orientated = if let Some(orientated) = orientated {
+        orientated
+    } else {
+        false
+    };
+    Ok(aln::sparse_aln(
+        &mut hp, max_span, penalty, max_gap, orientated,
+    ))
 }
 
 /// Generate a list of shimmer pair from a sequence
@@ -1714,7 +1722,7 @@ pub fn get_wfa_aln_pair_map(
     let max_wf_length = if let Some(max_wf_length) = max_wf_length {
         max_wf_length
     } else {
-        std::cmp::max(2*set_len_diff, 128_u32)
+        std::cmp::max(2 * set_len_diff, 128_u32)
     };
 
     if max_wf_length > 128
@@ -1759,8 +1767,8 @@ pub fn get_variants_from_aln_pair_map(
 /// ----------
 /// Documents:TODO
 ///
-#[pyfunction(signature = (target_str, query_str, max_wf_length=None, 
-    mismatch_penalty=4, open_penalty=3, extension_penalty=1, 
+#[pyfunction(signature = (target_str, query_str, max_wf_length=None,
+    mismatch_penalty=4, open_penalty=3, extension_penalty=1,
     max_diff_percent = 0.05))]
 pub fn get_variant_segments(
     target_str: &str,
@@ -1775,7 +1783,7 @@ pub fn get_variant_segments(
     let max_wf_length = if let Some(max_wf_length) = max_wf_length {
         max_wf_length
     } else {
-        std::cmp::max(2*set_len_diff, 128_u32)
+        std::cmp::max(2 * set_len_diff, 128_u32)
     };
 
     if max_wf_length > 128
@@ -1785,7 +1793,7 @@ pub fn get_variant_segments(
         return None;
     };
 
-    if let Some((aln_target_str, aln_query_str)) = aln::wfa_align_bases (
+    if let Some((aln_target_str, aln_query_str)) = aln::wfa_align_bases(
         target_str,
         query_str,
         max_wf_length,

@@ -131,10 +131,7 @@ fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|s| {
                     let colon = s.find(':').with_context(|| {
-                        format!(
-                            "input '{}' is not in 'sample_name:fasta_path' format",
-                            s
-                        )
+                        format!("input '{}' is not in 'sample_name:fasta_path' format", s)
                     })?;
                     Ok((s[..colon].to_string(), s[colon + 1..].to_string()))
                 })
@@ -242,7 +239,9 @@ fn main() -> anyhow::Result<()> {
 /// Returns `(sample, contig, Option<(start, end)>)`.
 fn parse_query(query: &str) -> anyhow::Result<(String, String, Option<(u64, u64)>)> {
     // Split on the first '/'.
-    let slash = query.find('/').context("query must be 'sample/contig' or 'sample/contig:start-end'")?;
+    let slash = query
+        .find('/')
+        .context("query must be 'sample/contig' or 'sample/contig:start-end'")?;
     let sample = query[..slash].to_string();
     let rest = &query[slash + 1..];
 

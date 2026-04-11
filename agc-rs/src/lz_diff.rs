@@ -124,7 +124,8 @@ impl LzDiff {
     fn prepare_gen(&mut self, src: &[u8]) {
         self.reference = src.to_vec();
         let kl = self.key_len as usize;
-        self.reference.resize(self.reference.len() + kl, INVALID_SYMBOL);
+        self.reference
+            .resize(self.reference.len() + kl, INVALID_SYMBOL);
     }
 
     // -----------------------------------------------------------------------
@@ -325,7 +326,12 @@ impl LzDiff {
             }
         }
 
-        (len_bck + len_fwd >= self.min_match_len, ref_pos, len_bck, len_fwd)
+        (
+            len_bck + len_fwd >= self.min_match_len,
+            ref_pos,
+            len_bck,
+            len_fwd,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -378,7 +384,12 @@ impl LzDiff {
             }
         }
 
-        (len_bck + len_fwd >= self.min_match_len, ref_pos, len_bck, len_fwd)
+        (
+            len_bck + len_fwd >= self.min_match_len,
+            ref_pos,
+            len_bck,
+            len_fwd,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -513,7 +524,9 @@ impl LzDiff {
         let (raw_len, p) = Self::read_int(encoded, p)?;
         // skip N_CODE suffix
         if p >= encoded.len() || encoded[p] != N_CODE {
-            return Err(AgcError::LzDiff("decode_Nrun: missing N_CODE suffix".into()));
+            return Err(AgcError::LzDiff(
+                "decode_Nrun: missing N_CODE suffix".into(),
+            ));
         }
         let p = p + 1;
         let len = (raw_len as u32) + MIN_NRUN_LEN;
@@ -905,7 +918,11 @@ mod tests {
 
     /// Build a moderately long test sequence so we exceed min_match_len (18).
     fn make_seq(seed: &[u8], repeat: usize) -> Vec<u8> {
-        seed.iter().cycle().take(seed.len() * repeat).copied().collect()
+        seed.iter()
+            .cycle()
+            .take(seed.len() * repeat)
+            .copied()
+            .collect()
     }
 
     fn round_trip(version: LzVersion, reference: &[u8], text: &[u8]) {
@@ -1003,12 +1020,7 @@ mod tests {
             lz.prepare(&ref_enc);
             let encoded = lz.encode(&txt_enc);
             let decoded = lz.decode(&encoded).expect("decode failed");
-            assert_eq!(
-                dna_decode(&decoded),
-                text,
-                "mismatch for {:?}",
-                version
-            );
+            assert_eq!(dna_decode(&decoded), text, "mismatch for {:?}", version);
         }
     }
 }

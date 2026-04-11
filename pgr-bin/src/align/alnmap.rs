@@ -44,7 +44,7 @@ pub struct Args {
     #[clap(long, default_value_t = 0)]
     pub number_of_thread: usize,
 
-    /// overwrite the preset, minimizer window size: w 
+    /// overwrite the preset, minimizer window size: w
     #[clap(long, short, default_value_t = 48)]
     pub w: u32,
 
@@ -321,7 +321,6 @@ fn filter_aln_rev(aln_segs: &AlignSegments) -> Vec<((u32, u32), (u32, u32))> {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -423,7 +422,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             };
         });
     };
-   
 
     match get_fastx_reader(args.assembly_contig_path, true)? {
         #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
@@ -432,7 +430,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         #[allow(clippy::useless_conversion)] // the into_iter() is necessary for dyn patching
         GZFastaReader::RegularFile(reader) => add_seqs(&mut reader.into_iter()),
     };
-    
+
     let kmer_size = parameters.k;
 
     let query_name = query_seqs
@@ -1119,9 +1117,19 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             .expect("prepare ctgmap insert");
         for r in &ctg_map_set.records {
             stmt.execute(params![
-                r.t_name, r.ts, r.te, r.q_name, r.qs, r.qe, r.ctg_len,
-                r.orientation, r.ctg_orientation,
-                r.t_dup as i32, r.t_ovlp as i32, r.q_dup as i32, r.q_ovlp as i32
+                r.t_name,
+                r.ts,
+                r.te,
+                r.q_name,
+                r.qs,
+                r.qe,
+                r.ctg_len,
+                r.orientation,
+                r.ctg_orientation,
+                r.t_dup as i32,
+                r.t_ovlp as i32,
+                r.q_dup as i32,
+                r.q_ovlp as i32
             ])
             .expect("insert ctgmap");
         }
@@ -1195,125 +1203,33 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     for (aln_idx, vr) in all_records.into_iter().flatten().enumerate() {
         for r in vr.into_iter() {
             let rec_out = match r.clone() {
-                    Record::Bgn(match_block, q_len, ctg_orientation) => {
-                        let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
-                        let tn = target_name.get(&t_idx).unwrap();
-                        let qn = query_name.get(&q_idx).unwrap();
-                        let t_dup = if target_duplicate_blocks.contains(&match_block) { 1 } else { 0 };
-                        let t_ovlp = if target_overlap_blocks.contains(&match_block) { 1 } else { 0 };
-                        let q_dup = if query_duplicate_blocks.contains(&match_block) { 1 } else { 0 };
-                        let q_ovlp = if query_overlap_blocks.contains(&match_block) { 1 } else { 0 };
-                        chain_stmt.execute(params![
-                            aln_idx as u32, tn, ts, te, qn, qs, qe,
-                            orientation, ctg_orientation, q_len,
-                            t_dup, t_ovlp, q_dup, q_ovlp
-                        ]).expect("insert chain");
-                        format!(
-                            "{:06}\tB\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx, tn, ts, te, qn, qs, qe, orientation,
-                            q_len, ctg_orientation, t_dup, t_ovlp, q_dup, q_ovlp
-                        )
-                    }
-                    Record::End(match_block, q_len, ctg_orientation) => {
-                        let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
-                        let tn = target_name.get(&t_idx).unwrap();
-                        let qn = query_name.get(&q_idx).unwrap();
-                        format!(
-                            "{:06}\tE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx, tn, ts, te, qn, qs, qe, orientation, q_len, ctg_orientation
-                        )
-                    }
-                    Record::Match((t_idx, ts, te, q_idx, qs, qe, orientation)) => {
-                        let tn = target_name.get(&t_idx).unwrap();
-                        let qn = query_name.get(&q_idx).unwrap();
-                        let dup = if let Some(target_duplicate_intervals) =
-                            target_duplicate_intervals.get(&t_idx)
-                        {
-                            if te > ts {
-                                target_duplicate_intervals.has_overlap(ts..te)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        let ovlp = if let Some(target_overlap_intervals) =
-                            target_overlap_intervals.get(&t_idx)
-                        {
-                            if te > ts {
-                                target_overlap_intervals.has_overlap(ts..te)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        let match_type = if dup {
-                            "M_D"
-                        } else if ovlp {
-                            "M_O"
-                        } else {
-                            "M"
-                        };
-
-                        block_stmt.execute(params![
-                            aln_idx as u32, 0i32, dup as i32, ovlp as i32,
-                            tn, ts, te, qn, qs, qe, orientation,
-                            rusqlite::types::Null, rusqlite::types::Null
-                        ]).expect("insert M block");
-                        format!(
-                            "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx, match_type, tn, ts, te, qn, qs, qe, orientation
-                        )
-                    }
-                    Record::SvCnd((
-                        (t_idx, ts, te, q_idx, qs, qe, orientation),
-                        diff,
-                        ctg_orientation,
-                    )) => {
-                        let diff_type = match diff {
-                            AlnDiff::FailAln => 'A',
-                            AlnDiff::FailEndMatch => 'E',
-                            AlnDiff::FailShortSeq => 'S',
-                            AlnDiff::FailLengthDiff => 'L',
-                            _ => 'U',
-                        };
-
-                        let tn = target_name.get(&t_idx).unwrap();
-                        let qn = query_name.get(&q_idx).unwrap();
-                        let dup = if let Some(target_duplicate_intervals) =
-                            target_duplicate_intervals.get(&t_idx)
-                        {
-                            target_duplicate_intervals.has_overlap(ts..te)
-                        } else {
-                            false
-                        };
-
-                        let ovlp = if let Some(target_overlap_intervals) =
-                            target_overlap_intervals.get(&t_idx)
-                        {
-                            if te > ts {
-                                target_overlap_intervals.has_overlap(ts..te)
-                            } else {
-                                false
-                            }
-                        } else {
-                            false
-                        };
-
-                        let svc_type = if dup {
-                            "S_D"
-                        } else if ovlp {
-                            "S_O"
-                        } else {
-                            "S"
-                        };
-
-                        let out = format!(
-                            "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx,
-                            svc_type,
+                Record::Bgn(match_block, q_len, ctg_orientation) => {
+                    let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
+                    let tn = target_name.get(&t_idx).unwrap();
+                    let qn = query_name.get(&q_idx).unwrap();
+                    let t_dup = if target_duplicate_blocks.contains(&match_block) {
+                        1
+                    } else {
+                        0
+                    };
+                    let t_ovlp = if target_overlap_blocks.contains(&match_block) {
+                        1
+                    } else {
+                        0
+                    };
+                    let q_dup = if query_duplicate_blocks.contains(&match_block) {
+                        1
+                    } else {
+                        0
+                    };
+                    let q_ovlp = if query_overlap_blocks.contains(&match_block) {
+                        1
+                    } else {
+                        0
+                    };
+                    chain_stmt
+                        .execute(params![
+                            aln_idx as u32,
                             tn,
                             ts,
                             te,
@@ -1322,83 +1238,290 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                             qe,
                             orientation,
                             ctg_orientation,
-                            diff_type
-                        );
-
-                        let sv_diff_code = match diff_type {
-                            'A' => 0i32, 'E' => 1, 'S' => 2, 'L' => 3, _ => 4,
-                        };
-                        block_stmt.execute(params![
-                            aln_idx as u32, 1i32, dup as i32, ovlp as i32,
-                            tn, ts, te, qn, qs, qe, orientation,
-                            ctg_orientation, sv_diff_code
-                        ]).expect("insert S block");
-
-                        if let Some(out_sv_seq_file) = out_sv_seq_file.as_mut() {
-                            let t_seq_slice = &ref_seq_index_db
-                                .get_sub_seq_by_id(t_idx, ts as usize, te as usize)
-                                .unwrap()[..];
-                            let t_seq = String::from_utf8_lossy(t_seq_slice);
-                            let q_seq = if orientation == 0 {
-                                query_seqs[q_idx as usize].seq[(qs as usize)..(qe as usize)]
-                                    .to_vec()
-                            } else {
-                                reverse_complement(
-                                    &query_seqs[q_idx as usize].seq[(qs as usize)..(qe as usize)],
-                                )
-                            };
-                            let q_seq = String::from_utf8_lossy(&q_seq[..]);
-                            writeln!(out_sv_seq_file, "{}\t{}\t{}", out, t_seq, q_seq)
-                                .expect("writing fasta for SV candidate fail");
-                            svsq_stmt.execute(params![
-                                tn, ts, te, qn, qs, qe, orientation,
-                                t_seq.as_ref(), q_seq.as_ref()
-                            ]).expect("insert sv_sequences");
-                        };
-
-                        out
-                    }
-                    Record::Variant(match_block, td, qd, tc, vt, tvs, qvs) => {
-                        let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
-                        vcf_records.push((t_idx, tc + 1, tvs.clone(), qvs.clone(), match_block));
-                        let tn = target_name.get(&t_idx).unwrap();
-                        let qn = query_name.get(&q_idx).unwrap();
-
-                        let dup = if let Some(target_duplicate_intervals) =
-                            target_duplicate_intervals.get(&t_idx)
-                        {
+                            q_len,
+                            t_dup,
+                            t_ovlp,
+                            q_dup,
+                            q_ovlp
+                        ])
+                        .expect("insert chain");
+                    format!(
+                        "{:06}\tB\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        aln_idx,
+                        tn,
+                        ts,
+                        te,
+                        qn,
+                        qs,
+                        qe,
+                        orientation,
+                        q_len,
+                        ctg_orientation,
+                        t_dup,
+                        t_ovlp,
+                        q_dup,
+                        q_ovlp
+                    )
+                }
+                Record::End(match_block, q_len, ctg_orientation) => {
+                    let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
+                    let tn = target_name.get(&t_idx).unwrap();
+                    let qn = query_name.get(&q_idx).unwrap();
+                    format!(
+                        "{:06}\tE\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        aln_idx, tn, ts, te, qn, qs, qe, orientation, q_len, ctg_orientation
+                    )
+                }
+                Record::Match((t_idx, ts, te, q_idx, qs, qe, orientation)) => {
+                    let tn = target_name.get(&t_idx).unwrap();
+                    let qn = query_name.get(&q_idx).unwrap();
+                    let dup = if let Some(target_duplicate_intervals) =
+                        target_duplicate_intervals.get(&t_idx)
+                    {
+                        if te > ts {
                             target_duplicate_intervals.has_overlap(ts..te)
                         } else {
                             false
-                        };
+                        }
+                    } else {
+                        false
+                    };
 
-                        let ovlp = if let Some(target_overlap_intervals) =
-                            target_overlap_intervals.get(&t_idx)
-                        {
-                            if te > ts {
-                                target_overlap_intervals.has_overlap(ts..te)
-                            } else {
-                                false
-                            }
+                    let ovlp = if let Some(target_overlap_intervals) =
+                        target_overlap_intervals.get(&t_idx)
+                    {
+                        if te > ts {
+                            target_overlap_intervals.has_overlap(ts..te)
                         } else {
                             false
-                        };
+                        }
+                    } else {
+                        false
+                    };
+                    let match_type = if dup {
+                        "M_D"
+                    } else if ovlp {
+                        "M_O"
+                    } else {
+                        "M"
+                    };
 
-                        let variant_type = if dup { "V_D" } else if ovlp { "V_O" } else { "V" };
-                        let vt_code: i32 = match vt { 'X' => 0, 'I' => 1, _ => 2 };
-                        variant_stmt.execute(params![
-                            aln_idx as u32, dup as i32, ovlp as i32,
-                            tn, ts, te, qn, qs, qe, orientation,
-                            td, qd, tc, vt_code, tvs, qvs
-                        ]).expect("insert variant");
-                        format!(
-                            "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            aln_idx, variant_type, tn, ts, te, qn, qs, qe,
-                            orientation, td, qd, tc, vt, tvs, qvs
-                        )
-                    }
-                };
-                writeln!(out_alnmap, "{}", rec_out).expect("fail to write the output file");
+                    block_stmt
+                        .execute(params![
+                            aln_idx as u32,
+                            0i32,
+                            dup as i32,
+                            ovlp as i32,
+                            tn,
+                            ts,
+                            te,
+                            qn,
+                            qs,
+                            qe,
+                            orientation,
+                            rusqlite::types::Null,
+                            rusqlite::types::Null
+                        ])
+                        .expect("insert M block");
+                    format!(
+                        "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        aln_idx, match_type, tn, ts, te, qn, qs, qe, orientation
+                    )
+                }
+                Record::SvCnd((
+                    (t_idx, ts, te, q_idx, qs, qe, orientation),
+                    diff,
+                    ctg_orientation,
+                )) => {
+                    let diff_type = match diff {
+                        AlnDiff::FailAln => 'A',
+                        AlnDiff::FailEndMatch => 'E',
+                        AlnDiff::FailShortSeq => 'S',
+                        AlnDiff::FailLengthDiff => 'L',
+                        _ => 'U',
+                    };
+
+                    let tn = target_name.get(&t_idx).unwrap();
+                    let qn = query_name.get(&q_idx).unwrap();
+                    let dup = if let Some(target_duplicate_intervals) =
+                        target_duplicate_intervals.get(&t_idx)
+                    {
+                        target_duplicate_intervals.has_overlap(ts..te)
+                    } else {
+                        false
+                    };
+
+                    let ovlp = if let Some(target_overlap_intervals) =
+                        target_overlap_intervals.get(&t_idx)
+                    {
+                        if te > ts {
+                            target_overlap_intervals.has_overlap(ts..te)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let svc_type = if dup {
+                        "S_D"
+                    } else if ovlp {
+                        "S_O"
+                    } else {
+                        "S"
+                    };
+
+                    let out = format!(
+                        "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        aln_idx,
+                        svc_type,
+                        tn,
+                        ts,
+                        te,
+                        qn,
+                        qs,
+                        qe,
+                        orientation,
+                        ctg_orientation,
+                        diff_type
+                    );
+
+                    let sv_diff_code = match diff_type {
+                        'A' => 0i32,
+                        'E' => 1,
+                        'S' => 2,
+                        'L' => 3,
+                        _ => 4,
+                    };
+                    block_stmt
+                        .execute(params![
+                            aln_idx as u32,
+                            1i32,
+                            dup as i32,
+                            ovlp as i32,
+                            tn,
+                            ts,
+                            te,
+                            qn,
+                            qs,
+                            qe,
+                            orientation,
+                            ctg_orientation,
+                            sv_diff_code
+                        ])
+                        .expect("insert S block");
+
+                    if let Some(out_sv_seq_file) = out_sv_seq_file.as_mut() {
+                        let t_seq_slice = &ref_seq_index_db
+                            .get_sub_seq_by_id(t_idx, ts as usize, te as usize)
+                            .unwrap()[..];
+                        let t_seq = String::from_utf8_lossy(t_seq_slice);
+                        let q_seq = if orientation == 0 {
+                            query_seqs[q_idx as usize].seq[(qs as usize)..(qe as usize)].to_vec()
+                        } else {
+                            reverse_complement(
+                                &query_seqs[q_idx as usize].seq[(qs as usize)..(qe as usize)],
+                            )
+                        };
+                        let q_seq = String::from_utf8_lossy(&q_seq[..]);
+                        writeln!(out_sv_seq_file, "{}\t{}\t{}", out, t_seq, q_seq)
+                            .expect("writing fasta for SV candidate fail");
+                        svsq_stmt
+                            .execute(params![
+                                tn,
+                                ts,
+                                te,
+                                qn,
+                                qs,
+                                qe,
+                                orientation,
+                                t_seq.as_ref(),
+                                q_seq.as_ref()
+                            ])
+                            .expect("insert sv_sequences");
+                    };
+
+                    out
+                }
+                Record::Variant(match_block, td, qd, tc, vt, tvs, qvs) => {
+                    let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
+                    vcf_records.push((t_idx, tc + 1, tvs.clone(), qvs.clone(), match_block));
+                    let tn = target_name.get(&t_idx).unwrap();
+                    let qn = query_name.get(&q_idx).unwrap();
+
+                    let dup = if let Some(target_duplicate_intervals) =
+                        target_duplicate_intervals.get(&t_idx)
+                    {
+                        target_duplicate_intervals.has_overlap(ts..te)
+                    } else {
+                        false
+                    };
+
+                    let ovlp = if let Some(target_overlap_intervals) =
+                        target_overlap_intervals.get(&t_idx)
+                    {
+                        if te > ts {
+                            target_overlap_intervals.has_overlap(ts..te)
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    let variant_type = if dup {
+                        "V_D"
+                    } else if ovlp {
+                        "V_O"
+                    } else {
+                        "V"
+                    };
+                    let vt_code: i32 = match vt {
+                        'X' => 0,
+                        'I' => 1,
+                        _ => 2,
+                    };
+                    variant_stmt
+                        .execute(params![
+                            aln_idx as u32,
+                            dup as i32,
+                            ovlp as i32,
+                            tn,
+                            ts,
+                            te,
+                            qn,
+                            qs,
+                            qe,
+                            orientation,
+                            td,
+                            qd,
+                            tc,
+                            vt_code,
+                            tvs,
+                            qvs
+                        ])
+                        .expect("insert variant");
+                    format!(
+                        "{:06}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        aln_idx,
+                        variant_type,
+                        tn,
+                        ts,
+                        te,
+                        qn,
+                        qs,
+                        qe,
+                        orientation,
+                        td,
+                        qd,
+                        tc,
+                        vt,
+                        tvs,
+                        qvs
+                    )
+                }
+            };
+            writeln!(out_alnmap, "{}", rec_out).expect("fail to write the output file");
         }
     }
     drop(chain_stmt);

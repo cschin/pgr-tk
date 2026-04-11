@@ -1,9 +1,9 @@
 use clap::{self, Parser};
 use flate2::bufread::MultiGzDecoder;
 use iset::IntervalMap;
+use rusqlite::params;
 use rusqlite::Connection;
 use rustc_hash::{FxHashMap, FxHashSet};
-use rusqlite::params;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -110,8 +110,7 @@ fn load_target_intervals(db_path: &str, strip_prefix: Option<&str>) -> TargetInt
     // Key: (target_name, query_name, aln_idx, orientation)
     // Value: Vec<(ts, te, qs, qe)>
     type ChainKey = (String, String, u32, u32);
-    let mut chain_blocks: FxHashMap<ChainKey, Vec<(u32, u32, u32, u32)>> =
-        FxHashMap::default();
+    let mut chain_blocks: FxHashMap<ChainKey, Vec<(u32, u32, u32, u32)>> = FxHashMap::default();
 
     let mut stmt = conn
         .prepare(
@@ -176,8 +175,10 @@ fn load_target_intervals(db_path: &str, strip_prefix: Option<&str>) -> TargetInt
         }
 
         let qmap = target_intervals
-            .entry(t_name).or_default()
-            .entry(q_name).or_default();
+            .entry(t_name)
+            .or_default()
+            .entry(q_name)
+            .or_default();
 
         // Insert merged M-blocks
         for &(ts, te, qs, qe) in &merged {
@@ -603,11 +604,7 @@ fn load_fasta_seqs(path: &str) -> std::io::Result<FxHashMap<String, Vec<u8>>> {
 }
 
 /// Write a FASTA record with 80-column line wrapping.
-fn write_fasta_record(
-    out: &mut BufWriter<File>,
-    header: &str,
-    seq: &[u8],
-) -> std::io::Result<()> {
+fn write_fasta_record(out: &mut BufWriter<File>, header: &str, seq: &[u8]) -> std::io::Result<()> {
     writeln!(out, ">{}", header)?;
     for chunk in seq.chunks(80) {
         out.write_all(chunk)?;
@@ -642,14 +639,15 @@ fn fetch_ref_tx_seq(
             spliced.extend_from_slice(&seq[es..ee]);
         }
     }
-    if strand == '-' { reverse_complement(&spliced) } else { spliced }
+    if strand == '-' {
+        reverse_complement(&spliced)
+    } else {
+        spliced
+    }
 }
 
 /// Splice contig block sequences from a loaded FASTA map and apply strand.
-fn fetch_contig_tx_seq(
-    seqs: &FxHashMap<String, Vec<u8>>,
-    hit: &LiftoverResult,
-) -> Vec<u8> {
+fn fetch_contig_tx_seq(seqs: &FxHashMap<String, Vec<u8>>, hit: &LiftoverResult) -> Vec<u8> {
     let seq = match seqs.get(&hit.query_name) {
         Some(s) => s,
         None => return Vec::new(),
@@ -662,7 +660,11 @@ fn fetch_contig_tx_seq(
             spliced.extend_from_slice(&seq[bs..be]);
         }
     }
-    if hit.strand == '-' { reverse_complement(&spliced) } else { spliced }
+    if hit.strand == '-' {
+        reverse_complement(&spliced)
+    } else {
+        spliced
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,8 +678,8 @@ struct LiftoverSummary {
     status: &'static str,
     hit_count: usize,
     contig_count: usize,
-    best_coverage: f64,   // 0.0 when no_hit
-    best_contig: String,  // empty when no_hit
+    best_coverage: f64,  // 0.0 when no_hit
+    best_contig: String, // empty when no_hit
 }
 
 /// Classify the set of hits for one transcript.
@@ -704,9 +706,9 @@ fn classify_hits(hits: &[LiftoverResult], full_cov_threshold: f64) -> LiftoverSu
             "single_partial"
         }
     } else if contig_count > 1 {
-        "multi_contig"    // best hit spans or maps to different contigs
+        "multi_contig" // best hit spans or maps to different contigs
     } else {
-        "multi_location"  // multiple hits on the same contig (e.g. segmental dup)
+        "multi_location" // multiple hits on the same contig (e.g. segmental dup)
     };
 
     LiftoverSummary {
@@ -731,8 +733,13 @@ fn write_gtf_records(
         "gene_id \"{}\"; transcript_id \"{}\"; gene_name \"{}\"; \
          ref_chrom \"{}\"; ref_start {}; ref_end {}; ref_strand \"{}\"; \
          coverage_pct {:.1};",
-        tx.gene_id, tx.transcript_id, tx.gene_name,
-        tx.chrom, tx.start, tx.end, tx.strand,
+        tx.gene_id,
+        tx.transcript_id,
+        tx.gene_name,
+        tx.chrom,
+        tx.start,
+        tx.end,
+        tx.strand,
         hit.coverage_pct,
     );
 
@@ -740,7 +747,11 @@ fn write_gtf_records(
     writeln!(
         out,
         "{}\tpgr-liftover\ttranscript\t{}\t{}\t.\t{}\t.\t{}",
-        hit.query_name, hit.query_start + 1, hit.query_end, hit.strand, attrs
+        hit.query_name,
+        hit.query_start + 1,
+        hit.query_end,
+        hit.strand,
+        attrs
     )?;
 
     // exon records — one per alignment block
@@ -750,7 +761,11 @@ fn write_gtf_records(
         writeln!(
             out,
             "{}\tpgr-liftover\texon\t{}\t{}\t.\t{}\t.\t{}",
-            hit.query_name, exon_s + 1, exon_e, hit.strand, attrs
+            hit.query_name,
+            exon_s + 1,
+            exon_e,
+            hit.strand,
+            attrs
         )?;
     }
 
@@ -762,7 +777,6 @@ fn write_gtf_records(
 // ---------------------------------------------------------------------------
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     // Load alignment blocks from alndb
     let target_intervals =
         load_target_intervals(&args.alndb_path, args.target_chr_prefix.as_deref());
@@ -791,14 +805,22 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     // GTF format uses no version header — comment lines only
     writeln!(gtf_out, "# source-db: {}", args.output_db)?;
     writeln!(gtf_out, "# alndb: {}", args.alndb_path)?;
-    writeln!(gtf_out, "# min_coverage_pct: {:.0}", args.min_coverage * 100.0)?;
+    writeln!(
+        gtf_out,
+        "# min_coverage_pct: {:.0}",
+        args.min_coverage * 100.0
+    )?;
 
     // High-quality GTF: only hits >= full_coverage threshold
     let hq_gtf_path = db_path.with_extension("hq.gtf");
     let mut hq_gtf_out = BufWriter::new(File::create(&hq_gtf_path)?);
     writeln!(hq_gtf_out, "# source-db: {}", args.output_db)?;
     writeln!(hq_gtf_out, "# alndb: {}", args.alndb_path)?;
-    writeln!(hq_gtf_out, "# min_coverage_pct: {:.0}", args.full_coverage * 100.0)?;
+    writeln!(
+        hq_gtf_out,
+        "# min_coverage_pct: {:.0}",
+        args.full_coverage * 100.0
+    )?;
 
     // --- Insert GTF data (transcripts + exons) in one transaction ---
     let tx = conn.unchecked_transaction().expect("begin transaction");
@@ -836,9 +858,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         let pk = tx.last_insert_rowid();
         tx_pk.insert(t.transcript_id.clone(), pk);
         for &(es, ee) in &t.exons {
-            ex_stmt
-                .execute(params![pk, es, ee])
-                .expect("insert exon");
+            ex_stmt.execute(params![pk, es, ee]).expect("insert exon");
         }
     }
     drop(tx_stmt);
@@ -846,7 +866,9 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     tx.commit().expect("commit GTF data");
 
     // --- Liftover + summary in one transaction ---
-    let tx = conn.unchecked_transaction().expect("begin liftover transaction");
+    let tx = conn
+        .unchecked_transaction()
+        .expect("begin liftover transaction");
     let mut lo_stmt = tx
         .prepare(
             "INSERT INTO liftover
@@ -881,8 +903,18 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     // (transcript_id, gene_id, gene_name, ref_chrom, ref_start, ref_end, status,
     //  hit_count, contig_count, best_coverage, best_contig, contigs)
     let mut anomaly_rows: Vec<(
-        String, String, String, String, u32, u32,
-        &'static str, usize, usize, f64, String, String,
+        String,
+        String,
+        String,
+        String,
+        u32,
+        u32,
+        &'static str,
+        usize,
+        usize,
+        f64,
+        String,
+        String,
     )> = Vec::new();
 
     for t in &transcripts {
@@ -891,11 +923,26 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
 
         let s = classify_hits(&hits, args.full_coverage);
         let status_idx = match s.status {
-            "single_full"    => { cnt_single_full    += 1; 0 }
-            "single_partial" => { cnt_single_partial += 1; 1 }
-            "multi_contig"   => { cnt_multi_contig   += 1; 2 }
-            "multi_location" => { cnt_multi_location += 1; 3 }
-            _                => { cnt_no_hit         += 1; 4 }
+            "single_full" => {
+                cnt_single_full += 1;
+                0
+            }
+            "single_partial" => {
+                cnt_single_partial += 1;
+                1
+            }
+            "multi_contig" => {
+                cnt_multi_contig += 1;
+                2
+            }
+            "multi_location" => {
+                cnt_multi_location += 1;
+                3
+            }
+            _ => {
+                cnt_no_hit += 1;
+                4
+            }
         };
         // Accumulate into gene-level counts
         let ge = gene_counts
@@ -930,8 +977,12 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
 
         sum_stmt
             .execute(params![
-                pk, s.status, s.hit_count as i64,
-                s.contig_count as i64, s.best_coverage, s.best_contig,
+                pk,
+                s.status,
+                s.hit_count as i64,
+                s.contig_count as i64,
+                s.best_coverage,
+                s.best_contig,
             ])
             .expect("insert summary");
 
@@ -947,15 +998,29 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
 
         // SQLite liftover: all hits above min_coverage
         for hit in &hits {
-            let block_sizes_str = hit.block_sizes.iter()
-                .map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-            let block_starts_str = hit.block_starts.iter()
-                .map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+            let block_sizes_str = hit
+                .block_sizes
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let block_starts_str = hit
+                .block_starts
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             lo_stmt
                 .execute(params![
-                    pk, hit.query_name, hit.query_start, hit.query_end,
-                    hit.strand.to_string(), hit.coverage_pct,
-                    hit.block_count as i64, block_sizes_str, block_starts_str,
+                    pk,
+                    hit.query_name,
+                    hit.query_start,
+                    hit.query_end,
+                    hit.strand.to_string(),
+                    hit.coverage_pct,
+                    hit.block_count as i64,
+                    block_sizes_str,
+                    block_starts_str,
                 ])
                 .expect("insert liftover");
         }
@@ -966,7 +1031,9 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
 
     // --- Insert gene summary into DB ---
     {
-        let tx = conn.unchecked_transaction().expect("begin gene_summary transaction");
+        let tx = conn
+            .unchecked_transaction()
+            .expect("begin gene_summary transaction");
         let mut gs_stmt = tx
             .prepare(
                 "INSERT INTO gene_summary
@@ -980,9 +1047,15 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             let total = c.iter().sum::<u64>();
             gs_stmt
                 .execute(params![
-                    gene_id, gene_name, chrom,
-                    total as i64, c[0] as i64, c[1] as i64,
-                    c[2] as i64, c[3] as i64, c[4] as i64,
+                    gene_id,
+                    gene_name,
+                    chrom,
+                    total as i64,
+                    c[0] as i64,
+                    c[1] as i64,
+                    c[2] as i64,
+                    c[3] as i64,
+                    c[4] as i64,
                 ])
                 .expect("insert gene_summary");
         }
@@ -1000,16 +1073,20 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     writeln!(sum_out, "## alndb      : {}", args.alndb_path)?;
     writeln!(sum_out, "## gtf        : {}", args.gtf_path)?;
     writeln!(sum_out, "## min_cov    : {:.0}%", args.min_coverage * 100.0)?;
-    writeln!(sum_out, "## full_cov   : {:.0}%", args.full_coverage * 100.0)?;
+    writeln!(
+        sum_out,
+        "## full_cov   : {:.0}%",
+        args.full_coverage * 100.0
+    )?;
     writeln!(sum_out, "#")?;
     writeln!(sum_out, "## status\tcount\tpct")?;
     for (label, n) in [
-        ("total",          total),
-        ("single_full",    cnt_single_full),
+        ("total", total),
+        ("single_full", cnt_single_full),
         ("single_partial", cnt_single_partial),
-        ("multi_contig",   cnt_multi_contig),
+        ("multi_contig", cnt_multi_contig),
         ("multi_location", cnt_multi_location),
-        ("no_hit",         cnt_no_hit),
+        ("no_hit", cnt_no_hit),
     ] {
         writeln!(sum_out, "##   {label:<20}\t{n}\t{:.2}%", pct(n, total))?;
     }
@@ -1021,8 +1098,20 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         "transcript_id\tgene_id\tgene_name\tref_chrom\tref_start\tref_end\t\
          status\thit_count\tcontig_count\tbest_coverage\tbest_contig\tall_contigs"
     )?;
-    for (tx_id, gene_id, gene_name, chrom, start, end,
-         status, hit_count, contig_count, best_cov, best_contig, contigs) in &anomaly_rows
+    for (
+        tx_id,
+        gene_id,
+        gene_name,
+        chrom,
+        start,
+        end,
+        status,
+        hit_count,
+        contig_count,
+        best_cov,
+        best_contig,
+        contigs,
+    ) in &anomaly_rows
     {
         writeln!(
             sum_out,
@@ -1038,8 +1127,16 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     writeln!(gene_out, "## gene-level liftover summary")?;
     writeln!(gene_out, "## alndb      : {}", args.alndb_path)?;
     writeln!(gene_out, "## gtf        : {}", args.gtf_path)?;
-    writeln!(gene_out, "## min_cov    : {:.0}%", args.min_coverage * 100.0)?;
-    writeln!(gene_out, "## full_cov   : {:.0}%", args.full_coverage * 100.0)?;
+    writeln!(
+        gene_out,
+        "## min_cov    : {:.0}%",
+        args.min_coverage * 100.0
+    )?;
+    writeln!(
+        gene_out,
+        "## full_cov   : {:.0}%",
+        args.full_coverage * 100.0
+    )?;
     writeln!(gene_out, "#")?;
     writeln!(
         gene_out,
@@ -1050,13 +1147,13 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     // Sort by ref_chrom then by total anomalies descending
     let mut gene_vec: Vec<(&String, &(String, String, [u64; 5]))> = gene_counts.iter().collect();
     gene_vec.sort_by(|a, b| {
-        let chrom_cmp = a.1.1.cmp(&b.1.1);
+        let chrom_cmp = a.1 .1.cmp(&b.1 .1);
         if chrom_cmp != std::cmp::Ordering::Equal {
             return chrom_cmp;
         }
         // within same chrom: most anomalies (least single_full) first
-        let a_anom = a.1.2[1] + a.1.2[2] + a.1.2[3] + a.1.2[4];
-        let b_anom = b.1.2[1] + b.1.2[2] + b.1.2[3] + b.1.2[4];
+        let a_anom = a.1 .2[1] + a.1 .2[2] + a.1 .2[3] + a.1 .2[4];
+        let b_anom = b.1 .2[1] + b.1 .2[2] + b.1 .2[3] + b.1 .2[4];
         b_anom.cmp(&a_anom)
     });
 
@@ -1072,16 +1169,40 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     }
 
     eprintln!("Liftover anomaly summary  (total transcripts: {total})");
-    eprintln!("  single_full     {:>8}  ({:.1}%)", cnt_single_full,    pct(cnt_single_full,    total));
-    eprintln!("  single_partial  {:>8}  ({:.1}%)", cnt_single_partial, pct(cnt_single_partial, total));
-    eprintln!("  multi_contig    {:>8}  ({:.1}%)", cnt_multi_contig,   pct(cnt_multi_contig,   total));
-    eprintln!("  multi_location  {:>8}  ({:.1}%)", cnt_multi_location, pct(cnt_multi_location, total));
-    eprintln!("  no_hit          {:>8}  ({:.1}%)", cnt_no_hit,         pct(cnt_no_hit,         total));
+    eprintln!(
+        "  single_full     {:>8}  ({:.1}%)",
+        cnt_single_full,
+        pct(cnt_single_full, total)
+    );
+    eprintln!(
+        "  single_partial  {:>8}  ({:.1}%)",
+        cnt_single_partial,
+        pct(cnt_single_partial, total)
+    );
+    eprintln!(
+        "  multi_contig    {:>8}  ({:.1}%)",
+        cnt_multi_contig,
+        pct(cnt_multi_contig, total)
+    );
+    eprintln!(
+        "  multi_location  {:>8}  ({:.1}%)",
+        cnt_multi_location,
+        pct(cnt_multi_location, total)
+    );
+    eprintln!(
+        "  no_hit          {:>8}  ({:.1}%)",
+        cnt_no_hit,
+        pct(cnt_no_hit, total)
+    );
     eprintln!("Outputs:");
     eprintln!("  SQLite       : {}", args.output_db);
     eprintln!("  GTF          : {}", gtf_path.display());
-    eprintln!("  HQ GTF       : {} ({} genes, {:.0}% coverage threshold)",
-              hq_gtf_path.display(), hq_genes.len(), args.full_coverage * 100.0);
+    eprintln!(
+        "  HQ GTF       : {} ({} genes, {:.0}% coverage threshold)",
+        hq_gtf_path.display(),
+        hq_genes.len(),
+        args.full_coverage * 100.0
+    );
     eprintln!("  Anomalies    : {}", summary_path.display());
     eprintln!("  Gene summary : {}", gene_summary_path.display());
 
@@ -1089,8 +1210,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     if args.ref_fa.is_some() || args.query_fa.is_some() {
         let ref_seqs = if let Some(ref path) = args.ref_fa {
             eprintln!("Loading ref FASTA: {path}");
-            load_fasta_seqs(path)
-                .unwrap_or_else(|e| panic!("cannot load ref FASTA '{path}': {e}"))
+            load_fasta_seqs(path).unwrap_or_else(|e| panic!("cannot load ref FASTA '{path}': {e}"))
         } else {
             FxHashMap::default()
         };
@@ -1103,13 +1223,13 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         };
 
         // Output FASTA paths
-        let ref_fa_path    = db_path.with_extension("ref_tx.fa");
-        let ctg_fa_path    = db_path.with_extension("contig_tx.fa");
+        let ref_fa_path = db_path.with_extension("ref_tx.fa");
+        let ctg_fa_path = db_path.with_extension("contig_tx.fa");
         let hq_ctg_fa_path = db_path.with_extension("hq_contig_tx.fa");
 
         let mut ref_fa_out = BufWriter::new(File::create(&ref_fa_path)?);
         let mut ctg_fa_out = BufWriter::new(File::create(&ctg_fa_path)?);
-        let mut hq_fa_out  = BufWriter::new(File::create(&hq_ctg_fa_path)?);
+        let mut hq_fa_out = BufWriter::new(File::create(&hq_ctg_fa_path)?);
 
         // Sequence insert statements
         let seq_tx = conn.unchecked_transaction().expect("begin seq transaction");
@@ -1143,9 +1263,13 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     let ctg_seq = fetch_contig_tx_seq(&query_seqs, hit);
                     let ctg_header = format!(
                         "{} gene_id={} contig={}:{}-{} strand={} coverage={:.1}",
-                        t.transcript_id, t.gene_id,
-                        hit.query_name, hit.query_start, hit.query_end,
-                        hit.strand, hit.coverage_pct
+                        t.transcript_id,
+                        t.gene_id,
+                        hit.query_name,
+                        hit.query_start,
+                        hit.query_end,
+                        hit.strand,
+                        hit.coverage_pct
                     );
                     write_fasta_record(&mut ctg_fa_out, &ctg_header, &ctg_seq)?;
                     if hit.coverage_pct >= args.full_coverage * 100.0 {
@@ -1182,5 +1306,9 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
 
 #[inline]
 fn pct(n: u64, total: u64) -> f64 {
-    if total == 0 { 0.0 } else { n as f64 / total as f64 * 100.0 }
+    if total == 0 {
+        0.0
+    } else {
+        n as f64 / total as f64 * 100.0
+    }
 }

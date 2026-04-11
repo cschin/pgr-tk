@@ -25,7 +25,6 @@ pub struct Args {
     pub number_of_thread: usize,
 }
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -94,20 +93,22 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     let gn = gn.split(' ').collect::<Vec<&str>>();
                     let gn = gn.last().unwrap().to_string();
                     let gn = gn.trim_matches('"');
-                    annotations.insert(gn.to_string()); 
+                    annotations.insert(gn.to_string());
+                }
+                if annotations.is_empty() {
+                    return;
                 };
-                if annotations.is_empty() { return };
-                let gn = annotations.into_iter().collect::<Vec<_>>().join("/"); 
+                let gn = annotations.into_iter().collect::<Vec<_>>().join("/");
 
                 let tvs = fields[3];
-                    let qvs = fields[4];
-                    let gt = fields[9];
-                    writeln!(
-                        out_vcf,
-                        "{}\t{}\t.\t{}\t{}\t60\tPASS\tGN={}\tGT\t{}",
-                        chr, pos, tvs, qvs, gn, gt,
-                    )
-                    .expect("fail to write the vcf file");
+                let qvs = fields[4];
+                let gt = fields[9];
+                writeln!(
+                    out_vcf,
+                    "{}\t{}\t.\t{}\t{}\t60\tPASS\tGN={}\tGT\t{}",
+                    chr, pos, tvs, qvs, gn, gt,
+                )
+                .expect("fail to write the vcf file");
             };
         }
     });

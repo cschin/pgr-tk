@@ -23,7 +23,6 @@ pub struct Args {
 
 type Interval = ((u32, u32), (String, String));
 pub fn run(args: Args) {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
@@ -85,7 +84,7 @@ pub fn run(args: Args) {
                 current_groups.push((*interval, payload.clone()));
                 if current_end < interval.1 {
                     current_end = interval.1;
-                } 
+                }
             }
         });
         if !current_groups.is_empty() {

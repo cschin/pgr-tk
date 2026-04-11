@@ -1,6 +1,6 @@
 use clap::{self, Parser};
 use iset::IntervalMap;
-use pgr_db::aln::{wfa_align_bases, aln_pair_map};
+use pgr_db::aln::{aln_pair_map, wfa_align_bases};
 // use rayon::prelude::*;
 use pgr_db::ext::{get_fastx_reader, GZFastaReader};
 use pgr_db::fasta_io::{reverse_complement, SeqRec};
@@ -103,50 +103,49 @@ pub struct Args {
 type ShimmerMatchBlock = (String, u32, u32, String, u32, u32, u32, String);
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.number_of_thread)
         .build_global()
         .unwrap();
 
-    let aln_blocks: FxHashMap<u32, Vec<ShimmerMatchBlock>> =
-        if args.alnmap_path.ends_with(".alndb") {
-            get_aln_blocks_from_db(&args.alnmap_path)
-        } else {
-            let f = BufReader::new(File::open(Path::new(&args.alnmap_path)).unwrap());
-            let mut aln_blocks = FxHashMap::<u32, Vec<ShimmerMatchBlock>>::default();
-            f.lines().for_each(|line| {
-                if let Ok(line) = line {
-                    if line.trim().starts_with('#') {
-                        return;
-                    };
-                    let fields = line.split('\t').collect::<Vec<&str>>();
-                    assert!(fields.len() > 3);
-                    let rec_type = fields[1];
-                    let err_msg = format!("fail to parse on {}", line);
-                    let aln_block_id = fields[0].parse::<u32>().expect(&err_msg);
-                    let t_name = fields[2];
-                    let ts = fields[3].parse::<u32>().expect(&err_msg);
-                    let te = fields[4].parse::<u32>().expect(&err_msg);
-                    let q_name = fields[5];
-                    let qs = fields[6].parse::<u32>().expect(&err_msg);
-                    let qe = fields[7].parse::<u32>().expect(&err_msg);
-                    let orientation = fields[8].parse::<u32>().expect(&err_msg);
-                    let e = aln_blocks.entry(aln_block_id).or_default();
-                    e.push((
-                        t_name.to_string(),
-                        ts,
-                        te,
-                        q_name.to_string(),
-                        qs,
-                        qe,
-                        orientation,
-                        rec_type.to_string(),
-                    ));
-                }
-            });
-            aln_blocks
-        };
+    let aln_blocks: FxHashMap<u32, Vec<ShimmerMatchBlock>> = if args.alnmap_path.ends_with(".alndb")
+    {
+        get_aln_blocks_from_db(&args.alnmap_path)
+    } else {
+        let f = BufReader::new(File::open(Path::new(&args.alnmap_path)).unwrap());
+        let mut aln_blocks = FxHashMap::<u32, Vec<ShimmerMatchBlock>>::default();
+        f.lines().for_each(|line| {
+            if let Ok(line) = line {
+                if line.trim().starts_with('#') {
+                    return;
+                };
+                let fields = line.split('\t').collect::<Vec<&str>>();
+                assert!(fields.len() > 3);
+                let rec_type = fields[1];
+                let err_msg = format!("fail to parse on {}", line);
+                let aln_block_id = fields[0].parse::<u32>().expect(&err_msg);
+                let t_name = fields[2];
+                let ts = fields[3].parse::<u32>().expect(&err_msg);
+                let te = fields[4].parse::<u32>().expect(&err_msg);
+                let q_name = fields[5];
+                let qs = fields[6].parse::<u32>().expect(&err_msg);
+                let qe = fields[7].parse::<u32>().expect(&err_msg);
+                let orientation = fields[8].parse::<u32>().expect(&err_msg);
+                let e = aln_blocks.entry(aln_block_id).or_default();
+                e.push((
+                    t_name.to_string(),
+                    ts,
+                    te,
+                    q_name.to_string(),
+                    qs,
+                    qe,
+                    orientation,
+                    rec_type.to_string(),
+                ));
+            }
+        });
+        aln_blocks
+    };
 
     let blocks_to_intervals =
         |blocks: FxHashMap<u32, Vec<ShimmerMatchBlock>>| -> FxHashMap<String, IntervalMap<u32, ShimmerMatchBlock>> {

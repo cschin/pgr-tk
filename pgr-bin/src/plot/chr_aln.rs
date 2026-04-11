@@ -164,7 +164,6 @@ fn load_ctgmap_from_db(db_path: &str) -> CtgMapSet {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     let mut ctgmap_set: CtgMapSet = if args.ctgmap_json_path.ends_with(".alndb") {
         load_ctgmap_from_db(&args.ctgmap_json_path)
     } else {
@@ -317,7 +316,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         .set("width", args.panel_width * 2.0)
         .set("height", svg_box_height)
         .set("preserveAspectRatio", "none")
-        .set("id", "WholeGenomeViwer")        
+        .set("id", "WholeGenomeViwer")
         .set("overflow", "visible");
 
     let scaling_factor = if let Some(total_target_bases) = args.total_target_bases {
@@ -497,29 +496,21 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                 None => return,
             };
             let mut sub_svg = Document::new()
-            .set(
-                "viewBox",
-                (
-                    0,
-                    -25,
-                    args.panel_width,
-                    130,
-                ),
-            )
-            .set("width", args.panel_width)
-            .set("height", 130)
-            .set("preserveAspectRatio", "none")
-            .set("y", y_offset)
-            .set("id", t_name.clone())
-            .set("class", "chr_view")
-            .set("overflow", "visible");
-    
+                .set("viewBox", (0, -25, args.panel_width, 130))
+                .set("width", args.panel_width)
+                .set("height", 130)
+                .set("preserveAspectRatio", "none")
+                .set("y", y_offset)
+                .set("id", t_name.clone())
+                .set("class", "chr_view")
+                .set("overflow", "visible");
+
             sub_svg.append(group);
             let text = element::Text::new(target_aln_block_record.1.clone())
-            .set("x", 0.0)
-            .set("y", y_offset+20.0)
-            .set("font-size", "20px")
-            .set("font-family", "monospace");
+                .set("x", 0.0)
+                .set("y", y_offset + 20.0)
+                .set("font-size", "20px")
+                .set("font-family", "monospace");
             document.append(text);
             document.append(sub_svg);
             y_offset += 130.0;
@@ -568,7 +559,8 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         "#;
         writeln!(out_file, r#"<html><body>"#).expect("can't write the output html file");
         writeln!(out_file, "{}", jscript).expect("can't write the output html file");
-        writeln!(out_file, r#"<div style="overflow:scroll;">"#).expect("can't write the output html file");
+        writeln!(out_file, r#"<div style="overflow:scroll;">"#)
+            .expect("can't write the output html file");
     };
 
     writeln!(
@@ -585,16 +577,15 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-
 fn get_chr_svg_group(
     target_aln_block_record: &(u32, String, u32, f64, &Vec<CtgMapRec>),
     scaling_factor: f64,
     cytobands: &Option<CytoBands>,
     ref_highlight: &Option<FxHashMap<String, Vec<(u32, u32)>>>,
-    tgt_to_alt_qry_records: &FxHashMap::<String, Vec<CtgMapRec>>,
-    ctg2tgt: &FxHashMap::<String, String>,
-    query_length: &FxHashMap::<String, u32>,
-    qry_to_alt_tgt_records: &FxHashMap::<String, Vec<CtgMapRec>>
+    tgt_to_alt_qry_records: &FxHashMap<String, Vec<CtgMapRec>>,
+    ctg2tgt: &FxHashMap<String, String>,
+    query_length: &FxHashMap<String, u32>,
+    qry_to_alt_tgt_records: &FxHashMap<String, Vec<CtgMapRec>>,
 ) -> Option<element::Group> {
     let t_name = target_aln_block_record.1.clone();
     let mut group = element::Group::new();

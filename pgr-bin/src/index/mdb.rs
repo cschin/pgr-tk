@@ -1,4 +1,3 @@
-
 use clap::{self, Parser};
 use pgr_db::agc_io::AGCFile;
 use pgr_db::seq_db;
@@ -42,7 +41,6 @@ pub struct Args {
 }
 
 pub fn run(args: Args) {
-
     let shmmr_spec = pgr_db::shmmrutils::ShmmrSpec {
         w: args.w,
         k: args.k,

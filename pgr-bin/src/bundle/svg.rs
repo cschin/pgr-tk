@@ -85,7 +85,6 @@ static CMAP: [&str; 97] = [
 ];
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-
     // parsing the bed file for the aux track
     let mut annotation_region_record =
         FxHashMap::<String, Vec<(u32, u32, String, String)>>::default();
