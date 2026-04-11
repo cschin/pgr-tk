@@ -52,5 +52,14 @@ echo
 liftover_hap 1 "$OUT/hg002_hap1.alndb" "$HAP1_FA" "$OUT/hg002_hap1_liftover.db"
 echo
 
+# ---------------------------------------------------------------------------
+# HTML liftover report (scatter plots, NM gene funnel, per-chrom coverage)
+# ---------------------------------------------------------------------------
+echo "=== Generating $OUT/liftover_report.html ==="
+python3 helpers/generate_liftover_report.py \
+    --base-dir "$OUT" \
+    --out      "$OUT/liftover_report.html"
+
+echo "Liftover report: $OUT/liftover_report.html"
 echo "See lift_over_examples.md for SQL queries against the liftover databases."
 echo "Next: bash 05_query_mhc.sh  or  bash 06_generate_report.sh"

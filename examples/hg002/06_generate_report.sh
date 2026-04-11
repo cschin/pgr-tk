@@ -29,7 +29,7 @@ TIMELOG="$OUT/run_all_timings.tsv"
 REPORT="$OUT/e2e_report.html"
 
 echo "=== Generating $REPORT ==="
-python3 helpers/generate_liftover_report.py \
+python3 helpers/generate_e2e_report.py \
     --base-dir "$OUT" \
     --timelog  "$TIMELOG" \
     --out      "$REPORT"

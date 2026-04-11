@@ -10,7 +10,7 @@
 #   01  pgr align alnmap        → example_output/hg002_hap{0,1}.alndb
 #   02  pgr variant diploid-vcf → example_output/hg002.vcf + aln plots
 #   03  VCF annotation          → example_output/hg002.annotated.sorted.clinvar.vcf.gz
-#   04  GTF liftover            → example_output/hg002_hap{0,1}_liftover.db
+#   04  GTF liftover + report   → example_output/hg002_hap{0,1}_liftover.db + liftover_report.html
 #   05  MHC pangenome query     → example_output/mhc_hits.000.hit
 #   06  Final e2e report        → example_output/e2e_report.html (always runs)
 #
@@ -118,10 +118,11 @@ run_step "03 annotate vcf" \
     03_annotate_vcf.sh \
     "$OUT/hg002.annotated.sorted.clinvar.vcf.gz"
 
-run_step "04 liftover gtf" \
+run_step "04 liftover gtf + report" \
     04_liftover_gtf.sh \
     "$OUT/hg002_hap0_liftover.db" \
-    "$OUT/hg002_hap1_liftover.db"
+    "$OUT/hg002_hap1_liftover.db" \
+    "$OUT/liftover_report.html"
 
 run_step "05 MHC pangenome query" \
     05_query_mhc.sh \
