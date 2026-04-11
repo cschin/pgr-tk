@@ -1181,60 +1181,128 @@ else:
     sv_section = ("<h2>SV Candidate Summary</h2>"
                   "<p><em>hg002_hap*.svcnd.bed not found — run pgr-alnmap first.</em></p>")
 
-# ── Liftover report (inlined, tabs → subtabs) ─────────────────────────────────
-import re as _re
+# ── Liftover summary (queried directly from SQLite databases) ─────────────────
+import sqlite3 as _sqlite3
 
-liftover_inline = ""
-_liftover_path = os.path.join(base_dir, "liftover_report.html")
-if os.path.exists(_liftover_path):
-    with open(_liftover_path) as _f:
-        _liftover_content = _f.read()
+def _liftover_summary_html(db_path, hap_label):
+    """Generate an HTML summary section from a liftover SQLite database."""
+    if not os.path.exists(db_path):
+        return f'<p><em>{hap_label}: {db_path} not found.</em></p>'
+    try:
+        con = _sqlite3.connect(db_path)
+        cur = con.cursor()
 
-    # Extract <style> block (strip .tabbar/.tabpanel rules — e2e report provides them)
-    _style_m = _re.search(r'<style>(.*?)</style>', _liftover_content, _re.S)
-    _liftover_style = _style_m.group(1) if _style_m else ""
+        # Overall gene stats
+        cur.execute("""
+            SELECT SUM(total), SUM(single_full), SUM(single_partial),
+                   SUM(multi_contig), SUM(multi_location), SUM(no_hit)
+            FROM gene_summary
+        """)
+        total_g, sf, sp, mc, ml, nh = cur.fetchone()
+        total_g = total_g or 0
 
-    # Extract <body> content
-    _body_m = _re.search(r'<body>(.*?)</body>', _liftover_content, _re.S)
-    _liftover_body = _body_m.group(1) if _body_m else _liftover_content
+        # Transcript status breakdown
+        cur.execute("""
+            SELECT status, COUNT(*) FROM transcript_summary GROUP BY status ORDER BY COUNT(*) DESC
+        """)
+        tx_rows = cur.fetchall()
+        total_tx = sum(c for _, c in tx_rows)
 
-    # Inline all external <script src="..."> tags (CDN → self-contained)
-    _ext_script_tags = inline_ext_scripts(
-        "".join(_re.findall(r'<script\s+src="[^"]*"[^>]*></script>', _liftover_content)))
+        # Per-chromosome gene summary (top chroms by total transcripts)
+        cur.execute("""
+            SELECT ref_chrom,
+                   SUM(total)          AS total,
+                   SUM(single_full)    AS sf,
+                   SUM(single_partial) AS sp,
+                   SUM(multi_contig)   AS mc,
+                   SUM(multi_location) AS ml,
+                   SUM(no_hit)         AS nh
+            FROM gene_summary
+            GROUP BY ref_chrom
+            ORDER BY total DESC
+        """)
+        chrom_rows = cur.fetchall()
+        con.close()
+    except Exception as e:
+        return f'<p><em>Error reading {db_path}: {html.escape(str(e))}</em></p>'
 
-    # Extract inline <script> blocks (no src attribute)
-    _scripts = _re.findall(r'<script(?![^>]*src)[^>]*>(.*?)</script>', _liftover_content, _re.S)
-    _liftover_script = "\n".join(_scripts)
+    def _pct(n, d):
+        return f"{100*n/d:.1f}%" if d else "—"
 
-    # Namespace: rename tabbar/tabpanel → subtabbar/subpanel and prefix IDs/functions
-    def _ns(s):
-        s = s.replace('class="tabbar"',          'class="subtabbar"')
-        s = s.replace("class='tabbar'",          "class='subtabbar'")
-        s = s.replace('class="tabpanel active"', 'class="subpanel active"')
-        s = s.replace('class="tabpanel"',        'class="subpanel"')
-        s = s.replace("class='tabpanel active'", "class='subpanel active'")
-        s = s.replace("class='tabpanel'",        "class='subpanel'")
-        s = s.replace("id=\"btn-",               'id="lo-btn-')
-        s = s.replace("id=\"tab-",               'id="lo-tab-')
-        s = s.replace("id='btn-",                "id='lo-btn-")
-        s = s.replace("id='tab-",                "id='lo-tab-")
-        s = s.replace("'tab-",                   "'lo-tab-")
-        s = s.replace("'btn-",                   "'lo-btn-")
-        s = s.replace("showTab(",                "loShowTab(")
-        s = s.replace("function showTab",        "function loShowTab")
-        s = s.replace("initChartsForTab(",       "loInitCharts(")
-        s = s.replace("function initChartsForTab", "function loInitCharts")
-        s = s.replace("initCovChart",            "loInitCovChart")
-        s = s.replace("initScatterCharts",       "loInitScatterCharts")
-        s = s.replace("_chartsDone",             "_loChartsDone")
-        s = s.replace(".querySelectorAll('.tabpanel')", ".querySelectorAll('.subpanel')")
-        s = s.replace(".querySelectorAll('.tabbar button')", ".querySelectorAll('.subtabbar button')")
-        return s
+    def _bar(n, d, color="#2980b9"):
+        pct = 100*n/d if d else 0
+        return (f'<div style="height:14px;background:{color};border-radius:3px;'
+                f'min-width:2px;width:{pct:.1f}%"></div>')
 
-    liftover_inline = (f'<style>{_ns(_liftover_style)}</style>'
-                       f'{_ext_script_tags}'
-                       f'{_ns(_liftover_body)}'
-                       f'<script>{_ns(_liftover_script)}</script>')
+    # Gene-level summary cards
+    cards = ""
+    for label, val, color in [
+        ("Total transcripts", total_g, "#2c3e50"),
+        ("Single full",       sf,      "#27ae60"),
+        ("Single partial",    sp,      "#f39c12"),
+        ("Multi-contig",      mc,      "#8e44ad"),
+        ("Multi-location",    ml,      "#e67e22"),
+        ("No hit",            nh,      "#e74c3c"),
+    ]:
+        cards += (f'<div class="cv-card">'
+                  f'<div class="cv-val" style="color:{color}">{val:,}</div>'
+                  f'<div class="cv-lbl">{label}<br>({_pct(val, total_g)})</div>'
+                  f'</div>\n')
+
+    # Transcript status table
+    tx_table_rows = ""
+    for status, cnt in tx_rows:
+        tx_table_rows += (f'<tr><td class="name">{html.escape(status)}</td>'
+                          f'<td class="num">{cnt:,}</td>'
+                          f'<td class="num">{_pct(cnt, total_tx)}</td>'
+                          f'<td class="bar-cell">{_bar(cnt, total_tx)}</td></tr>\n')
+
+    # Per-chromosome table
+    chrom_table_rows = ""
+    for chrom, tot, sf_c, sp_c, mc_c, ml_c, nh_c in chrom_rows:
+        chrom_table_rows += (
+            f'<tr><td class="name">{html.escape(chrom)}</td>'
+            f'<td class="num">{tot:,}</td>'
+            f'<td class="num">{sf_c:,} ({_pct(sf_c, tot)})</td>'
+            f'<td class="num">{sp_c:,}</td>'
+            f'<td class="num">{mc_c:,}</td>'
+            f'<td class="num">{ml_c:,}</td>'
+            f'<td class="num">{nh_c:,} ({_pct(nh_c, tot)})</td>'
+            f'</tr>\n')
+
+    return f"""
+<h3>{html.escape(hap_label)}</h3>
+<p style="color:#555;font-size:.9em">Database: <code>{html.escape(db_path)}</code></p>
+<div class="cv-cards">{cards}</div>
+
+<h4>Transcript status breakdown ({total_tx:,} transcripts)</h4>
+<table>
+  <thead><tr><th>Status</th><th>Count</th><th>Percent</th><th>Bar</th></tr></thead>
+  <tbody>{tx_table_rows}</tbody>
+</table>
+
+<h4>Per-chromosome gene summary</h4>
+<table>
+  <thead><tr>
+    <th>Chrom</th><th>Total</th><th>Single full</th>
+    <th>Single partial</th><th>Multi-contig</th><th>Multi-location</th><th>No hit</th>
+  </tr></thead>
+  <tbody>{chrom_table_rows}</tbody>
+</table>
+"""
+
+_db0 = os.path.join(base_dir, "hg002_hap0_liftover.db")
+_db1 = os.path.join(base_dir, "hg002_hap1_liftover.db")
+_lo0 = _liftover_summary_html(_db0, "Haplotype 0 (maternal)")
+_lo1 = _liftover_summary_html(_db1, "Haplotype 1 (paternal)")
+
+liftover_inline = f"""
+<h2>GTF Liftover Summary</h2>
+<p>Transcripts lifted from GRCh38 RefSeq annotation onto HG002 haplotype contigs.</p>
+{_lo0}
+<hr>
+{_lo1}
+"""
 
 # ── Determine which tabs to show ──────────────────────────────────────────────
 tabs = []
@@ -1243,7 +1311,7 @@ if plots_html:
     tabs.append(("plots", "Alignment Plots"))
 if clinvar_section:
     tabs.append(("clinvar", "ClinVar"))
-if liftover_inline:
+if os.path.exists(_db0) or os.path.exists(_db1):
     tabs.append(("liftover", "Liftover"))
 if svcnd0 or svcnd1 or ctgsv0 or ctgsv1:
     tabs.append(("svcnd", "SV Candidates"))

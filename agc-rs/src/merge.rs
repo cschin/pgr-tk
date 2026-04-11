@@ -47,42 +47,80 @@ pub fn merge_archives(output_path: &Path, sources: &[&Path]) -> Result<()> {
         .map(|p| AgcDb::open_readonly(p))
         .collect::<Result<Vec<_>>>()?;
 
-    // --- Validate splitter sets are identical --------------------------------
+    // --- Validate splitter sets are compatible and collect their union --------
+    //
+    // Two archives built from the same reference genome share the same base
+    // splitter set.  However, appending novel (highly-divergent) sequences may
+    // add local splitters that are unique to each archive.  We therefore allow
+    // archives that share a large common core (Jaccard ≥ 0.90) and warn when
+    // their sets differ.  The output archive receives the *union* of all
+    // splitter sets so that subsequent appends can use any boundary k-mer that
+    // was valid in any source.
+    //
+    // A Jaccard < 0.90 almost certainly means the archives were built from
+    // different reference genomes, which would corrupt the merged output.
     eprintln!(
         "[{:7.2}s]   validating splitter sets ...",
         t0.elapsed().as_secs_f64()
     );
-    let ref_splitters: Vec<i64> = {
-        let mut stmt = src_dbs[0]
+
+    fn load_splitters(db: &AgcDb) -> Result<std::collections::HashSet<i64>> {
+        let mut stmt = db
             .conn()
-            .prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
-        let collected: Vec<i64> = stmt
+            .prepare("SELECT kmer FROM splitter")?;
+        let collected: std::collections::HashSet<i64> = stmt
             .query_map([], |r| r.get::<_, i64>(0))?
             .filter_map(|r| r.ok())
             .collect();
-        collected
-    };
+        Ok(collected)
+    }
+
+    let base_splitters = load_splitters(&src_dbs[0])?;
+    let mut union_splitters: std::collections::HashSet<i64> = base_splitters.clone();
+
     for (i, src) in src_dbs.iter().enumerate().skip(1) {
-        let splitters: Vec<i64> = {
-            let mut stmt = src
-                .conn()
-                .prepare("SELECT kmer FROM splitter ORDER BY kmer")?;
-            let collected: Vec<i64> = stmt
-                .query_map([], |r| r.get::<_, i64>(0))?
-                .filter_map(|r| r.ok())
-                .collect();
-            collected
-        };
-        if splitters != ref_splitters {
+        let splitters = load_splitters(src)?;
+        let common = base_splitters.intersection(&splitters).count();
+        let total  = base_splitters.union(&splitters).count();
+        let jaccard = if total == 0 { 1.0_f64 } else { common as f64 / total as f64 };
+
+        if jaccard < 0.90 {
             return Err(AgcError::SampleNotFound(format!(
-                "source {} has a different splitter set — \
-                 archives must share the same reference genome",
-                sources[i].display()
+                "source {} has an incompatible splitter set \
+                 (Jaccard similarity with source 1 = {:.3}; expected ≥ 0.90) — \
+                 archives do not appear to share the same reference genome",
+                sources[i].display(),
+                jaccard
             )));
         }
+
+        let novel_in_src = splitters.difference(&base_splitters).count();
+        let novel_in_base = base_splitters.difference(&splitters).count();
+        if novel_in_src > 0 || novel_in_base > 0 {
+            eprintln!(
+                "[{:7.2}s]   note: source {} has {} novel splitters not in source 1 \
+                 and source 1 has {} not in source {} (Jaccard={:.4}); \
+                 these are likely from locally-split novel contigs — merging union",
+                t0.elapsed().as_secs_f64(),
+                i + 1,
+                novel_in_src,
+                novel_in_base,
+                i + 1,
+                jaccard
+            );
+        }
+
+        union_splitters.extend(&splitters);
     }
+
+    let ref_splitters: Vec<i64> = {
+        let mut v: Vec<i64> = union_splitters.into_iter().collect();
+        v.sort_unstable();
+        v
+    };
+
     eprintln!(
-        "[{:7.2}s]   splitters match ({} kmers)",
+        "[{:7.2}s]   splitters compatible ({} kmers in union)",
         t0.elapsed().as_secs_f64(),
         ref_splitters.len(),
     );
