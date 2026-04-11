@@ -6,9 +6,7 @@ use pgr_db::fasta_io::{reverse_complement, SeqRec};
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::Serialize;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io;
 use std::path::Path;
 
 #[derive(Clone, Copy, clap::ValueEnum, Default, Debug)]
@@ -76,9 +74,6 @@ pub struct Args {
     #[clap(long, default_value_t = 8)]
     pub max_aln_chain_span: u32,
 
-    /// if specified, generate fasta files for the sequence covering the SV candidates
-    #[clap(long, short, default_value_t = false)]
-    pub skip_uncalled_sv_seq_file: bool,
 }
 
 struct Parameters {
@@ -116,7 +111,6 @@ enum AlnDiff {
     FailShortSeq,
 }
 
-#[derive(Serialize)]
 struct CtgMapRec {
     t_name: String,
     ts: u32,
@@ -133,12 +127,6 @@ struct CtgMapRec {
     q_ovlp: bool,
 }
 
-#[derive(Serialize)]
-struct CtgMapSet {
-    records: Vec<CtgMapRec>,
-    target_length: Vec<(u32, String, u32)>,
-    query_length: Vec<(u32, String, u32)>,
-}
 
 fn init_alndb(conn: &Connection) {
     conn.execute_batch(
@@ -368,45 +356,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         true,
     )?;
 
-    let mut out_alnmap = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("alnmap")).unwrap(),
-    );
-
-    let mut out_vcf =
-        BufWriter::new(File::create(Path::new(&args.output_prefix).with_extension("vcf")).unwrap());
-
-    let mut out_ctgmap = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("ctgmap.bed")).unwrap(),
-    );
-
-    let mut out_ctgmap_json = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("ctgmap.json")).unwrap(),
-    );
-
-    let mut out_target_len = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("target_len.json")).unwrap(),
-    );
-
-    let mut out_query_len = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("query_len.json")).unwrap(),
-    );
-
-    let mut out_svcnd = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("svcnd.bed")).unwrap(),
-    );
-
-    let mut out_ctgsv = BufWriter::new(
-        File::create(Path::new(&args.output_prefix).with_extension("ctgsv.bed")).unwrap(),
-    );
-    let mut out_sv_seq_file = if !args.skip_uncalled_sv_seq_file {
-        Some(BufWriter::new(
-            File::create(Path::new(&args.output_prefix).with_extension("svcnd.seqs")).unwrap(),
-        ))
-    } else {
-        None
-    };
-
-    // --- SQLite output (alongside legacy file outputs) ---
+    // --- SQLite output ---
     let db_path = Path::new(&args.output_prefix).with_extension("alndb");
     if db_path.exists() {
         std::fs::remove_file(&db_path).expect("failed to remove existing alndb");
@@ -776,7 +726,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     }
                     _ => {}
                 };
-                //writeln!(out_alnmap, "{}", rec_out).expect("fail to write the output file");
             });
             //aln_block.push( (aln_idx, bgn_rec.unwrap(), end_rec.unwrap()) );
             let (
@@ -1009,8 +958,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             )
             .expect("prepare sv_candidates insert");
         all_bed_records.iter().for_each(|r| {
-            writeln!(out_svcnd, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
-                .expect("fail to write the 'in-alignment' sv candidate bed file");
             stmt.execute(params![r.0, r.1, r.2, r.3])
                 .expect("insert sv_candidates");
         });
@@ -1065,44 +1012,8 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                         q_dup: q_dup == 1,
                         q_ovlp: q_ovlp == 1,
                     });
-                    writeln!(
-                        out_ctgmap,
-                        "{}\t{}\t{}\t{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                        t_name,
-                        ts,
-                        te,
-                        q_name,
-                        qs,
-                        qe,
-                        ctg_len,
-                        orientation,
-                        ctg_orientation,
-                        t_dup,
-                        t_ovlp,
-                        q_dup,
-                        q_ovlp
-                    )
-                    .expect("can't write ctgmap file");
                 });
         });
-
-    let query_length = query_len
-        .into_iter()
-        .map(|(id, length)| (id, query_name.get(&id).unwrap().clone(), length as u32))
-        .collect::<Vec<_>>();
-    let target_length = target_len
-        .into_iter()
-        .map(|(id, length)| (id, target_name.get(&id).unwrap().clone(), length))
-        .collect::<Vec<_>>();
-    let ctg_map_set = CtgMapSet {
-        records: ctgmap_records,
-        query_length,
-        target_length,
-    };
-
-    let ctgmap_json =
-        serde_json::to_string(&ctg_map_set).expect("fail to construct json for ctg map");
-    writeln!(out_ctgmap_json, "{}", ctgmap_json).expect("fail to write ctg map json file");
 
     // --- ctgmap inserts ---
     {
@@ -1115,7 +1026,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             )
             .expect("prepare ctgmap insert");
-        for r in &ctg_map_set.records {
+        for r in &ctgmap_records {
             stmt.execute(params![
                 r.t_name,
                 r.ts,
@@ -1137,14 +1048,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         tx.commit().expect("commit ctgmap");
     }
 
-    let target_length_json = serde_json::to_string(&ctg_map_set.target_length)
-        .expect("fail to construct json for ctg map");
-    writeln!(out_target_len, "{}", target_length_json).expect("fail to write ctg map json file");
-
-    let query_length_json = serde_json::to_string(&ctg_map_set.query_length)
-        .expect("fail to construct json for ctg map");
-    writeln!(out_query_len, "{}", query_length_json).expect("fail to write ctg map json file");
-
     query_aln_bed_records.sort();
     {
         let tx = conn.unchecked_transaction().expect("begin ctgsv tx");
@@ -1155,8 +1058,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
             )
             .expect("prepare ctgsv insert");
         query_aln_bed_records.iter().for_each(|r| {
-            writeln!(out_ctgsv, "{}\t{}\t{}\t{}", r.0, r.1, r.2, r.3)
-                .expect("fail to write the 'in-alignment' sv candidate bed file");
             stmt.execute(params![r.0, r.1, r.2, r.3])
                 .expect("insert ctgsv");
         });
@@ -1164,9 +1065,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
         tx.commit().expect("commit ctgsv");
     }
 
-    let mut vcf_records = Vec::<(u32, u32, String, String, ShimmerMatchBlock)>::new();
-
-    // the second round loop through all_records to output and tagged variant from duplicate / overlapped blocks
+    // the second round loop through all_records to write tagged variant/block records to alndb
     let tx = conn.unchecked_transaction().expect("begin main tx");
     let mut chain_stmt = tx
         .prepare(
@@ -1411,7 +1310,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                         ])
                         .expect("insert S block");
 
-                    if let Some(out_sv_seq_file) = out_sv_seq_file.as_mut() {
+                    {
                         let t_seq_slice = &ref_seq_index_db
                             .get_sub_seq_by_id(t_idx, ts as usize, te as usize)
                             .unwrap()[..];
@@ -1424,8 +1323,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                             )
                         };
                         let q_seq = String::from_utf8_lossy(&q_seq[..]);
-                        writeln!(out_sv_seq_file, "{}\t{}\t{}", out, t_seq, q_seq)
-                            .expect("writing fasta for SV candidate fail");
                         svsq_stmt
                             .execute(params![
                                 tn,
@@ -1439,13 +1336,12 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                                 q_seq.as_ref()
                             ])
                             .expect("insert sv_sequences");
-                    };
+                    }
 
                     out
                 }
                 Record::Variant(match_block, td, qd, tc, vt, tvs, qvs) => {
                     let (t_idx, ts, te, q_idx, qs, qe, orientation) = match_block;
-                    vcf_records.push((t_idx, tc + 1, tvs.clone(), qvs.clone(), match_block));
                     let tn = target_name.get(&t_idx).unwrap();
                     let qn = query_name.get(&q_idx).unwrap();
 
@@ -1521,7 +1417,7 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
                     )
                 }
             };
-            writeln!(out_alnmap, "{}", rec_out).expect("fail to write the output file");
+            let _ = rec_out; // record written to alndb above
         }
     }
     drop(chain_stmt);
@@ -1529,75 +1425,6 @@ pub fn run(args: Args) -> Result<(), std::io::Error> {
     drop(variant_stmt);
     drop(svsq_stmt);
     tx.commit().expect("commit main alignment records");
-
-    writeln!(out_vcf, "##fileformat=VCFv4.2").expect("fail to write the vcf file");
-    ctg_map_set
-        .target_length
-        .into_iter()
-        .for_each(|(_, t_name, t_len)| {
-            writeln!(out_vcf, r#"##contig=<ID={},length={}>"#, t_name, t_len)
-                .expect("fail to write the vcf file");
-        });
-    writeln!(
-        out_vcf,
-        r#"##FILTER=<ID=td,Description="variant from duplicated contig alignment on target">"#
-    )
-    .expect("fail to write the vcf file");
-    writeln!(
-        out_vcf,
-        r#"##FILTER=<ID=to,Description="variant from overlapped contig alignment on query">"#
-    )
-    .expect("fail to write the vcf file");
-    writeln!(out_vcf, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
-        .expect("fail to write the vcf file");
-
-    vcf_records.sort();
-    vcf_records
-        .into_iter()
-        .for_each(|(t_idx, tc, tvs, qvs, match_block)| {
-            let tn = target_name.get(&t_idx).unwrap();
-
-            let dup =
-                if let Some(target_duplicate_intervals) = target_duplicate_intervals.get(&t_idx) {
-                    if match_block.2 > match_block.1 {
-                        target_duplicate_intervals.has_overlap(match_block.1..match_block.2)
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-            let ovlp = if let Some(target_overlap_intervals) = target_overlap_intervals.get(&t_idx)
-            {
-                if match_block.2 > match_block.1 {
-                    target_overlap_intervals.has_overlap(match_block.1..match_block.2)
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            let filter = if dup {
-                "DUP"
-            } else if ovlp {
-                "OVLP"
-            } else {
-                "PASS"
-            };
-            let qv: u32 = if filter != "PASS" { 10 } else { 60 };
-            writeln!(
-                out_vcf,
-                "{}\t{}\t.\t{}\t{}\t{}\t{}\t.",
-                tn,
-                tc,
-                tvs.trim_end_matches('-'),
-                qvs.trim_end_matches('-'),
-                qv,
-                filter
-            )
-            .expect("fail to write the vcf file");
-        });
 
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS blocks_pos

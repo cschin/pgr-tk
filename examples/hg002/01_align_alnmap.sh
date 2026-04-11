@@ -45,7 +45,7 @@ echo "=== [hap0] pgr align alnmap: GRCh38 vs HG002 maternal ==="
     --assembly-contig-path "$HAP0_FA" \
     --output-prefix "$OUT/hg002_hap0" \
     --preset default
-echo "[hap0] Done. Output: $OUT/hg002_hap0.alndb  $OUT/hg002_hap0.ctgmap.{json,bed}"
+echo "[hap0] Done. Output: $OUT/hg002_hap0.alndb"
 
 echo
 
@@ -58,7 +58,7 @@ echo "=== [hap1] pgr align alnmap: GRCh38 vs HG002 paternal ==="
     --assembly-contig-path "$HAP1_FA" \
     --output-prefix "$OUT/hg002_hap1" \
     --preset default
-echo "[hap1] Done. Output: $OUT/hg002_hap1.alndb  $OUT/hg002_hap1.ctgmap.{json,bed}"
+echo "[hap1] Done. Output: $OUT/hg002_hap1.alndb"
 
 echo
 echo "Both haplotypes aligned. Next: bash 02_variant_vcf.sh"

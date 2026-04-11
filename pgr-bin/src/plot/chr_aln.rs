@@ -10,8 +10,7 @@ use std::path::{self, Path};
 use svg::node::{element, Node};
 use svg::Document;
 
-#[allow(dead_code)] // need the standard names for deserialization if they are not use
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 struct CtgMapRec {
     t_name: String,
     ts: u32,
@@ -28,7 +27,6 @@ struct CtgMapRec {
     q_ovlp: bool,
 }
 
-#[derive(Deserialize)]
 struct CtgMapSet {
     records: Vec<CtgMapRec>,
     target_length: Vec<(u32, String, u32)>,
@@ -41,14 +39,14 @@ struct CytoBands {
     cytobands: FxHashMap<String, Vec<CytoRecord>>,
 }
 
-/// generate align block plot from ctgmap.json file
+/// generate align block plot from an alndb file
 #[derive(Parser, Debug)]
 #[clap(about, long_about = None)]
 
 pub struct Args {
-    /// path to a ctgmap.json file
+    /// path to an alndb file
     #[clap(long, short)]
-    pub ctgmap_json_path: String,
+    pub alndb_path: String,
 
     /// the prefix of the output files
     #[clap(long, short)]
@@ -164,17 +162,7 @@ fn load_ctgmap_from_db(db_path: &str) -> CtgMapSet {
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-    let mut ctgmap_set: CtgMapSet = if args.ctgmap_json_path.ends_with(".alndb") {
-        load_ctgmap_from_db(&args.ctgmap_json_path)
-    } else {
-        let mut ctgmap_json_file = BufReader::new(
-            File::open(Path::new(&args.ctgmap_json_path)).expect("can't open the input file"),
-        );
-        let mut buffer = Vec::new();
-        ctgmap_json_file.read_to_end(&mut buffer)?;
-        serde_json::from_str(&String::from_utf8_lossy(&buffer[..]))
-            .expect("can't parse the ctgmap.json file")
-    };
+    let mut ctgmap_set: CtgMapSet = load_ctgmap_from_db(&args.alndb_path);
 
     let cytobands = if let Some(cytoband_path) = args.cytoband_json.clone() {
         let mut cytoband_file = BufReader::new(

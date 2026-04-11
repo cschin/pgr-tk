@@ -421,23 +421,27 @@ CHROM_LENGTHS = {
     "chrM":      16569,
 }
 
-def parse_svcnd_bed(path):
-    """Return list of (chrom, start, end, sv_type) stripping PanSN prefix."""
+def load_svcnd_from_alndb(alndb_path, table):
+    """Return list of (chrom, start, end, sv_type) from an alndb SQLite file."""
+    import sqlite3
     records = []
-    if not os.path.exists(path):
+    if not os.path.exists(alndb_path):
         return records
-    with open(path) as f:
-        for line in f:
-            parts = line.rstrip('\n').split('\t')
-            if len(parts) < 4:
-                continue
-            chrom = parts[0].split('#')[-1]   # strip GRCh38#0# prefix
-            try:
-                start, end = int(parts[1]), int(parts[2])
-            except ValueError:
-                continue
-            sv_type = parts[3][:2]             # first two chars: SV/TG/TD/TO
-            records.append((chrom, start, end, sv_type))
+    conn = sqlite3.connect(alndb_path)
+    try:
+        if table == 'sv_candidates':
+            rows = conn.execute(
+                "SELECT target_name, target_start, target_end, sv_type FROM sv_candidates"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT query_name, query_start, query_end, sv_type FROM ctgsv"
+            ).fetchall()
+        for name, start, end, sv_type in rows:
+            chrom = name.split('#')[-1]   # strip PanSN prefix
+            records.append((chrom, start, end, sv_type[:2]))
+    finally:
+        conn.close()
     return records
 
 def svcnd_summary(records):
@@ -455,10 +459,10 @@ def svcnd_summary(records):
         by_chrom[chrom][sv_type] += 1
     return by_type, by_size, by_chrom
 
-svcnd0 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap0.svcnd.bed"))
-svcnd1 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap1.svcnd.bed"))
-ctgsv0 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap0.ctgsv.bed"))
-ctgsv1 = parse_svcnd_bed(os.path.join(base_dir, "hg002_hap1.ctgsv.bed"))
+svcnd0 = load_svcnd_from_alndb(os.path.join(base_dir, "hg002_hap0.alndb"), 'sv_candidates')
+svcnd1 = load_svcnd_from_alndb(os.path.join(base_dir, "hg002_hap1.alndb"), 'sv_candidates')
+ctgsv0 = load_svcnd_from_alndb(os.path.join(base_dir, "hg002_hap0.alndb"), 'ctgsv')
+ctgsv1 = load_svcnd_from_alndb(os.path.join(base_dir, "hg002_hap1.alndb"), 'ctgsv')
 sv_type0, sv_size0, sv_chrom0 = svcnd_summary(svcnd0)
 sv_type1, sv_size1, sv_chrom1 = svcnd_summary(svcnd1)
 q_type0, q_size0, _ = svcnd_summary(ctgsv0)
@@ -1188,7 +1192,7 @@ if svcnd0 or svcnd1:
 """
 else:
     sv_section = ("<h2>SV Candidate Summary</h2>"
-                  "<p><em>hg002_hap*.svcnd.bed not found — run pgr-alnmap first.</em></p>")
+                  "<p><em>hg002_hap*.alndb not found — run pgr align alnmap first.</em></p>")
 
 # ── Liftover report (inlined, tabs → subtabs) ─────────────────────────────────
 import re as _re

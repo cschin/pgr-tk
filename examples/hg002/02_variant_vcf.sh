@@ -44,13 +44,13 @@ echo
 # ---------------------------------------------------------------------------
 echo "=== pgr plot chr-aln: hap0 ==="
 "$PGR" plot chr-aln \
-    --ctgmap-json-path "$OUT/hg002_hap0.ctgmap.json" \
+    --alndb-path "$OUT/hg002_hap0.alndb" \
     --output-prefix "$OUT/hg002_hap0_aln_plot"
 echo "Plot: $OUT/hg002_hap0_aln_plot.html"
 
 echo "=== pgr plot chr-aln: hap1 ==="
 "$PGR" plot chr-aln \
-    --ctgmap-json-path "$OUT/hg002_hap1.ctgmap.json" \
+    --alndb-path "$OUT/hg002_hap1.alndb" \
     --output-prefix "$OUT/hg002_hap1_aln_plot"
 echo "Plot: $OUT/hg002_hap1_aln_plot.html"
 
