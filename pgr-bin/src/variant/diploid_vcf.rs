@@ -12,8 +12,10 @@ use std::path::Path;
 #[clap(about, long_about = None)]
 pub struct Args {
     /// path to the first haplotype alnmap or alndb file
+    #[clap(long)]
     pub hap0_path: String,
     /// path to the second haplotype alnmap or alndb file
+    #[clap(long)]
     pub hap1_path: String,
     /// the prefix of the output files
     #[clap(long, short)]
