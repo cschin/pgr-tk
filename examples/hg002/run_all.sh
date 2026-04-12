@@ -11,7 +11,7 @@
 #   02  pgr variant diploid-vcf → example_output/hg002.vcf + aln plots
 #   03  VCF annotation          → example_output/hg002.annotated.sorted.clinvar.vcf.gz
 #   04  GTF liftover + report   → example_output/hg002_hap{0,1}_liftover.db + liftover_report.html
-#   05  MHC pangenome query     → example_output/mhc_hits.000.hit
+#   05  MHC pangenome query     → example_output/mhc_hits.000.hit + mhc_bundle.html
 #   06  Final e2e report        → example_output/e2e_report.html (always runs)
 #
 # Run 00_download.sh first if you haven't already downloaded the input data.

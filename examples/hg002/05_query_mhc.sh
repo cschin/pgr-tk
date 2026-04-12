@@ -10,6 +10,8 @@
 #   agc-rs create / append   — pack sequences into one archive
 #   pgr index mdb            — build the shimmer index
 #   pgr query seqs           — find HG002 contigs covering the MHC region
+#   pgr bundle decomp        — principal bundle decomposition of hit sequences
+#   pgr bundle svg --html    — interactive HTML visualisation of the bundles
 #
 # The query sequence is fetched live from the UCSC REST API (GRCh38).
 #
@@ -235,3 +237,28 @@ echo
 echo "=== Hit summary (${OUT_PREFIX}.000.hit) ==="
 echo "# columns: idx  query  q_bgn  q_end  q_len  anchors  src  contig  bgn  end  orient  name"
 cat "${OUT_PREFIX}.000.hit"
+
+# ---------------------------------------------------------------------------
+# 6. Principal bundle decomposition of hit sequences
+# ---------------------------------------------------------------------------
+BUNDLE_PREFIX="$OUT/mhc_bundle"
+HIT_FA="${OUT_PREFIX}.000.fa"
+
+echo
+echo "=== [6] pgr bundle decomp — principal bundle decomposition of MHC hits ==="
+"$PGR" bundle decomp \
+    --fastx-path "$HIT_FA" \
+    --output-prefix "$BUNDLE_PREFIX"
+
+# ---------------------------------------------------------------------------
+# 7. Generate interactive HTML bundle visualisation
+# ---------------------------------------------------------------------------
+echo
+echo "=== [7] pgr bundle svg --html — interactive bundle visualisation ==="
+"$PGR" bundle svg \
+    --bed-file-path "${BUNDLE_PREFIX}.bed" \
+    --output-prefix "$BUNDLE_PREFIX" \
+    --html
+
+echo
+echo "Bundle HTML: ${BUNDLE_PREFIX}.html"
