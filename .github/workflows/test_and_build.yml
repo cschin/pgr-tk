@@ -18,7 +18,9 @@ jobs:
       with:
         submodules: recursive
     - name: setup
-      run: /opt/cargo/bin/rustup default stable
+      run: |
+        /opt/cargo/bin/rustup update stable
+        /opt/cargo/bin/rustup default stable
     - name: Run tests
       run: /opt/cargo/bin/cargo test --verbose --workspace --exclude pgrtk
     - name: Build
@@ -27,13 +29,5 @@ jobs:
       with:
         name: build-artifact
         path: |
-          target/release/pgr-mdb
-          target/release/pgr-fetch-seqs
-          target/release/pgr-make-frgdb
-          target/release/pgr-pbundle-bed2dist
-          target/release/pgr-pbundle-bed2offset
-          target/release/pgr-pbundle-bed2sorted
-          target/release/pgr-pbundle-bed2svg
-          target/release/pgr-pbundle-decomp
-          target/release/pgr-query
-          target/wheels/*.whl
+          target/release/pgr
+          target/release/agc-rs
