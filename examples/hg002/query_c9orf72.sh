@@ -5,8 +5,8 @@
 #
 # C9orf72 (chromosome 9 open reading frame 72) — GRCh38 gene span:
 #   chr9:27,546,542–27,573,863  (NCBI RefSeq NM_145005)
-# Query region with 10 kb flanks on both sides:
-#   chr9:27,536,542–27,583,863
+# Query region with 100 kb flanks on both sides:
+#   chr9:27,446,542–27,673,863
 #
 # This script reuses the pangenome archive and shimmer index built by
 # 05_query_mhc.sh (hg002_pan.agcrs / hg002_chr6_pan.agcrs). Run that
@@ -71,7 +71,7 @@ done
 CHROM="chr9"
 GENE_START=27546542
 GENE_END=27573863
-FLANK=10000
+FLANK=100000
 QUERY_START=$(( GENE_START - FLANK ))   # 27536542 (1-based) → 27536541 (0-based)
 QUERY_END=$(( GENE_END + FLANK ))       # 27583863
 
