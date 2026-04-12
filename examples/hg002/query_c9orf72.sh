@@ -29,12 +29,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PGR="${PGR:-../../target/release/pgr}"
-AGC_RS="${AGC_RS:-../../target/release/agc-rs}"
+# NOTE: This script requires pgr and agc-rs to be installed in your PATH.
+# Install from the repository root with:
+#   cargo install --path ../../pgr-bin
+#   cargo install --path ../../agc-rs
+PGR="${PGR:-pgr}"
+AGC_RS="${AGC_RS:-agc-rs}"
 OUT="example_output"
 
 for bin in "$PGR" "$AGC_RS"; do
-    [[ -x "$bin" ]] || { echo "ERROR: $bin not found"; exit 1; }
+    if ! command -v "$bin" &>/dev/null && [[ ! -x "$bin" ]]; then
+        echo "ERROR: $bin not found in PATH" >&2
+        echo "       Install with: cargo install --path <repo-root>/${bin%-*}" >&2
+        exit 1
+    fi
 done
 [[ -f ".manifest.sh" ]] || { echo "ERROR: run 00_download.sh first"; exit 1; }
 source .manifest.sh
@@ -47,7 +55,7 @@ DB_PREFIX="$OUT/hg002_chr9_pan"
 CHROM="chr9"
 GENE_START=27546542
 GENE_END=27573863
-FLANK=100000
+FLANK=10000
 QUERY_START=$(( GENE_START - FLANK ))
 QUERY_END=$(( GENE_END + FLANK ))
 

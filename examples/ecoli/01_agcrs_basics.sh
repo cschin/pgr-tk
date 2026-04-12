@@ -13,14 +13,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-AGC_RS="${AGC_RS:-../../target/release/agc-rs}"
+# NOTE: This script requires agc-rs to be installed in your PATH.
+# Install from the repository root with:
+#   cargo install --path ../../agc-rs
+AGC_RS="${AGC_RS:-agc-rs}"
 TESTDATA="../../test_data/ecoli"
 OUT="example_output"
 ARCHIVE="$OUT/ecoli_demo.agcrs"
 
-if [[ ! -x "$AGC_RS" ]]; then
-    echo "ERROR: agc-rs binary not found at $AGC_RS" >&2
-    echo "       Build with: cargo build --release -p agc-rs" >&2
+if ! command -v "$AGC_RS" &>/dev/null && [[ ! -x "$AGC_RS" ]]; then
+    echo "ERROR: agc-rs not found in PATH" >&2
+    echo "       Install with: cargo install --path <repo-root>/agc-rs" >&2
     exit 1
 fi
 

@@ -15,12 +15,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PGR="${PGR:-../../target/release/pgr}"
+# NOTE: This script requires pgr to be installed in your PATH.
+# Install from the repository root with:
+#   cargo install --path ../../pgr-bin
+PGR="${PGR:-pgr}"
 OUT="example_output"
 
-if [[ ! -x "$PGR" ]]; then
-    echo "ERROR: pgr binary not found at $PGR" >&2
-    echo "       Build with: cargo build --release -p pgr-bin" >&2
+if ! command -v "$PGR" &>/dev/null && [[ ! -x "$PGR" ]]; then
+    echo "ERROR: pgr not found in PATH" >&2
+    echo "       Install with: cargo install --path <repo-root>/pgr-bin" >&2
     exit 1
 fi
 

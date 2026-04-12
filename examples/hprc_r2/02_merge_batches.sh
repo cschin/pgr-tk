@@ -20,14 +20,17 @@
 
 set -euo pipefail
 
+# NOTE: This script requires agc-rs to be installed in your PATH.
+# Install from the repository root with:
+#   cargo install --path <repo-root>/agc-rs
 ARCHIVE="${1:?usage: $0 <archive.agcrs> [agc-rs-binary] [work-dir]}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AGC_RS="${2:-${SCRIPT_DIR}/../../target/release/agc-rs}"
+AGC_RS="${2:-agc-rs}"
 WORK_DIR="${3:-$(pwd)/hprc_r2_work}"
 
-if [[ ! -x "$AGC_RS" ]]; then
-    echo "ERROR: agc-rs binary not found at $AGC_RS" >&2
-    echo "       Build with: cargo build -p agc-rs --release" >&2
+if ! command -v "$AGC_RS" &>/dev/null && [[ ! -x "$AGC_RS" ]]; then
+    echo "ERROR: agc-rs not found in PATH" >&2
+    echo "       Install with: cargo install --path <repo-root>/agc-rs" >&2
     exit 1
 fi
 
