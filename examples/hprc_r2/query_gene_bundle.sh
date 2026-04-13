@@ -146,9 +146,11 @@ QUERY_END=$(( GENE_END   + FLANK ))
 echo "    Query region with ${FLANK} bp flanks: ${CHROM}:${QUERY_START}-${QUERY_END}"
 
 # ---------------------------------------------------------------------------
-# 2. List all sequences in the DB and find the matching reference contig
+# 2. List all sequences in the DB and find the matching reference contig.
+#    Cache is stored beside the DB prefix (shared across all gene queries
+#    on the same database) rather than inside $OUT_DIR.
 # ---------------------------------------------------------------------------
-SEQ_LIST="$OUT_DIR/seq_list.tsv"
+SEQ_LIST="${DB_PREFIX}.seq_list.tsv"
 if [[ ! -s "$SEQ_LIST" ]]; then
     echo
     echo "=== [2] Listing sequences in ${DB_PREFIX}.midx ==="
@@ -159,7 +161,7 @@ if [[ ! -s "$SEQ_LIST" ]]; then
     echo "    $(wc -l < "$SEQ_LIST") sequences indexed"
 else
     echo
-    echo "[SKIP] seq_list.tsv already exists"
+    echo "[SKIP] ${DB_PREFIX}.seq_list.tsv already cached"
 fi
 
 # Find reference sample and contig for the target chromosome
