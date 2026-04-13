@@ -1,4 +1,3 @@
-use axum::Json;
 use utoipa::OpenApi;
 
 use crate::models::{
@@ -51,15 +50,3 @@ use super::{bundle, health, query, sequences};
 )]
 pub struct ApiDoc;
 
-/// Return the OpenAPI 3.0 specification as JSON.
-#[utoipa::path(
-    get,
-    path = "/api/v1/openapi.json",
-    responses(
-        (status = 200, description = "OpenAPI 3.0 specification in JSON format")
-    ),
-    tag = "health"
-)]
-pub async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
-}
