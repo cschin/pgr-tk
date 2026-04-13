@@ -9,8 +9,10 @@ use crate::state::AppState;
 
 /// Run principal bundle decomposition on caller-supplied FASTA sequences.
 ///
-/// Writes the FASTA to a temporary file and invokes `pgr bundle decomp`.
-/// If `generate_html` is `true`, also runs `pgr bundle svg --html`.
+/// Writes the FASTA to a temporary file, invokes `pgr bundle decomp` to
+/// produce a BED file, and optionally runs `pgr bundle svg --html` to produce
+/// an interactive HTML visualisation.  All intermediate files are written to
+/// a temporary directory that is deleted after the response is built.
 #[utoipa::path(
     post,
     path = "/api/v1/bundle",
@@ -32,7 +34,7 @@ pub async fn run_bundle(
     let pgr_binary = state.pgr_binary.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        // Write FASTA to a temp file
+        // Write FASTA to a temp file; keep it alive for the duration of the task.
         let mut fasta_tmp = NamedTempFile::new()
             .map_err(|e| AppError::Internal(format!("tempfile: {e}")))?;
         fasta_tmp
@@ -40,10 +42,18 @@ pub async fn run_bundle(
             .map_err(|e| AppError::Internal(format!("write fasta tmp: {e}")))?;
         let fasta_path = fasta_tmp.path().to_path_buf();
 
-        // Run: pgr bundle decomp --fasta <path>
+        // Use a temp dir for output files so they are cleaned up automatically.
+        let work_dir = tempfile::tempdir()
+            .map_err(|e| AppError::Internal(format!("tempdir: {e}")))?;
+        let prefix = work_dir.path().join("bundle");
+        let prefix_str = prefix.to_string_lossy();
+
+        // Run: pgr bundle decomp --fastx-path <fasta> --output-prefix <prefix>
         let decomp_out = Command::new(&pgr_binary)
-            .args(["bundle", "decomp", "--fasta"])
+            .args(["bundle", "decomp", "--fastx-path"])
             .arg(&fasta_path)
+            .arg("--output-prefix")
+            .arg(&*prefix_str)
             .output()
             .map_err(|e| {
                 AppError::ServiceUnavailable(format!("pgr bundle decomp failed to start: {e}"))
@@ -56,18 +66,20 @@ pub async fn run_bundle(
             )));
         }
 
-        let bed = String::from_utf8_lossy(&decomp_out.stdout).into_owned();
+        let bed_path = work_dir.path().join("bundle.bed");
+        let bed = std::fs::read_to_string(&bed_path)
+            .map_err(|e| AppError::Internal(format!("reading bundle.bed: {e}")))?;
 
-        // Optionally run: pgr bundle svg --html <path>
+        // Optionally run: pgr bundle svg --html --bed-file-path <bed> --output-prefix <prefix>
         let html = if req.generate_html {
             let svg_out = Command::new(&pgr_binary)
-                .args(["bundle", "svg", "--html", "--fasta"])
-                .arg(&fasta_path)
+                .args(["bundle", "svg", "--html", "--bed-file-path"])
+                .arg(&bed_path)
+                .arg("--output-prefix")
+                .arg(&*prefix_str)
                 .output()
                 .map_err(|e| {
-                    AppError::ServiceUnavailable(format!(
-                        "pgr bundle svg failed to start: {e}"
-                    ))
+                    AppError::ServiceUnavailable(format!("pgr bundle svg failed to start: {e}"))
                 })?;
 
             if !svg_out.status.success() {
@@ -77,7 +89,10 @@ pub async fn run_bundle(
                 )));
             }
 
-            Some(String::from_utf8_lossy(&svg_out.stdout).into_owned())
+            let html_path = work_dir.path().join("bundle.html");
+            let content = std::fs::read_to_string(&html_path)
+                .map_err(|e| AppError::Internal(format!("reading bundle.html: {e}")))?;
+            Some(content)
         } else {
             None
         };

@@ -445,98 +445,113 @@ log_wall "[S0] check/start pgr-server" $(( SECONDS - t0 ))
 # ---------------------------------------------------------------------------
 # S1. Query via the HTTP API
 #
-#   .db annotation → POST /query/gene  (server resolves gene + query in one shot)
-#   GTF annotation → local gene lookup + POST /query/region
+# Always: resolve gene locally, then resolve the plain chromosome name to the
+# exact contig string stored in the server index (which may use PanSN format
+# like "GRCh38#0#chr6") via GET /sequences, then POST /query/region.
 # ---------------------------------------------------------------------------
 RESP_FILE="$OUT_DIR/${GENE_NAME}_server_response.json"
 REQ_FILE="$OUT_DIR/${GENE_NAME}_server_request.json"
 
+# Step 1a: local gene lookup
 if [[ "$ANNOTATION" == *.db ]]; then
-    echo
-    echo "=== [S1] POST /api/v1/query/gene — ${GENE_NAME} ==="
-    python3 -c "
-import json, sys
-print(json.dumps({
-    'gene_name': '${GENE_NAME}',
-    'flank': ${FLANK},
-    'include_sequences': True,
-    'min_anchor_count': 10,
-    'merge_range_tol': 100000,
-    'max_count': 128,
-    'max_query_count': 128,
-    'max_target_count': 128,
-}))
-" > "$REQ_FILE"
-
-    t0=$SECONDS
-    server_post /api/v1/query/gene "$REQ_FILE" > "$RESP_FILE"
-    log_wall "[S1] POST /query/gene" $(( SECONDS - t0 ))
-
+    lookup_gene_sqlite
+elif [[ "$ANNOTATION" == *.gtf || "$ANNOTATION" == *.gtf.gz ]]; then
+    lookup_gene_gtf
+    read -r CHROM GENE_START GENE_END STRAND < "$GENE_COORDS"
 else
-    # GTF: resolve gene locally, then POST /query/region
-    if [[ "$ANNOTATION" == *.gtf || "$ANNOTATION" == *.gtf.gz ]]; then
-        lookup_gene_gtf
-    else
-        echo "ERROR: in server mode, annotation must be a .db, .gtf, or .gtf.gz file" >&2
-        exit 1
-    fi
-
-    QUERY_START=$(( GENE_START - FLANK ))
-    QUERY_END=$(( GENE_END   + FLANK ))
-    (( QUERY_START < 0 )) && QUERY_START=0
-    echo "    Query region with ${FLANK} bp flanks: ${CHROM}:${QUERY_START}-${QUERY_END}"
-
-    echo
-    echo "=== [S1] POST /api/v1/query/region — ${CHROM}:${QUERY_START}-${QUERY_END} ==="
-    python3 -c "
-import json
-print(json.dumps({
-    'chrom': '${CHROM}',
-    'start': ${QUERY_START},
-    'end':   ${QUERY_END},
-    'ref_sample_hint': '${REF_SAMPLE_HINT}',
-    'include_sequences': True,
-    'min_anchor_count': 10,
-    'merge_range_tol': 100000,
-    'max_count': 128,
-    'max_query_count': 128,
-    'max_target_count': 128,
-}))
-" > "$REQ_FILE"
-
-    t0=$SECONDS
-    server_post /api/v1/query/region "$REQ_FILE" > "$RESP_FILE"
-    log_wall "[S1] POST /query/region" $(( SECONDS - t0 ))
+    echo "ERROR: in server mode, annotation must be a .db, .gtf, or .gtf.gz file" >&2
+    exit 1
 fi
 
+# Step 1b: resolve plain chrom → exact ctg name in the server index
+# (handles PanSN "sample#hap#chrom" as well as plain "chrom")
+echo
+echo "=== [S1] resolving ${CHROM} via GET /api/v1/sequences ==="
+REF_CTG=$(python3 - "${SERVER_URL}" "${REF_SAMPLE_HINT}" "${CHROM}" <<'PYEOF'
+import urllib.request, json, sys
+
+url, hint, chrom = sys.argv[1] + "/api/v1/sequences", sys.argv[2], sys.argv[3]
+try:
+    with urllib.request.urlopen(url, timeout=10) as r:
+        seqs = json.loads(r.read())
+except Exception as e:
+    print(f"ERROR: cannot fetch {url}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+for s in seqs:
+    ctg = s["ctg"]
+    src = s.get("src", "")
+    ctg_base = ctg.rsplit("#", 1)[-1]
+    if hint.lower() in src.lower() and (ctg_base == chrom or ctg == chrom):
+        print(ctg)
+        sys.exit(0)
+
+print(f"ERROR: no sequence matching chrom='{chrom}' hint='{hint}' in {url}", file=sys.stderr)
+sys.exit(1)
+PYEOF
+)
+if [[ $? -ne 0 || -z "$REF_CTG" ]]; then
+    echo "ERROR: could not resolve chromosome '${CHROM}' — check server is running and hint matches" >&2
+    exit 1
+fi
+echo "    Resolved: ${CHROM} → ${REF_CTG}"
+
+# Step 1c: build query region and POST /query/region
+QUERY_START=$(( GENE_START - FLANK ))
+QUERY_END=$(( GENE_END   + FLANK ))
+(( QUERY_START < 0 )) && QUERY_START=0
+echo "    Query region with ${FLANK} bp flanks: ${REF_CTG}:${QUERY_START}-${QUERY_END}"
+
+echo
+echo "=== [S1] POST /api/v1/query/region — ${REF_CTG}:${QUERY_START}-${QUERY_END} ==="
+python3 -c "
+import json
+print(json.dumps({
+    'chrom': '${REF_CTG}',
+    'start': ${QUERY_START},
+    'end':   ${QUERY_END},
+    'include_sequences': True,
+    'min_anchor_count': 10,
+    'merge_range_tol': 100000,
+    'max_count': 128,
+    'max_query_count': 128,
+    'max_target_count': 128,
+}))
+" > "$REQ_FILE"
+
+t0=$SECONDS
+server_post /api/v1/query/region "$REQ_FILE" > "$RESP_FILE"
+log_wall "[S1] POST /query/region" $(( SECONDS - t0 ))
+
 # Parse the query response → gene_coords.tsv, hit summary, hit FASTA
-python3 - "$RESP_FILE" "$GENE_COORDS" "$HIT_PREFIX" "$HIT_FA" <<'PYEOF'
+python3 - "$RESP_FILE" "$GENE_COORDS" "$HIT_PREFIX" "$HIT_FA" \
+          "${GENE_NAME}" "${CHROM}" "${GENE_START}" "${GENE_END}" "${STRAND}" <<'PYEOF'
 import json, sys
 
-resp_file, coords_file, hit_prefix, hit_fa = sys.argv[1:]
+resp_file, coords_file, hit_prefix, hit_fa, gene_name, chrom, gstart, gend, strand = sys.argv[1:]
+gstart, gend = int(gstart), int(gend)
 
 with open(resp_file) as f:
     resp = json.load(f)
 
-qr   = resp['query_region']
-hits = resp['hits']
-fasta = resp.get('sequences_fasta') or ''
+if "error" in resp:
+    print(f"ERROR from server: {resp['error']}", file=sys.stderr)
+    sys.exit(1)
 
-# Gene metadata (present only in /query/gene responses)
-gene = resp.get('gene')
-if gene:
-    chrom, gstart, gend, strand = gene['chrom'], gene['start'], gene['end'], gene['strand']
-    print(f"  Gene   : {gene['gene_name']}  {chrom}:{gstart}-{gend}  strand={strand}")
-    with open(coords_file, 'w') as f:
-        f.write(f"{chrom}\t{gstart}\t{gend}\t{strand}\n")
-else:
-    chrom = qr['ctg'].split('#')[-1] if '#' in qr['ctg'] else qr['ctg']
+qr   = resp["query_region"]
+hits = resp["hits"]
+fasta = resp.get("sequences_fasta") or ""
 
+# Write gene coords from local lookup
+with open(coords_file, "w") as f:
+    f.write(f"{chrom}\t{gstart}\t{gend}\t{strand}\n")
+
+print(f"  Gene   : {gene_name}  {chrom}:{gstart}-{gend}  strand={strand}")
 print(f"  Region : {qr['ctg']}:{qr['bgn']}-{qr['end']}")
 print(f"  Hits   : {len(hits)}")
 
 # Hit summary (mimics local mode .000.hit format)
-with open(f"{hit_prefix}.000.hit", 'w') as f:
+with open(f"{hit_prefix}.000.hit", "w") as f:
     f.write("# idx\tq_ctg\tq_bgn\tq_end\tanchors\tsrc\tctg\tctg_bgn\tctg_end\torientation\tname\n")
     for i, h in enumerate(hits):
         f.write(f"{i:03d}\t{qr['ctg']}\t{qr['bgn']}\t{qr['end']}\t"
@@ -544,7 +559,7 @@ with open(f"{hit_prefix}.000.hit", 'w') as f:
                 f"{h['bgn']}\t{h['end']}\t{h['orientation']}\t{h['name']}\n")
 
 # Hit FASTA
-with open(hit_fa, 'w') as f:
+with open(hit_fa, "w") as f:
     f.write(fasta)
 
 print(f"  Written: {hit_prefix}.000.hit  ({len(hits)} hits)")
