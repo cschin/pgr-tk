@@ -15,6 +15,7 @@
 #   --db-dir      DIR    working directory that contains the DB files (default: auto)
 #   --db-prefix   REL    DB prefix relative to --db-dir (default: auto)
 #   --gene-db     PATH   gene annotation SQLite DB (default: auto)
+#   --timeout     N      seconds to wait for server to become healthy (default: 300)
 #   -h, --help           show this help
 #
 # Auto-detection (when --db-prefix is not given):
@@ -38,6 +39,7 @@ SKIP_START=0
 DB_DIR=""
 DB_PREFIX=""
 GENE_DB=""
+TIMEOUT=300   # seconds to wait for server health (full-genome moderate load ~87 s)
 
 # ── option parsing ─────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         --db-dir)     DB_DIR="$2";     shift 2 ;;
         --db-prefix)  DB_PREFIX="$2";  shift 2 ;;
         --gene-db)    GENE_DB="$2";    shift 2 ;;
+        --timeout)    TIMEOUT="$2";    shift 2 ;;
         -h|--help)
             sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -216,7 +219,8 @@ YAML
         >> "$LOG_FILE" 2>&1 &
     SERVER_PID=$!
 
-    for i in $(seq 1 30); do
+    echo "     (timeout ${TIMEOUT}s — full-genome moderate index takes ~90 s to load)"
+    for i in $(seq 1 "$TIMEOUT"); do
         sleep 1
         if curl -sf "${SERVER_URL}/api/v1/health" > /dev/null 2>&1; then
             echo "Server ready after ${i}s  (PID ${SERVER_PID})"
@@ -227,8 +231,8 @@ YAML
             cat "$LOG_FILE"
             exit 1
         fi
-        if [[ $i -eq 30 ]]; then
-            echo "ERROR: server did not become healthy within 30s. Log:"
+        if [[ $i -eq "$TIMEOUT" ]]; then
+            echo "ERROR: server did not become healthy within ${TIMEOUT}s. Log:"
             cat "$LOG_FILE"
             exit 1
         fi
