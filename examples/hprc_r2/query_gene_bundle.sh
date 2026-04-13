@@ -221,7 +221,7 @@ echo "=== [4] pgr query seqs — ${GENE_NAME} vs pangenome ==="
     --pgr-db-prefix    "$DB_PREFIX" \
     --query-fastx-path "$QUERY_FA" \
     --output-prefix    "$HIT_PREFIX" \
-    --memory-mode      moderate \
+    --memory-mode      low \
     --merge-range-tol  100000 \
     --max-count        128 \
     --max-query-count  128 \
