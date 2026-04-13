@@ -144,10 +144,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    info!(%bind_addr, "Listening");
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .with_context(|| format!("binding to {bind_addr}"))?;
+    info!(%bind_addr, "Listening");
     axum::serve(listener, app)
         .await
         .context("axum server error")?;
