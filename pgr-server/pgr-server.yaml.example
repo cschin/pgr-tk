@@ -1,0 +1,33 @@
+# pgr-server.yaml — example configuration
+# All fields are optional; unset values fall back to built-in defaults.
+# Priority: CLI flags > env vars > this file > defaults.
+
+server:
+  host: "127.0.0.1"   # bind address  (env: PGR_SERVER_HOST)
+  port: 3000           # TCP port       (env: PGR_SERVER_PORT)
+  cors_origin: "*"     # CORS origin    (env: PGR_SERVER_CORS_ORIGIN) — "*" = any
+  log_level: "info"    # tracing level  (env: PGR_SERVER_LOG_LEVEL): trace|debug|info|warn|error
+  pgr_binary: "pgr"   # pgr binary path; used by the /bundle endpoint
+
+databases:
+  # At least one entry required (or supply --db-prefix on the CLI).
+  # The first entry is the default when a request omits the "db" field.
+  - name: "hprc_r2"
+    db_prefix: "/data/hprc_r2/hprc_r2"          # prefix for .agcrs / .mdbi / .mdbv / .midx
+    gene_db: "/data/hprc_r2/hg38.ncbiRefSeq.db" # SQLite from fetch_refseq_gtf_db.sh (optional)
+    memory_mode: "moderate"                       # moderate | high
+    ref_sample_hint: "GRCh38"                    # substring identifying the reference sample
+
+  # Second database (optional)
+  # - name: "hprc_r1"
+  #   db_prefix: "/data/hprc_r1/hprc_r1"
+  #   memory_mode: "high"
+  #   ref_sample_hint: "GRCh38"
+
+query_defaults:
+  flank:            100000   # bp added on each side for /query/gene
+  max_count:        128      # max shimmer pair occurrence for alignment
+  max_query_count:  128
+  max_target_count: 128
+  merge_range_tol:  100000   # merge hits within this many bp
+  min_anchor_count: 10       # minimum alignment anchors to report a hit
