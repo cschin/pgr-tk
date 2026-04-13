@@ -98,8 +98,9 @@ for f in "${DB_DIR}/${DB_PREFIX}.agcrs" "${DB_DIR}/${DB_PREFIX}.mdbi" \
 done
 
 if [[ ! -f "$GENE_DB" ]]; then
-    echo "SKIP: gene annotation DB not found: $GENE_DB"
-    exit 0
+    echo "Note: gene annotation DB not found ($GENE_DB) — gene_db will be omitted from config."
+    echo "      Tests that use /query/region are not affected."
+    GENE_DB=""
 fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -173,6 +174,10 @@ if [[ "$SKIP_START" -eq 0 ]]; then
     LOG_FILE="/tmp/pgr_test_$$.log"
     : > "$CFG_FILE"   # ensure it exists before writing
 
+    # Build gene_db line only when the file exists.
+    GENE_DB_LINE=""
+    [[ -n "$GENE_DB" ]] && GENE_DB_LINE="    gene_db: \"${GENE_DB}\""
+
     cat > "$CFG_FILE" <<YAML
 server:
   host: "127.0.0.1"
@@ -183,7 +188,7 @@ server:
 databases:
   - name: "default"
     db_prefix: "${DB_PREFIX}"
-    gene_db: "${GENE_DB}"
+${GENE_DB_LINE}
     memory_mode: "moderate"
     ref_sample_hint: "GRCh38"
 
