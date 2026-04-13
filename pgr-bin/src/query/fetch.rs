@@ -1,6 +1,7 @@
 use clap::{self, Parser};
 use pgr_db::ext::SeqIndexDB;
 use pgr_db::fasta_io;
+use pgr_db::seq_db;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -21,40 +22,42 @@ pub struct Args {
     #[clap(short, long, default_value=None)]
     pub output_file: Option<String>,
 
-    /// list all sequence source, contig names in the database
+    /// list all sequence source, contig names in the database (fast: reads .midx only)
     #[clap(long, default_value_t = false)]
     pub list: bool,
 }
 
 pub fn run(args: Args) -> Result<(), std::io::Error> {
-    let mut seq_index_db = SeqIndexDB::new();
-
-    seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
-
+    // --list only needs seq_info from the .midx SQLite — skip loading the
+    // full shimmer index (.mdbi / .mdbv) which can be very large.
     if args.list {
-        let mut out = if args.output_file.is_some() {
-            let f = File::open(args.output_file.unwrap()).expect("can't open the ouptfile");
-            Box::new(f) as Box<dyn Write>
+        let mut out: Box<dyn Write> = if let Some(ref path) = args.output_file {
+            Box::new(BufWriter::new(
+                File::create(path).expect("can't open the output file"),
+            ))
         } else {
-            Box::new(io::stdout())
+            Box::new(BufWriter::new(io::stdout()))
         };
-        seq_index_db
-            .seq_info
-            .unwrap()
-            .into_iter()
-            .for_each(|(sid, (ctg, src, length))| {
-                writeln!(
-                    out,
-                    "{}\t{}\t{}\t{}",
-                    sid,
-                    src.unwrap_or_else(|| "None".to_string()),
-                    ctg,
-                    length
-                )
-                .expect("can't write output file")
-            });
+
+        let (_seq_index, seq_info) = seq_db::read_seq_index_sqlite(&args.pgr_db_prefix)?;
+        let mut rows: Vec<_> = seq_info.into_iter().collect();
+        rows.sort_by_key(|(sid, _)| *sid);
+        for (sid, (ctg, src, length)) in rows {
+            writeln!(
+                out,
+                "{}\t{}\t{}\t{}",
+                sid,
+                src.unwrap_or_else(|| "None".to_string()),
+                ctg,
+                length
+            )
+            .expect("can't write output");
+        }
         return Ok(());
     }
+
+    let mut seq_index_db = SeqIndexDB::new();
+    seq_index_db.load_from_agc_index(args.pgr_db_prefix)?;
 
     let region_file = args.region_file.expect("region file not specified");
     let region_file =
