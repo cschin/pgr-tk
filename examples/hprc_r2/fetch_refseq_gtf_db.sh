@@ -67,9 +67,9 @@ CREATE TABLE IF NOT EXISTS genes (
     end       INTEGER NOT NULL,   -- exclusive
     strand    TEXT    NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_genes_id   ON genes(gene_id);
-CREATE        INDEX IF NOT EXISTS idx_genes_name ON genes(gene_name);
-CREATE        INDEX IF NOT EXISTS idx_genes_loc  ON genes(chrom, start, end);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_genes_id_chrom ON genes(gene_id, chrom);
+CREATE        INDEX IF NOT EXISTS idx_genes_name     ON genes(gene_name);
+CREATE        INDEX IF NOT EXISTS idx_genes_loc      ON genes(chrom, start, end);
 
 CREATE TABLE IF NOT EXISTS transcripts (
     tx_pk       INTEGER PRIMARY KEY,
@@ -102,8 +102,8 @@ con.executescript(SCHEMA)
 
 opener = gzip.open if gtf_gz.endswith(".gz") else open
 
-gene_rows = {}   # gene_id -> (gene_name, chrom, start, end, strand)
-tx_rows   = {}   # tx_id   -> (gene_id, chrom, start, end, strand)
+gene_rows = {}   # (gene_id, chrom) -> (gene_name, start, end, strand)
+tx_rows   = {}   # tx_id -> (gene_id, chrom, start, end, strand)
 exon_rows = []   # (tx_id, start, end)
 
 n_lines = 0
@@ -121,16 +121,22 @@ with opener(gtf_gz, "rt") as fh:
         gene_name = a.get("gene_name", gene_id)
         tx_id     = a.get("transcript_id", "")
 
+        key = (gene_id, chrom)
         if feature == "gene":
-            if gene_id not in gene_rows:
-                gene_rows[gene_id] = (gene_name, chrom, start, end, strand)
+            if key not in gene_rows:
+                gene_rows[key] = (gene_name, start, end, strand)
             else:
-                # broaden span
-                g = gene_rows[gene_id]
-                gene_rows[gene_id] = (gene_name, chrom,
-                                      min(g[2], start), max(g[3], end), strand)
+                g = gene_rows[key]
+                gene_rows[key] = (gene_name, min(g[1], start), max(g[2], end), strand)
         elif feature == "transcript" and tx_id:
             tx_rows[tx_id] = (gene_id, chrom, start, end, strand)
+            # ncbiRefSeq GTF has no "gene" lines — derive gene span from transcripts,
+            # keyed by (gene_id, chrom) so alt contigs stay separate
+            if key not in gene_rows:
+                gene_rows[key] = (gene_name, start, end, strand)
+            else:
+                g = gene_rows[key]
+                gene_rows[key] = (gene_name, min(g[1], start), max(g[2], end), strand)
         elif feature == "exon" and tx_id:
             exon_rows.append((tx_id, start, end))
 
@@ -139,29 +145,30 @@ with opener(gtf_gz, "rt") as fh:
             print(f"  … {n_lines:,} lines parsed", flush=True)
 
 print(f"  {n_lines:,} GTF lines  |  "
-      f"{len(gene_rows):,} genes  |  "
+      f"{len(gene_rows):,} gene-chrom entries  |  "
       f"{len(tx_rows):,} transcripts  |  "
       f"{len(exon_rows):,} exons", flush=True)
 
 # ── insert ───────────────────────────────────────────────────────────────────
 print("  Inserting genes …", flush=True)
-gene_id_to_pk = {}
+gene_key_to_pk = {}   # (gene_id, chrom) -> pk
 with con:
-    for gene_id, (gene_name, chrom, start, end, strand) in gene_rows.items():
+    for (gene_id, chrom), (gene_name, start, end, strand) in gene_rows.items():
         cur = con.execute(
             "INSERT OR IGNORE INTO genes(gene_id,gene_name,chrom,start,end,strand) "
             "VALUES(?,?,?,?,?,?)",
             (gene_id, gene_name, chrom, start, end, strand)
         )
-        gene_id_to_pk[gene_id] = cur.lastrowid or \
-            con.execute("SELECT gene_pk FROM genes WHERE gene_id=?",
-                        (gene_id,)).fetchone()[0]
+        pk = cur.lastrowid or \
+            con.execute("SELECT gene_pk FROM genes WHERE gene_id=? AND chrom=?",
+                        (gene_id, chrom)).fetchone()[0]
+        gene_key_to_pk[(gene_id, chrom)] = pk
 
 print("  Inserting transcripts …", flush=True)
 tx_id_to_pk = {}
 with con:
     for tx_id, (gene_id, chrom, start, end, strand) in tx_rows.items():
-        gene_pk = gene_id_to_pk.get(gene_id)
+        gene_pk = gene_key_to_pk.get((gene_id, chrom))
         if gene_pk is None:
             continue
         cur = con.execute(

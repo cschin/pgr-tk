@@ -63,15 +63,31 @@ GENE_COORDS="$OUT_DIR/gene_coords.tsv"
 if [[ "$ANNOTATION" == *.db ]]; then
     # ── SQLite path (fast, O(log n)) ──────────────────────────────────────
     echo "=== [1] SQLite lookup for gene: ${GENE_NAME} ==="
+    # Validate db has been populated
+    TABLE_CHECK=$(sqlite3 "$ANNOTATION" "SELECT name FROM sqlite_master WHERE type='table' AND name='genes';" 2>/dev/null || true)
+    if [[ -z "$TABLE_CHECK" ]]; then
+        echo "ERROR: $ANNOTATION has no 'genes' table — run fetch_refseq_gtf_db.sh first" >&2
+        exit 1
+    fi
+    # Prefer primary chromosomes (no '_' in name, e.g. chr6 over chr6_GL000256v2_alt)
     ROW=$(sqlite3 "$ANNOTATION" \
-        "SELECT chrom, start, end, strand FROM genes WHERE gene_name='${GENE_NAME}' LIMIT 1;")
+        "SELECT chrom, start, end, strand FROM genes WHERE gene_name='${GENE_NAME}'
+         ORDER BY CASE WHEN chrom NOT GLOB '*_*' THEN 0 ELSE 1 END, end-start DESC LIMIT 1;")
     if [[ -z "$ROW" ]]; then
         # fall back to gene_id
         ROW=$(sqlite3 "$ANNOTATION" \
-            "SELECT chrom, start, end, strand FROM genes WHERE gene_id='${GENE_NAME}' LIMIT 1;")
+            "SELECT chrom, start, end, strand FROM genes WHERE gene_id='${GENE_NAME}'
+             ORDER BY CASE WHEN chrom NOT GLOB '*_*' THEN 0 ELSE 1 END, end-start DESC LIMIT 1;")
     fi
     if [[ -z "$ROW" ]]; then
         echo "ERROR: gene '${GENE_NAME}' not found in $ANNOTATION" >&2
+        SIMILAR=$(sqlite3 "$ANNOTATION" \
+            "SELECT gene_name FROM genes WHERE gene_name LIKE '${GENE_NAME}%' LIMIT 10;" \
+            2>/dev/null || true)
+        if [[ -n "$SIMILAR" ]]; then
+            echo "       Similar gene names in db:" >&2
+            echo "$SIMILAR" | sed 's/^/         /' >&2
+        fi
         exit 1
     fi
     # sqlite3 output is pipe-separated by default
