@@ -296,7 +296,7 @@ import sys, re
 log = open(sys.argv[1]).read()
 sections = re.split(r'^### ', log, flags=re.MULTILINE)
 
-hdr = f"{'Step':<36} {'Wall':>6} {'MaxRSS(MB)':>12} {'MajFlt':>8} {'MinFlt':>10}"
+hdr = f"{'Step':<36} {'Wall':>6} {'User':>7} {'Sys':>7} {'MaxRSS(MB)':>12} {'MajFlt':>8} {'MinFlt':>10}"
 print(hdr)
 print('-' * len(hdr))
 
@@ -311,14 +311,18 @@ for sec in sections[1:]:
         return '?'
 
     wall_s = find(r'Wall time: (\d+)s')
+    user_s = find(r'User time \(seconds\): ([\d.]+)')
+    sys_s  = find(r'System time \(seconds\): ([\d.]+)')
     rss_kb = find(r'Maximum resident set size \(kbytes\): (\d+)')
     maj    = find(r'Major \(requiring I/O\) page faults: (\d+)')
     minor  = find(r'Minor \(reclaiming a frame\) page faults: (\d+)')
 
-    wall_str = f"{wall_s}s" if wall_s != '?' else '?'
+    wall_str = f"{wall_s}s"  if wall_s != '?' else '?'
+    user_str = f"{float(user_s):.1f}s" if user_s != '?' else '?'
+    sys_str  = f"{float(sys_s):.1f}s"  if sys_s  != '?' else '?'
     rss_str  = str(int(rss_kb) // 1024) if rss_kb != '?' else '?'
 
-    print(f"{label[:36]:<36} {wall_str:>6} {rss_str:>12} {maj:>8} {minor:>10}")
+    print(f"{label[:36]:<36} {wall_str:>6} {user_str:>7} {sys_str:>7} {rss_str:>12} {maj:>8} {minor:>10}")
 PYEOF
 
 echo
