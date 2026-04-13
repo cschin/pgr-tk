@@ -101,9 +101,17 @@ for f in "${DB_DIR}/${DB_PREFIX}.agcrs" "${DB_DIR}/${DB_PREFIX}.mdbi" \
 done
 
 if [[ ! -f "$GENE_DB" ]]; then
-    echo "Note: gene annotation DB not found ($GENE_DB) — gene_db will be omitted from config."
-    echo "      Tests that use /query/region are not affected."
-    GENE_DB=""
+    # Try to build it from the GTF that 00_download.sh fetches.
+    GTF="${HG002_DIR}/downloads/hg38.ncbiRefSeq.gtf.gz"
+    FETCH_SCRIPT="${REPO_ROOT}/examples/hprc_r2/fetch_refseq_gtf_db.sh"
+    if [[ -f "$GTF" && -f "$FETCH_SCRIPT" ]]; then
+        echo "Note: gene annotation DB not found — building from $GTF ..."
+        (cd "$HG002_DIR" && bash "$FETCH_SCRIPT" hg38.ncbiRefSeq.db "$GTF")
+    else
+        echo "Note: gene annotation DB not found ($GENE_DB) — gene_db will be omitted from config."
+        echo "      Tests that use /query/region are not affected."
+        GENE_DB=""
+    fi
 fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
