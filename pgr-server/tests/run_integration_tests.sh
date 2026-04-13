@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # pgr-server/tests/run_integration_tests.sh
 #
-# Integration tests for pgr-server.  Starts a server using the small hg002
-# chr6 example database, exercises every endpoint, and reports PASS / FAIL.
+# Integration tests for pgr-server.  Starts a server using the hg002 example
+# database, exercises every endpoint, and reports PASS / FAIL.
 #
 # Usage:
 #   bash run_integration_tests.sh [OPTIONS]
@@ -12,11 +12,17 @@
 #   --server-bin  PATH   pgr-server binary (default: ../../target/release/pgr-server)
 #   --pgr-bin     PATH   pgr binary for /bundle tests (default: pgr)
 #   --port        N      port to bind when starting server (default: 13737)
+#   --db-dir      DIR    working directory that contains the DB files (default: auto)
+#   --db-prefix   REL    DB prefix relative to --db-dir (default: auto)
+#   --gene-db     PATH   gene annotation SQLite DB (default: auto)
 #   -h, --help           show this help
 #
-# The test databases are taken from:
-#   ../../examples/hg002/example_output/hg002_chr6_pan.*
-#   ../../examples/hg002/hg38.ncbiRefSeq.db
+# Auto-detection (when --db-prefix is not given):
+#   Tries, in order:
+#     <repo>/examples/hg002/example_output/hg002_chr6_pan   (chr6 only)
+#     <repo>/examples/hg002/example_output/hg002_pan        (full genome)
+#   The server must be started from --db-dir so that relative paths stored
+#   inside .midx resolve correctly.
 
 set -euo pipefail
 
@@ -29,6 +35,9 @@ PGR_BIN="pgr"
 PORT=13737
 SERVER_URL=""
 SKIP_START=0
+DB_DIR=""
+DB_PREFIX=""
+GENE_DB=""
 
 # ── option parsing ─────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -37,6 +46,9 @@ while [[ $# -gt 0 ]]; do
         --server-bin) SERVER_BIN="$2"; shift 2 ;;
         --pgr-bin)    PGR_BIN="$2";    shift 2 ;;
         --port)       PORT="$2";       shift 2 ;;
+        --db-dir)     DB_DIR="$2";     shift 2 ;;
+        --db-prefix)  DB_PREFIX="$2";  shift 2 ;;
+        --gene-db)    GENE_DB="$2";    shift 2 ;;
         -h|--help)
             sed -n '2,/^set /p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
@@ -47,18 +59,40 @@ done
 
 [[ -z "$SERVER_URL" ]] && SERVER_URL="http://127.0.0.1:${PORT}"
 
-# The .midx file stores relative paths to .agcrs / .mdbv; the server must be
-# started from the same working directory the database was built in.
+# ── auto-detect database ───────────────────────────────────────────────────────
 HG002_DIR="${REPO_ROOT}/examples/hg002"
-DB_PREFIX="example_output/hg002_chr6_pan"   # relative to HG002_DIR
-GENE_DB="${HG002_DIR}/hg38.ncbiRefSeq.db"
+
+if [[ -z "$DB_PREFIX" ]]; then
+    # Try chr6-only first (faster, built by run_all.sh), then full genome.
+    for candidate in \
+        "example_output/hg002_chr6_pan" \
+        "example_output/hg002_pan"
+    do
+        if [[ -f "${HG002_DIR}/${candidate}.agcrs" ]]; then
+            DB_DIR="${DB_DIR:-$HG002_DIR}"
+            DB_PREFIX="$candidate"
+            echo "Auto-detected database: ${DB_DIR}/${DB_PREFIX}"
+            break
+        fi
+    done
+fi
+
+# If DB_DIR wasn't set by the user and wasn't set by auto-detect, default to hg002.
+DB_DIR="${DB_DIR:-$HG002_DIR}"
+
+if [[ -z "$DB_PREFIX" ]]; then
+    echo "SKIP: no test database found under ${HG002_DIR}/example_output/"
+    echo "      Run examples/hg002/run_all.sh first, or pass --db-dir / --db-prefix."
+    exit 0
+fi
+
+[[ -z "$GENE_DB" ]] && GENE_DB="${HG002_DIR}/hg38.ncbiRefSeq.db"
 
 # ── prerequisites check ───────────────────────────────────────────────────────
-for f in "${HG002_DIR}/${DB_PREFIX}.agcrs" "${HG002_DIR}/${DB_PREFIX}.mdbi" \
-          "${HG002_DIR}/${DB_PREFIX}.mdbv"  "${HG002_DIR}/${DB_PREFIX}.midx"; do
+for f in "${DB_DIR}/${DB_PREFIX}.agcrs" "${DB_DIR}/${DB_PREFIX}.mdbi" \
+          "${DB_DIR}/${DB_PREFIX}.mdbv"  "${DB_DIR}/${DB_PREFIX}.midx"; do
     if [[ ! -f "$f" ]]; then
-        echo "SKIP: test database not found: $f"
-        echo "      Run examples/hg002/run_all.sh first to build it."
+        echo "SKIP: test database file not found: $f"
         exit 0
     fi
 done
@@ -170,10 +204,10 @@ YAML
         sleep 1
     fi
 
-    echo "Starting pgr-server (port ${PORT}, cwd=${HG002_DIR})..."
-    # Start from HG002_DIR so the relative paths stored in .midx resolve correctly.
+    echo "Starting pgr-server (port ${PORT}, cwd=${DB_DIR})..."
+    # Start from DB_DIR so the relative paths stored in .midx resolve correctly.
     # exec replaces the subshell, so $! == actual pgr-server PID.
-    (cd "$HG002_DIR" && exec "$SERVER_BIN" --config "$CFG_FILE") \
+    (cd "$DB_DIR" && exec "$SERVER_BIN" --config "$CFG_FILE") \
         >> "$LOG_FILE" 2>&1 &
     SERVER_PID=$!
 
