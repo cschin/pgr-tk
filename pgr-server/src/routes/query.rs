@@ -192,6 +192,27 @@ fn hits_to_fasta(db: &SyncSeqIndexDB, hits: &[HitRecord]) -> anyhow::Result<Stri
 
 // ── /query/region ─────────────────────────────────────────────────────────────
 
+/// Query all haplotype sequences that align to a reference genomic region.
+///
+/// Fetches the reference subsequence `[start, end)` from the sample identified
+/// by `ref_sample_hint`, runs a shimmer-based pangenome alignment, merges
+/// overlapping hits, and returns coordinate ranges for every matching haplotype.
+/// Set `include_sequences` to `true` to also receive the hit sequences as
+/// inline FASTA (may be large for wide regions).
+#[utoipa::path(
+    post,
+    path = "/api/v1/query/region",
+    request_body = RegionQueryRequest,
+    responses(
+        (status = 200, description = "Alignment hits and optional FASTA sequences",
+         body = RegionQueryResponse),
+        (status = 404, description = "Database or reference chromosome not found",
+         body = ErrorBody),
+        (status = 500, description = "Shimmer query failed",
+         body = ErrorBody),
+    ),
+    tag = "query"
+)]
 pub async fn query_region(
     State(state): State<AppState>,
     Json(req): Json<RegionQueryRequest>,
@@ -323,6 +344,28 @@ fn lookup_gene(gene_db_path: &str, gene_name: &str) -> anyhow::Result<Option<Gen
     }
 }
 
+/// Look up a gene by symbol, then query all haplotype sequences covering
+/// the gene span ± `flank` bp.
+///
+/// Requires `gene_db` to be configured for the selected database.
+/// The gene annotation DB is queried with SQL; primary-assembly chromosomes
+/// are preferred over alt/patch contigs; the longest span wins among ties.
+#[utoipa::path(
+    post,
+    path = "/api/v1/query/gene",
+    request_body = GeneQueryRequest,
+    responses(
+        (status = 200, description = "Gene metadata, alignment hits and optional FASTA",
+         body = GeneQueryResponse),
+        (status = 400, description = "Database has no gene_db configured",
+         body = ErrorBody),
+        (status = 404, description = "Database or gene symbol not found",
+         body = ErrorBody),
+        (status = 500, description = "Shimmer query or gene DB error",
+         body = ErrorBody),
+    ),
+    tag = "query"
+)]
 pub async fn query_gene(
     State(state): State<AppState>,
     Json(req): Json<GeneQueryRequest>,

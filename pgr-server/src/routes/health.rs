@@ -4,10 +4,29 @@ use serde_json::{json, Value};
 use crate::models::{DbInfoEntry, InfoResponse};
 use crate::state::AppState;
 
+/// Liveness probe — always returns 200 OK while the process is running.
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    responses(
+        (status = 200, description = "Server is alive", body = Value,
+         example = json!({"status": "ok"}))
+    ),
+    tag = "health"
+)]
 pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
+/// Return metadata for all loaded databases.
+#[utoipa::path(
+    get,
+    path = "/api/v1/info",
+    responses(
+        (status = 200, description = "Server and database metadata", body = InfoResponse)
+    ),
+    tag = "health"
+)]
 pub async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
     let mut databases: Vec<DbInfoEntry> = state
         .databases

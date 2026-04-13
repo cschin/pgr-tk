@@ -19,3 +19,5 @@ rusqlite   = { version = "0.39", features = ["bundled"] }
 rayon      = "1"
 anyhow     = "1"
 tempfile   = "3"
+utoipa     = { version = "4", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }

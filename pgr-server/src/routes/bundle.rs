@@ -7,6 +7,24 @@ use crate::error::AppError;
 use crate::models::{BundleRequest, BundleResponse};
 use crate::state::AppState;
 
+/// Run principal bundle decomposition on caller-supplied FASTA sequences.
+///
+/// Writes the FASTA to a temporary file and invokes `pgr bundle decomp`.
+/// If `generate_html` is `true`, also runs `pgr bundle svg --html`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/bundle",
+    request_body = BundleRequest,
+    responses(
+        (status = 200, description = "BED decomposition (and optional HTML)",
+         body = BundleResponse),
+        (status = 503, description = "pgr binary not found or not executable",
+         body = ErrorBody),
+        (status = 500, description = "pgr bundle command exited with an error",
+         body = ErrorBody),
+    ),
+    tag = "bundle"
+)]
 pub async fn run_bundle(
     State(state): State<AppState>,
     Json(req): Json<BundleRequest>,

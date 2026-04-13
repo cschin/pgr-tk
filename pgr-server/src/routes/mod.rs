@@ -1,7 +1,10 @@
 pub mod bundle;
 pub mod health;
+pub mod openapi;
 pub mod query;
 pub mod sequences;
+
+pub use openapi::ApiDoc;
 
 use axum::{
     routing::{get, post},
@@ -18,5 +21,6 @@ pub fn router(state: AppState) -> Router {
         .route("/query/region", post(query::query_region))
         .route("/query/gene", post(query::query_gene))
         .route("/bundle", post(bundle::run_bundle))
+        .route("/openapi.json", get(openapi::openapi_json))
         .with_state(state)
 }

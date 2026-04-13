@@ -13,8 +13,11 @@ use tower_http::{
 };
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use utoipa::OpenApi as _;
+use utoipa_swagger_ui::SwaggerUi;
 
 use config::Config;
+use routes::ApiDoc;
 use state::AppState;
 
 #[derive(Parser, Debug)]
@@ -129,8 +132,14 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(Any)
         .allow_origin(Any);
 
-    // Build the Axum router
+    // Build the Axum router.
+    // SwaggerUi is merged at the top level so it can serve its own static
+    // assets; the actual API routes are nested under /api/v1.
     let app = axum::Router::new()
+        .merge(
+            SwaggerUi::new("/api/v1/docs")
+                .url("/api/v1/openapi.json", ApiDoc::openapi()),
+        )
         .nest("/api/v1", routes::router(state))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
