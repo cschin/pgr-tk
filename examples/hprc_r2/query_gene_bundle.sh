@@ -56,6 +56,24 @@ fi
 mkdir -p "$OUT_DIR"
 
 # ---------------------------------------------------------------------------
+# Performance logging — wraps commands with /usr/bin/time -v (GNU time).
+# Stats are appended to $PERF_LOG; a summary table is printed at the end.
+# ---------------------------------------------------------------------------
+PERF_LOG="$OUT_DIR/perf.log"
+: > "$PERF_LOG"
+
+# run_timed LABEL COMMAND [ARGS...]
+run_timed() {
+    local label="$1"; shift
+    local t0=$SECONDS
+    printf '\n### %s\n' "$label" >> "$PERF_LOG"
+    /usr/bin/time -v -a -o "$PERF_LOG" -- "$@"
+    local rc=$?
+    printf 'Wall time: %ds\n' $(( SECONDS - t0 )) >> "$PERF_LOG"
+    return $rc
+}
+
+# ---------------------------------------------------------------------------
 # 1. Look up gene coordinates → chromosome, start (0-based), end
 # ---------------------------------------------------------------------------
 GENE_COORDS="$OUT_DIR/gene_coords.tsv"
@@ -154,10 +172,11 @@ SEQ_LIST="${DB_PREFIX}.seq_list.tsv"
 if [[ ! -s "$SEQ_LIST" ]]; then
     echo
     echo "=== [2] Listing sequences in ${DB_PREFIX}.midx ==="
-    "$PGR" query fetch \
-        --pgr-db-prefix "$DB_PREFIX" \
-        --list \
-        > "$SEQ_LIST"
+    run_timed "[2] pgr query fetch --list" \
+        "$PGR" query fetch \
+            --pgr-db-prefix "$DB_PREFIX" \
+            --list \
+            --output-file "$SEQ_LIST"
     echo "    $(wc -l < "$SEQ_LIST") sequences indexed"
 else
     echo
@@ -203,10 +222,11 @@ if [[ ! -s "$QUERY_FA" ]]; then
     echo "=== [3] Fetching reference sequence from agcrs ==="
     REF_REGION_FILE="$OUT_DIR/ref_region.tsv"
     echo "$REF_REGION" > "$REF_REGION_FILE"
-    "$PGR" query fetch \
-        --pgr-db-prefix "$DB_PREFIX" \
-        --region-file   "$REF_REGION_FILE" \
-        --output-file   "$QUERY_FA"
+    run_timed "[3] pgr query fetch (ref seq)" \
+        "$PGR" query fetch \
+            --pgr-db-prefix "$DB_PREFIX" \
+            --region-file   "$REF_REGION_FILE" \
+            --output-file   "$QUERY_FA"
     echo "    Written: $QUERY_FA  ($(wc -c < "$QUERY_FA" | tr -d ' ') bytes)"
 else
     echo
@@ -219,16 +239,17 @@ fi
 HIT_PREFIX="$OUT_DIR/${GENE_NAME}_hits"
 echo
 echo "=== [4] pgr query seqs — ${GENE_NAME} vs pangenome ==="
-"$PGR" query seqs \
-    --pgr-db-prefix    "$DB_PREFIX" \
-    --query-fastx-path "$QUERY_FA" \
-    --output-prefix    "$HIT_PREFIX" \
-    --memory-mode      low \
-    --merge-range-tol  100000 \
-    --max-count        128 \
-    --max-query-count  128 \
-    --max-target-count 128 \
-    --min-anchor-count 10
+run_timed "[4] pgr query seqs" \
+    "$PGR" query seqs \
+        --pgr-db-prefix    "$DB_PREFIX" \
+        --query-fastx-path "$QUERY_FA" \
+        --output-prefix    "$HIT_PREFIX" \
+        --memory-mode      low \
+        --merge-range-tol  100000 \
+        --max-count        128 \
+        --max-query-count  128 \
+        --max-target-count 128 \
+        --min-anchor-count 10
 
 echo
 echo "=== Hit summary (${HIT_PREFIX}.000.hit) ==="
@@ -248,19 +269,57 @@ fi
 BUNDLE_PREFIX="$OUT_DIR/${GENE_NAME}_bundle"
 echo
 echo "=== [5] pgr bundle decomp ==="
-"$PGR" bundle decomp \
-    --fastx-path    "$HIT_FA" \
-    --output-prefix "$BUNDLE_PREFIX"
+run_timed "[5] pgr bundle decomp" \
+    "$PGR" bundle decomp \
+        --fastx-path    "$HIT_FA" \
+        --output-prefix "$BUNDLE_PREFIX"
 
 # ---------------------------------------------------------------------------
 # 6. Interactive HTML bundle visualisation
 # ---------------------------------------------------------------------------
 echo
 echo "=== [6] pgr bundle svg --html ==="
-"$PGR" bundle svg \
-    --bed-file-path "${BUNDLE_PREFIX}.bed" \
-    --output-prefix "$BUNDLE_PREFIX" \
-    --html
+run_timed "[6] pgr bundle svg --html" \
+    "$PGR" bundle svg \
+        --bed-file-path "${BUNDLE_PREFIX}.bed" \
+        --output-prefix "$BUNDLE_PREFIX" \
+        --html
+
+# ---------------------------------------------------------------------------
+# Performance summary
+# ---------------------------------------------------------------------------
+echo
+echo "=== Performance summary ($PERF_LOG) ==="
+python3 - "$PERF_LOG" <<'PYEOF'
+import sys, re
+
+log = open(sys.argv[1]).read()
+sections = re.split(r'^### ', log, flags=re.MULTILINE)
+
+hdr = f"{'Step':<36} {'Wall':>6} {'MaxRSS(MB)':>12} {'MajFlt':>8} {'MinFlt':>10}"
+print(hdr)
+print('-' * len(hdr))
+
+for sec in sections[1:]:
+    lines = sec.splitlines()
+    label = lines[0].strip()
+
+    def find(pat):
+        for l in lines:
+            m = re.search(pat, l)
+            if m: return m.group(1)
+        return '?'
+
+    wall_s = find(r'Wall time: (\d+)s')
+    rss_kb = find(r'Maximum resident set size \(kbytes\): (\d+)')
+    maj    = find(r'Major \(requiring I/O\) page faults: (\d+)')
+    minor  = find(r'Minor \(reclaiming a frame\) page faults: (\d+)')
+
+    wall_str = f"{wall_s}s" if wall_s != '?' else '?'
+    rss_str  = str(int(rss_kb) // 1024) if rss_kb != '?' else '?'
+
+    print(f"{label[:36]:<36} {wall_str:>6} {rss_str:>12} {maj:>8} {minor:>10}")
+PYEOF
 
 echo
 echo "=== Done ==="
@@ -268,3 +327,4 @@ echo "  Query FASTA : $QUERY_FA"
 echo "  Hit FASTA   : $HIT_FA"
 echo "  Bundle BED  : ${BUNDLE_PREFIX}.bed"
 echo "  Bundle HTML : ${BUNDLE_PREFIX}.html"
+echo "  Perf log    : $PERF_LOG"
