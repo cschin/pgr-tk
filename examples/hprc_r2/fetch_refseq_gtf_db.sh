@@ -58,6 +58,11 @@ gtf_gz, db_path = sys.argv[1], sys.argv[2]
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 
+-- Drop tables so schema changes (e.g. new indexes) are always applied fresh
+DROP TABLE IF EXISTS exons;
+DROP TABLE IF EXISTS transcripts;
+DROP TABLE IF EXISTS genes;
+
 CREATE TABLE IF NOT EXISTS genes (
     gene_pk   INTEGER PRIMARY KEY,
     gene_id   TEXT    NOT NULL,
