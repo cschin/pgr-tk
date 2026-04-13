@@ -12,13 +12,13 @@
 #
 # ── Modes ────────────────────────────────────────────────────────────────────
 #
-# local  (default, MODE=local)
+# local  (default, -m local)
 #   All work is done by spawning pgr sub-commands inline.  The shimmer index
 #   is loaded fresh for every query, which is slow on large databases.
 #   Steps: [1] gene lookup → [2] seq-list cache → [3] fetch ref seq →
 #          [4] pgr query seqs → [5] pgr bundle decomp → [6] pgr bundle svg
 #
-# server (MODE=server)
+# server (-m server)
 #   Queries are routed to a pgr-server HTTP process.  On first invocation the
 #   script writes a server config and starts the server in the background; on
 #   subsequent calls the existing process is reused (index already in RAM).
@@ -32,36 +32,95 @@
 #   both modes : python3, sqlite3 (for .db annotation)
 #
 # ── Usage ────────────────────────────────────────────────────────────────────
-#   bash query_gene_bundle.sh <gene_name> <annotation> [db_prefix] [flank_bp] [out_dir]
+#   bash query_gene_bundle.sh [OPTIONS] <gene_name> <annotation> [db_prefix] [flank_bp] [out_dir]
 #
-#   gene_name  — gene symbol or gene_id  (e.g. C9orf72, BRCA1, HLA-A)
-#   annotation — SQLite .db from fetch_refseq_gtf_db.sh  OR  .gtf / .gtf.gz
-#   db_prefix  — prefix for .agcrs/.mdbi/.mdbv/.midx files   (default: hprc_r2)
-#   flank_bp   — flanking bases added on each side            (default: 100000)
-#   out_dir    — output directory                             (default: <gene>_bundle)
+#   OPTIONS
+#     -m, --mode  local|server   execution mode (default: local)
+#     -h, --help                 show this help and exit
+#
+#   POSITIONAL
+#     gene_name  — gene symbol or gene_id  (e.g. C9orf72, BRCA1, HLA-A)
+#     annotation — SQLite .db from fetch_refseq_gtf_db.sh  OR  .gtf / .gtf.gz
+#     db_prefix  — prefix for .agcrs/.mdbi/.mdbv/.midx files   (default: hprc_r2)
+#     flank_bp   — flanking bases added on each side            (default: 100000)
+#     out_dir    — output directory                             (default: <gene>_bundle)
 #
 # ── Environment overrides ────────────────────────────────────────────────────
-#   PGR=<path>            path to pgr binary         (local mode)
-#   REF_SAMPLE_HINT=<s>   substring identifying the reference sample (GRCh38)
-#   MODE=local|server     execution mode             (default: local)
-#   SERVER_URL=<url>      base URL of the server     (default: http://127.0.0.1:3000)
-#   SERVER_PORT=<n>       port to bind when starting (default: 3000)
-#   SERVER_BIN=<path>     pgr-server binary          (default: pgr-server)
-#   SERVER_MEMORY_MODE=<m> moderate | high           (default: moderate)
+#   PGR=<path>             path to pgr binary         (local mode)
+#   REF_SAMPLE_HINT=<s>    substring identifying the reference sample (GRCh38)
+#   SERVER_URL=<url>       base URL of the server     (default: http://127.0.0.1:3000)
+#   SERVER_PORT=<n>        port to bind when starting (default: 3000)
+#   SERVER_BIN=<path>      pgr-server binary          (default: pgr-server)
+#   SERVER_MEMORY_MODE=<m> moderate | high            (default: moderate)
 
 set -euo pipefail
 
-# ── Arguments ─────────────────────────────────────────────────────────────────
-GENE_NAME="${1:?usage: $0 <gene_name> <annotation> [db_prefix] [flank_bp] [out_dir]}"
-ANNOTATION="${2:?usage: $0 <gene_name> <annotation> [db_prefix] [flank_bp] [out_dir]}"
+# ── Option parsing ─────────────────────────────────────────────────────────────
+MODE="local"   # default; overridden by -m / --mode
+
+usage() {
+    cat >&2 <<EOF
+Usage: $0 [OPTIONS] <gene_name> <annotation> [db_prefix] [flank_bp] [out_dir]
+
+OPTIONS
+  -m, --mode  local|server   execution mode (default: local)
+  -h, --help                 show this help and exit
+
+POSITIONAL
+  gene_name   gene symbol or gene_id (e.g. HLA-A, BRCA1, C9orf72)
+  annotation  SQLite .db from fetch_refseq_gtf_db.sh  OR  .gtf / .gtf.gz
+  db_prefix   prefix for .agcrs/.mdbi/.mdbv/.midx     (default: hprc_r2)
+  flank_bp    flanking bases on each side              (default: 100000)
+  out_dir     output directory                         (default: <gene>_bundle)
+
+ENV (fine-tuning)
+  PGR=<path>              pgr binary              (local mode)
+  REF_SAMPLE_HINT=<s>     reference sample hint   (default: GRCh38)
+  SERVER_URL=<url>        server base URL         (default: http://127.0.0.1:3000)
+  SERVER_PORT=<n>         port to bind on start   (default: 3000)
+  SERVER_BIN=<path>       pgr-server binary       (default: pgr-server)
+  SERVER_MEMORY_MODE=<m>  moderate|high           (default: moderate)
+EOF
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -m|--mode)
+            MODE="${2:?--mode requires an argument: local|server}"
+            shift 2
+            ;;
+        --mode=*)
+            MODE="${1#--mode=}"
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "ERROR: unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            break   # first positional argument
+            ;;
+    esac
+done
+
+# ── Positional arguments ───────────────────────────────────────────────────────
+GENE_NAME="${1:?$(usage)}"
+ANNOTATION="${2:?$(usage)}"
 DB_PREFIX="${3:-hprc_r2}"
 FLANK="${4:-100000}"
 OUT_DIR="${5:-${GENE_NAME}_bundle}"
 
-# ── Environment overrides ─────────────────────────────────────────────────────
+# ── Environment overrides (fine-tuning) ───────────────────────────────────────
 PGR="${PGR:-pgr}"
 REF_SAMPLE_HINT="${REF_SAMPLE_HINT:-GRCh38}"
-MODE="${MODE:-local}"
 SERVER_URL="${SERVER_URL:-http://127.0.0.1:3000}"
 SERVER_PORT="${SERVER_PORT:-3000}"
 SERVER_BIN="${SERVER_BIN:-pgr-server}"
