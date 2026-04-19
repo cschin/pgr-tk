@@ -1,3 +1,6 @@
+
+# This repo is archived. We are working on the next generation of tools: PANGEA — Pangenome Graph Exploration and Analysis based on this work.
+
 # PGR-tk: A PanGenomic Research Took Kit
 
 [![test_and_build](https://github.com/cschin/pgr-tk/actions/workflows/test_and_build.yml/badge.svg)](https://github.com/cschin/pgr-tk/actions/workflows/test_and_build.yml)
